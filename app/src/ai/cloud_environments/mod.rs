@@ -1,9 +1,8 @@
 mod catalog;
-// Some of these re-exported types aren't used in the wasm build, so we suppress this
-// warning.
+// These GUI-facing re-exports are not consumed in the TUI build.
 pub use catalog::CloudEnvironmentCatalog;
 pub(crate) use catalog::sort_environments_by_recency;
-#[cfg_attr(not(feature = "tui"), allow(unused_imports))]
+#[cfg_attr(feature = "tui", allow(unused_imports))]
 pub use catalog::{CloudEnvironment, CloudEnvironmentCatalogEvent};
 #[cfg_attr(target_family = "wasm", expect(unused_imports))]
 pub use cloud_object_models::{
@@ -22,6 +21,14 @@ use crate::cloud_object::{
 };
 use crate::server::sync_queue::QueueItem;
 use crate::workspaces::user_workspaces::UserWorkspaces;
+
+#[cfg(all(feature = "tui", feature = "local_fs"))]
+mod tui_projection;
+#[cfg(all(feature = "tui", feature = "local_fs"))]
+pub use tui_projection::{
+    TuiCloudEnvironment, TuiCloudEnvironmentEvent, TuiCloudEnvironmentProjection,
+    suggest_tui_handoff_environment,
+};
 
 impl StringModel for AmbientAgentEnvironment {
     type CloudObjectType = CloudAmbientAgentEnvironment;

@@ -16,7 +16,8 @@ use warp_core::settings::Setting as _;
 use warp_editor::model::CoreEditorModel;
 use warpui::platform::WindowStyle;
 use warpui::{
-    AddWindowOptions, EntityIdMap, ModelHandle, ReadModel, SingletonEntity, UpdateModel, ViewHandle,
+    AddWindowOptions, EntityId, EntityIdMap, ModelHandle, ReadModel, SingletonEntity, UpdateModel,
+    ViewHandle,
 };
 use warpui_core::r#async::Timer;
 use warpui_core::elements::tui::{
@@ -89,6 +90,7 @@ fn voice_accepts_exact_and_whitespace_only_arguments() {
     assert!(voice_argument_is_empty(Some(&"   ".to_owned())));
     assert!(!voice_argument_is_empty(Some(&"text".to_owned())));
 }
+
 #[test]
 fn voice_slash_command_rejects_arguments_before_prompt_fallback() {
     App::test((), |mut app| async move {
@@ -110,6 +112,50 @@ fn voice_slash_command_rejects_arguments_before_prompt_fallback() {
                     .map(|(text, _)| text.to_owned())
             }),
             Some(VOICE_USAGE_HINT.to_owned())
+        );
+    });
+}
+
+#[test]
+fn centralized_blocker_state_controls_input_suppression() {
+    App::test((), |mut app| async move {
+        let fixture = focus_test_fixture(&mut app);
+        let (view, _) = add_focus_test_session(&mut app, &fixture, true);
+        let blocker = EntityId::new();
+
+        let unblocked = render_session(&mut app, &view, 80, 40);
+        assert!(
+            unblocked
+                .iter()
+                .any(|line| line.contains('┌') || line.contains('─')),
+            "input renders before a blocker is active:\n{}",
+            unblocked.join("\n")
+        );
+
+        view.read(&app, |view, _| view.blocking_interaction_model.clone())
+            .update(&mut app, |model, ctx| {
+                model.activate(blocker, ctx).expect("blocker activates");
+            });
+        let blocked = render_session(&mut app, &view, 80, 40);
+        assert!(
+            !blocked
+                .iter()
+                .any(|line| line.contains('┌') || line.contains('─')),
+            "central blocker state suppresses input:\n{}",
+            blocked.join("\n")
+        );
+
+        view.read(&app, |view, _| view.blocking_interaction_model.clone())
+            .update(&mut app, |model, ctx| {
+                assert!(model.deactivate(blocker, ctx));
+            });
+        let unblocked = render_session(&mut app, &view, 80, 40);
+        assert!(
+            unblocked
+                .iter()
+                .any(|line| line.contains('┌') || line.contains('─')),
+            "input returns after the matching blocker deactivates:\n{}",
+            unblocked.join("\n")
         );
     });
 }

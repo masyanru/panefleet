@@ -63,6 +63,7 @@ use crate::attachment_bar::{
     FOCUS_ATTACHMENTS_BINDING_NAME, TuiAttachmentBar, TuiAttachmentBarEvent, TuiAttachmentModel,
     TuiAttachmentPasteDisposition,
 };
+use crate::blocking_interaction::TuiBlockingInteractionModel;
 use crate::clipboard::copy_to_clipboard;
 use crate::completion_menu::TuiCompletionMenuModel;
 use crate::conversation_menu::{TuiConversationMenuEvent, TuiConversationMenuModel};
@@ -591,10 +592,7 @@ pub(crate) struct TuiTerminalSessionView {
     conversation_restore_state: ConversationRestoreState,
     next_restore_request_id: u64,
     exit_summary: TuiExitSummaryHandle,
-    /// The view id of the blocker currently holding focus, tracked only to
-    /// detect blocker transitions in [`Self::sync_blocker_focus`]. Input
-    /// visibility itself is derived at render time, never stored.
-    active_blocker_view_id: Option<EntityId>,
+    blocking_interaction_model: ModelHandle<TuiBlockingInteractionModel>,
     orchestration_tab_bar: ViewHandle<TuiTabBarView>,
     orchestration_tabs_focused: bool,
     zero_state_view: ViewHandle<TuiZeroStateView>,
@@ -1072,6 +1070,13 @@ impl TuiTerminalSessionView {
                 ctx,
             )
         });
+
+        let blocking_interaction_model = ctx.add_model(TuiBlockingInteractionModel::new);
+        ctx.subscribe_to_model(&blocking_interaction_model, |view, _, _, ctx| {
+            view.focus_current_owner_if_active(ctx);
+            ctx.notify();
+        });
+
         let ai_input_model = ctx.add_model(|ctx| {
             BlocklistAIInputModel::new(
                 model.clone(),
@@ -1142,11 +1147,11 @@ impl TuiTerminalSessionView {
                 ctx,
             )
         });
-        // Input visibility and focus derive from the front-of-queue blocker;
-        // re-derive on every action-queue transition (queued, blocked,
-        // finished). No suppression flag is stored.
+        // Publish the concrete front-of-queue blocker on every action-queue
+        // transition; the centralized model drives visibility and focus
+        // notifications.
         ctx.subscribe_to_model(&action_model, |view, _, _, ctx| {
-            view.sync_blocker_focus(ctx);
+            view.sync_blocker_state(ctx);
         });
         let input_editor_model =
             ctx.add_model(|ctx| CodeEditorModel::new_tui(INITIAL_INPUT_WIDTH, ctx));
@@ -1344,7 +1349,7 @@ impl TuiTerminalSessionView {
                 }
             },
             TuiTranscriptViewEvent::BlockingStateChanged => {
-                view.sync_blocker_focus(ctx);
+                view.sync_blocker_state(ctx);
             }
             TuiTranscriptViewEvent::PermissionReplacementGuidanceSubmitted {
                 conversation_id,
@@ -1629,7 +1634,7 @@ impl TuiTerminalSessionView {
             conversation_restore_state: ConversationRestoreState::Idle,
             next_restore_request_id: 0,
             exit_summary,
-            active_blocker_view_id: None,
+            blocking_interaction_model,
             orchestration_tab_bar,
             orchestration_tabs_focused: false,
             zero_state_view,
@@ -1823,19 +1828,32 @@ impl TuiTerminalSessionView {
             .is_some_and(|id| id.surface_id() == self.terminal_surface_id)
     }
 
-    /// Reconciles focus with the derived blocker: a newly active blocker is
-    /// focused (handing off directly between consecutive blockers with no
-    /// intermediate editable input), and focus returns to the input when the
-    /// last blocker resolves. Nothing here writes to the input model, so its
-    /// draft/cursor/selection are untouched.
-    fn sync_blocker_focus(&mut self, ctx: &mut ViewContext<Self>) {
-        let blocker = self.active_blocking_child(ctx);
-        let blocker_view_id = blocker.as_ref().map(TuiBlockingChild::id);
-        if blocker_view_id != self.active_blocker_view_id {
-            self.active_blocker_view_id = blocker_view_id;
-            self.focus_current_owner_if_active(ctx);
-        }
-        ctx.notify();
+    /// Publishes the effective front-of-queue blocker without moving concrete
+    /// rendering or focus behavior into the centralized model.
+    fn sync_blocker_state(&mut self, ctx: &mut ViewContext<Self>) {
+        let next = self
+            .active_blocking_child(ctx)
+            .as_ref()
+            .map(TuiBlockingChild::id);
+        self.blocking_interaction_model.update(ctx, |model, ctx| {
+            let current = model.blocker();
+            match (current, next) {
+                (None, Some(next)) => {
+                    let result = model.activate(next, ctx);
+                    debug_assert!(result.is_ok());
+                }
+                (Some(current), Some(next)) if current != next => {
+                    if model.deactivate(current, ctx) {
+                        let result = model.activate(next, ctx);
+                        debug_assert!(result.is_ok());
+                    }
+                }
+                (Some(current), None) => {
+                    model.deactivate(current, ctx);
+                }
+                (None, None) | (Some(_), Some(_)) => {}
+            }
+        });
     }
 
     /// Restores an Oz conversation into the TUI's sole conversation surface.
@@ -3550,11 +3568,10 @@ impl TuiView for TuiTerminalSessionView {
         // While a `RunAgents` card (or another blocking interaction) is the
         // active front-of-queue blocker, the input box, inline menus, normal
         // footer, and the warping/summary row are omitted; the blocker
-        // renders its own action hints in their place. Visibility is derived
-        // fresh each pass — no stored suppression flag — and the hidden
-        // input model is never written to, so its draft/cursor/selection/
-        // scroll survive untouched.
-        let blocker_active = self.active_blocking_child(ctx).is_some();
+        // renders its own action hints in their place. Visibility derives from
+        // the centralized blocker identity, and the hidden input model is
+        // never written to, so its draft/cursor/selection/scroll survive.
+        let blocker_active = self.blocking_interaction_model.as_ref(ctx).is_active();
         if !blocker_active && matches!(input_target, TuiInputTarget::Disabled) {
             content = content.child(
                 TuiContainer::new(

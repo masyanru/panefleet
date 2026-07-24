@@ -5,21 +5,36 @@ use settings::Setting;
 use warp_core::SessionId;
 use warpui::{App, AppContext, EntityId, SingletonEntity};
 
-use super::{
-    TuiHistoryItem, TuiHistoryItemKind, UpArrowHistoryConfig, prompt_history_for_terminal_view,
-    up_arrow_history_for_terminal_view,
-};
+use super::{UpArrowHistoryConfig, prompt_history_for_terminal_surface};
 use crate::ai::agent::AIAgentExchangeId;
 use crate::ai::agent::conversation::AIConversationId;
 use crate::ai::blocklist::history_model::AIQueryHistoryOutputStatus;
 use crate::ai::blocklist::{BlocklistAIHistoryModel, PersistedAIInput, PersistedAIInputType};
 use crate::ai::llms::LLMId;
+use crate::input_suggestions::HistoryInputSuggestion;
 use crate::settings::AISettings;
 use crate::suggestions::ignored_suggestions_model::{IgnoredSuggestionsModel, SuggestionType};
 use crate::terminal::model::session::command_executor::NoOpCommandExecutor;
 use crate::terminal::model::session::{Session, SessionInfo};
 use crate::terminal::{History, HistoryEntry, LinkedWorkflowData};
 use crate::test_util::settings::initialize_settings_for_tests;
+
+#[derive(Debug, PartialEq, Eq)]
+enum TestHistoryItem {
+    Prompt(String),
+    Command {
+        text: String,
+        linked_workflow_data: Option<LinkedWorkflowData>,
+    },
+}
+
+impl TestHistoryItem {
+    fn text(&self) -> &str {
+        match self {
+            Self::Prompt(text) | Self::Command { text, .. } => text,
+        }
+    }
+}
 
 fn build_history_model(prompts: Vec<String>) -> BlocklistAIHistoryModel {
     let base = Local::now();
@@ -72,16 +87,27 @@ fn combined_history(
     session_id: SessionId,
     include_prompts: bool,
     app: &AppContext,
-) -> Vec<TuiHistoryItem> {
-    up_arrow_history_for_terminal_view(
-        terminal_surface_id,
-        Some(session_id),
-        UpArrowHistoryConfig {
-            include_commands: true,
-            include_prompts,
-        },
-        app,
-    )
+) -> Vec<TestHistoryItem> {
+    History::handle(app)
+        .as_ref(app)
+        .up_arrow_suggestions_for_terminal_surface(
+            terminal_surface_id,
+            Some(session_id),
+            UpArrowHistoryConfig {
+                include_commands: true,
+                include_prompts,
+            },
+            app,
+        )
+        .into_iter()
+        .map(|suggestion| match suggestion {
+            HistoryInputSuggestion::Command { entry } => TestHistoryItem::Command {
+                text: entry.command.trim().to_owned(),
+                linked_workflow_data: entry.linked_workflow_data(),
+            },
+            HistoryInputSuggestion::AIQuery { entry } => TestHistoryItem::Prompt(entry.query_text),
+        })
+        .collect()
 }
 
 async fn add_command_history(app: &mut App, session_id: SessionId, entries: Vec<HistoryEntry>) {
@@ -98,8 +124,7 @@ async fn add_command_history(app: &mut App, session_id: SessionId, entries: Vec<
             crate::terminal::HistoryEvent::Initialized(id) if *id == session_id => {
                 let _ = initialized_tx.try_send(());
             }
-            crate::terminal::HistoryEvent::Initialized(_)
-            | crate::terminal::HistoryEvent::Updated(_) => {}
+            crate::terminal::HistoryEvent::Initialized(_) => {}
         });
         history.update(ctx, |history, ctx| {
             history.init_session_with(session, async { Vec::new() }, ctx);
@@ -122,7 +147,7 @@ fn assert_prompt_history(prompts: &[&str], expected: &[&str]) {
         let terminal_surface_id = EntityId::new();
         app.add_singleton_model(move |_| build_history_model(prompts));
         app.read(|ctx| {
-            let texts: Vec<String> = prompt_history_for_terminal_view(terminal_surface_id, ctx)
+            let texts: Vec<String> = prompt_history_for_terminal_surface(terminal_surface_id, ctx)
                 .into_iter()
                 .map(|entry| entry.query_text)
                 .collect();
@@ -161,7 +186,7 @@ fn prompt_history_excludes_ignored_prompts() {
             )])
         });
         app.read(|ctx| {
-            let texts: Vec<String> = prompt_history_for_terminal_view(terminal_surface_id, ctx)
+            let texts: Vec<String> = prompt_history_for_terminal_surface(terminal_surface_id, ctx)
                 .into_iter()
                 .map(|entry| entry.query_text)
                 .collect();
@@ -174,7 +199,7 @@ fn prompt_history_excludes_ignored_prompts() {
 }
 
 #[test]
-fn combined_history_returns_owned_kinds_and_dedupes_each_kind() {
+fn combined_history_dedupes_each_kind() {
     App::test((), |mut app| async move {
         let terminal_surface_id = EntityId::new();
         let session_id = SessionId::from(1);
@@ -202,25 +227,19 @@ fn combined_history_returns_owned_kinds_and_dedupes_each_kind() {
             assert_eq!(
                 combined_history(terminal_surface_id, session_id, true, ctx),
                 vec![
-                    TuiHistoryItem {
-                        text: "older prompt".to_owned(),
-                        kind: TuiHistoryItemKind::Prompt,
-                    },
-                    TuiHistoryItem {
-                        text: "same".to_owned(),
-                        kind: TuiHistoryItemKind::Prompt,
-                    },
-                    TuiHistoryItem {
+                    TestHistoryItem::Prompt("older prompt".to_owned()),
+                    TestHistoryItem::Prompt("same".to_owned()),
+                    TestHistoryItem::Command {
                         text: "older command".to_owned(),
-                        kind: TuiHistoryItemKind::Command {
-                            linked_workflow_data: None,
-                        },
+                        linked_workflow_data: None,
                     },
-                    TuiHistoryItem {
+                    TestHistoryItem::Command {
                         text: "same".to_owned(),
-                        kind: TuiHistoryItemKind::Command {
-                            linked_workflow_data: None,
-                        },
+                        linked_workflow_data: None,
+                    },
+                    TestHistoryItem::Command {
+                        text: String::new(),
+                        linked_workflow_data: None,
                     },
                 ]
             );
@@ -251,17 +270,12 @@ fn combined_history_preserves_command_workflow_data() {
             assert_eq!(
                 combined_history(terminal_surface_id, session_id, true, ctx),
                 vec![
-                    TuiHistoryItem {
-                        text: "prompt".to_owned(),
-                        kind: TuiHistoryItemKind::Prompt,
-                    },
-                    TuiHistoryItem {
+                    TestHistoryItem::Prompt("prompt".to_owned()),
+                    TestHistoryItem::Command {
                         text: "deploy".to_owned(),
-                        kind: TuiHistoryItemKind::Command {
-                            linked_workflow_data: Some(LinkedWorkflowData::Command(
-                                "deploy {{environment}}".to_owned(),
-                            )),
-                        },
+                        linked_workflow_data: Some(LinkedWorkflowData::Command(
+                            "deploy {{environment}}".to_owned(),
+                        )),
                     },
                 ]
             );
@@ -298,7 +312,7 @@ fn combined_history_excludes_ignored_prompts_and_commands() {
             assert_eq!(
                 history
                     .iter()
-                    .map(|item| item.text.as_str())
+                    .map(TestHistoryItem::text)
                     .collect::<Vec<_>>(),
                 vec!["keep prompt", "keep command"]
             );
@@ -327,7 +341,7 @@ fn combined_history_respects_agent_command_setting() {
             assert_eq!(
                 combined_history(terminal_surface_id, session_id, false, ctx)
                     .into_iter()
-                    .map(|item| item.text)
+                    .map(|item| item.text().to_owned())
                     .collect::<Vec<_>>(),
                 vec!["user command"]
             );
@@ -343,7 +357,7 @@ fn combined_history_respects_agent_command_setting() {
             assert_eq!(
                 combined_history(terminal_surface_id, session_id, false, ctx)
                     .into_iter()
-                    .map(|item| item.text)
+                    .map(|item| item.text().to_owned())
                     .collect::<Vec<_>>(),
                 vec!["user command", "agent command"]
             );

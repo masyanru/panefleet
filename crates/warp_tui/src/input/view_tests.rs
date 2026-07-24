@@ -15,8 +15,9 @@ use warp::settings::AISettingsChangedEvent;
 use warp::tui_export::{
     AcceptSlashCommandOrSavedPrompt, BlocklistAIHistoryModel, BlocklistAIInputModel,
     ConversationSelectionEvent, InputConfig, InputModePolicy, InputType, LLMId, PolicyConfigUpdate,
-    SlashCommandId, SlashCommandMixer, TuiHistoryItemKind, VoiceInput, add_tui_history_test_models,
-    blocklist_ai_history_model_with_queries, register_tui_input_mode_test_settings,
+    SlashCommandId, SlashCommandMixer, TuiUpArrowHistoryItemKind, VoiceInput,
+    add_tui_history_test_models, blocklist_ai_history_model_with_queries,
+    register_tui_input_mode_test_settings,
 };
 use warp_core::features::FeatureFlag;
 use warp_editor::model::CoreEditorModel;
@@ -3131,7 +3132,10 @@ fn submit_accepts_highlighted_history_entry_with_its_kind() {
         app.read(|_| {
             assert_eq!(
                 accepted.borrow().as_slice(),
-                &[("deploy the app".to_owned(), TuiHistoryItemKind::Prompt)]
+                &[(
+                    "deploy the app".to_owned(),
+                    TuiUpArrowHistoryItemKind::Prompt
+                )]
             );
         });
     });
@@ -3168,7 +3172,7 @@ fn submit_accepts_highlighted_command_history_entry() {
                 accepted.borrow().as_slice(),
                 &[(
                     "echo command".to_owned(),
-                    TuiHistoryItemKind::Command {
+                    TuiUpArrowHistoryItemKind::Command {
                         linked_workflow_data: None
                     }
                 )]

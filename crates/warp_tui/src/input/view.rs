@@ -27,7 +27,7 @@ use string_offset::{ByteOffset, CharOffset};
 use warp::editor::{CodeEditorModel, CodeEditorModelEvent};
 use warp::tui_export::{
     AcceptSlashCommandOrSavedPrompt, BlocklistAIInputModel, InputType,
-    InputTypeAutoDetectionSource, LLMId, TuiHistoryItemKind, TuiMcpAction,
+    InputTypeAutoDetectionSource, LLMId, TuiMcpAction, TuiUpArrowHistoryItemKind,
 };
 use warp_editor::model::CoreEditorModel;
 use warpui_core::elements::MouseStateHandle;
@@ -139,7 +139,7 @@ pub enum TuiInputViewEvent {
     /// The user accepted an item from the up-arrow prompt-and-command history menu.
     AcceptedPromptAndCommandHistory {
         text: String,
-        kind: TuiHistoryItemKind,
+        kind: TuiUpArrowHistoryItemKind,
     },
     /// Tab requested shell completion for the current input snapshot.
     RequestShellCompletion,

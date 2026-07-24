@@ -11,8 +11,8 @@ use warp::tui_export::{
     AIAgentExchangeId, AIConversationAutoexecuteMode, AIConversationId, AgentViewEntryOrigin,
     BlockPadding, BlocklistAIHistoryModel, ConversationStatus, ConversationUsageTotals, Harness,
     LLMPreferences, PtyIntent, PtyIntentEvent, SizeInfo, SizeUpdate, TranscriptScope,
-    TuiHistoryItemKind, export_conversation_markdown, register_tui_session_view_test_singletons,
-    slash_commands,
+    TuiUpArrowHistoryItemKind, export_conversation_markdown,
+    register_tui_session_view_test_singletons, slash_commands,
 };
 use warp_core::settings::Setting as _;
 use warp_editor::model::CoreEditorModel;
@@ -1148,7 +1148,7 @@ fn accepted_command_history_executes_through_the_shell_submission_path() {
         view.update(&mut app, |view, ctx| {
             view.handle_accepted_prompt_and_command_history(
                 "echo from history".to_owned(),
-                TuiHistoryItemKind::Command {
+                TuiUpArrowHistoryItemKind::Command {
                     linked_workflow_data: None,
                 },
                 ctx,
@@ -1169,7 +1169,7 @@ fn accepted_prompt_history_submits_to_the_selected_ai_conversation() {
         view.update(&mut app, |view, ctx| {
             view.handle_accepted_prompt_and_command_history(
                 "explain the build".to_owned(),
-                TuiHistoryItemKind::Prompt,
+                TuiUpArrowHistoryItemKind::Prompt,
                 ctx,
             );
         });

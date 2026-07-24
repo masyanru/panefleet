@@ -6,7 +6,7 @@ use warp::editor::CodeEditorModel;
 use warp::settings::AISettingsChangedEvent;
 use warp::tui_export::{
     BlocklistAIInputModel, ConversationSelectionEvent, InputConfig, InputModePolicy, InputType,
-    PolicyConfigUpdate, TuiHistoryItemKind, add_tui_history_test_models,
+    PolicyConfigUpdate, TuiUpArrowHistoryItemKind, add_tui_history_test_models,
     append_tui_history_test_command, blocklist_ai_history_model_with_queries,
     register_tui_input_mode_test_settings,
 };
@@ -301,7 +301,7 @@ fn accepting_selected_item_returns_its_kind() {
             assert_eq!(accepted.text, "echo command");
             assert!(matches!(
                 accepted.kind,
-                TuiHistoryItemKind::Command {
+                TuiUpArrowHistoryItemKind::Command {
                     linked_workflow_data: None
                 }
             ));
@@ -317,24 +317,7 @@ fn accepting_selected_item_returns_its_kind() {
                 .update(ctx, |menu, ctx| menu.accept_selected(ctx))
                 .expect("selected prompt is accepted");
             assert_eq!(accepted.text, "prompt");
-            assert_eq!(accepted.kind, TuiHistoryItemKind::Prompt);
-        });
-    });
-}
-
-#[test]
-fn command_history_updates_refresh_an_open_menu() {
-    agent_mode_test(|mut app| async move {
-        let setup = initialized_setup(&mut app, &[], &["first"], InputType::Shell).await;
-        let (menu, session_id) = app.update(|ctx| {
-            setup.menu.update(ctx, |menu, ctx| menu.open(ctx));
-            (setup.menu, setup.session_id)
-        });
-        app.update(|ctx| {
-            append_tui_history_test_command(session_id, "second".to_owned(), ctx);
-        });
-        app.read(|ctx| {
-            assert_eq!(row_titles(&menu, ctx), vec!["first", "second"]);
+            assert_eq!(accepted.kind, TuiUpArrowHistoryItemKind::Prompt);
         });
     });
 }
@@ -417,11 +400,11 @@ fn multiline_history_title_handles_windows_line_endings() {
 fn reconciled_selection_preserves_full_row_identity() {
     let prompt = TuiPromptAndCommandHistoryRow {
         text: "build".to_owned(),
-        kind: TuiHistoryItemKind::Prompt,
+        kind: TuiUpArrowHistoryItemKind::Prompt,
     };
     let command = TuiPromptAndCommandHistoryRow {
         text: "build".to_owned(),
-        kind: TuiHistoryItemKind::Command {
+        kind: TuiUpArrowHistoryItemKind::Command {
             linked_workflow_data: None,
         },
     };

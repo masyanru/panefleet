@@ -7,8 +7,8 @@
 use warp::editor::{CodeEditorModel, CodeEditorModelEvent};
 use warp::tui_export::{
     ActiveSession, BlocklistAIHistoryEvent, BlocklistAIHistoryModel, BlocklistAIInputModel,
-    History, HistoryEvent, InputType, InputTypeAutoDetectionSource, TuiHistoryItemKind,
-    UpArrowHistoryConfig, up_arrow_history_for_terminal_view,
+    InputType, InputTypeAutoDetectionSource, TuiUpArrowHistoryItemKind, UpArrowHistoryConfig,
+    tui_up_arrow_history,
 };
 use warp_editor::model::CoreEditorModel;
 use warpui_core::{AppContext, Entity, EntityId, ModelContext, ModelHandle, SingletonEntity};
@@ -26,7 +26,7 @@ const MAX_VISIBLE_ROWS: usize = result_row_capacity(MAX_INLINE_MENU_ROWS, true, 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TuiPromptAndCommandHistoryRow {
     pub(crate) text: String,
-    pub(crate) kind: TuiHistoryItemKind,
+    pub(crate) kind: TuiUpArrowHistoryItemKind,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -70,8 +70,8 @@ pub(crate) struct TuiPromptAndCommandHistoryMenuModel {
 }
 
 impl TuiPromptAndCommandHistoryMenuModel {
-    /// Creates a closed prompt-and-command history menu and subscribes it to input/history
-    /// changes.
+    /// Creates a closed prompt-and-command history menu and subscribes it to input and prompt
+    /// history changes.
     pub(crate) fn new(
         input_editor: ModelHandle<CodeEditorModel>,
         input_mode: ModelHandle<BlocklistAIInputModel>,
@@ -93,11 +93,6 @@ impl TuiPromptAndCommandHistoryMenuModel {
                 }
             },
         );
-        ctx.subscribe_to_model(&History::handle(ctx), |model, _, _: &HistoryEvent, ctx| {
-            if model.is_open(ctx) {
-                model.refresh_rows(ctx);
-            }
-        });
         Self {
             input_editor,
             input_mode,
@@ -220,8 +215,8 @@ impl TuiPromptAndCommandHistoryMenuModel {
         let accepted = selected.unwrap_or_else(|| TuiPromptAndCommandHistoryRow {
             text: input_text(&self.input_editor, ctx),
             kind: match self.input_mode.as_ref(ctx).input_type() {
-                InputType::AI => TuiHistoryItemKind::Prompt,
-                InputType::Shell => TuiHistoryItemKind::Command {
+                InputType::AI => TuiUpArrowHistoryItemKind::Prompt,
+                InputType::Shell => TuiUpArrowHistoryItemKind::Command {
                     linked_workflow_data: None,
                 },
             },
@@ -255,12 +250,12 @@ impl TuiPromptAndCommandHistoryMenuModel {
                 .iter()
                 .map(|row| TuiInlineMenuRow {
                     title: single_line_menu_title(&row.text),
-                    prefix: matches!(row.kind, TuiHistoryItemKind::Command { .. }).then(|| {
-                        TuiInlineMenuRowPrefix {
+                    prefix: matches!(row.kind, TuiUpArrowHistoryItemKind::Command { .. }).then(
+                        || TuiInlineMenuRowPrefix {
                             text: format!("{SHELL_COMMAND_PREFIX} "),
                             style: TuiInlineMenuRowPrefixStyle::ShellCommand,
-                        }
-                    }),
+                        },
+                    ),
                     description: None,
                     state_suffix: None,
                     is_selectable: true,
@@ -330,7 +325,7 @@ impl TuiPromptAndCommandHistoryMenuModel {
         };
         let trimmed_query = query.trim();
         let session_id = self.active_session.as_ref(ctx).session_id(ctx);
-        let rows = up_arrow_history_for_terminal_view(
+        let rows = tui_up_arrow_history(
             self.terminal_surface_id,
             session_id,
             UpArrowHistoryConfig {
@@ -371,8 +366,8 @@ impl TuiPromptAndCommandHistoryMenuModel {
             return;
         };
         let input_type = match row.kind {
-            TuiHistoryItemKind::Prompt => InputType::AI,
-            TuiHistoryItemKind::Command { .. } => InputType::Shell,
+            TuiUpArrowHistoryItemKind::Prompt => InputType::AI,
+            TuiUpArrowHistoryItemKind::Command { .. } => InputType::Shell,
         };
         self.set_input_type(
             input_type,

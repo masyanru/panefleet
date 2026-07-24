@@ -28,8 +28,8 @@ use warp::tui_export::{
     ServerConversationToken, Sessions, ShellCommandExecutorEvent, SizeInfo, SizeUpdate,
     SkillReference, SlashCommandDataSource as _, SlashCommandKind, SlashCommandSelectionBehavior,
     StartAgentExecutorEvent, StartAgentRequest, StaticCommand, TerminalModel, TerminalSurface,
-    TerminalSurfaceInit, TranscriptScope, TuiHistoryItemKind, TuiMcpAction, TuiMcpManager,
-    TuiSlashCommandDataSource, TuiSlashCommandDataSourceArgs, TuiZeroStateDataSource,
+    TerminalSurfaceInit, TranscriptScope, TuiMcpAction, TuiMcpManager, TuiSlashCommandDataSource,
+    TuiSlashCommandDataSourceArgs, TuiUpArrowHistoryItemKind, TuiZeroStateDataSource,
     UserTakeOverReason, WAKEUP_THROTTLE_PERIOD, block_context_from_terminal_model,
     build_slash_command_mixer, detect_possible_git_repo, export_conversation_markdown, log_out_tui,
     maybe_build_ai_query_upsert_event, prepare_conversation_block_restoration,
@@ -3052,14 +3052,14 @@ impl TuiTerminalSessionView {
     fn handle_accepted_prompt_and_command_history(
         &mut self,
         text: String,
-        kind: TuiHistoryItemKind,
+        kind: TuiUpArrowHistoryItemKind,
         ctx: &mut ViewContext<Self>,
     ) {
         self.input_view.update(ctx, |input, ctx| {
             input.set_text(&text, ctx);
             match kind {
-                TuiHistoryItemKind::Prompt => input.exit_shell_mode(ctx),
-                TuiHistoryItemKind::Command { .. } => input.enter_shell_mode(ctx),
+                TuiUpArrowHistoryItemKind::Prompt => input.exit_shell_mode(ctx),
+                TuiUpArrowHistoryItemKind::Command { .. } => input.enter_shell_mode(ctx),
             }
         });
         self.handle_submitted(text, ctx);

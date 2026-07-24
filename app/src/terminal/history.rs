@@ -21,10 +21,7 @@ use crate::workflows::workflow::Workflow;
 use crate::workflows::{WorkflowId, WorkflowSource, WorkflowType};
 
 mod up_arrow;
-pub use up_arrow::{
-    TuiHistoryItem, TuiHistoryItemKind, UpArrowHistoryConfig, prompt_history_for_terminal_view,
-    up_arrow_history_for_terminal_view,
-};
+pub use up_arrow::UpArrowHistoryConfig;
 
 /// Data model for a history command persisted to sqlite, used as an intermediate representation
 /// between the sqlite schema (sqlite::model::Command) and the [`History`] model.
@@ -158,8 +155,6 @@ enum ReadHistoryFileState {
 pub enum HistoryEvent {
     /// History has been initialized for the session with the contained ID.
     Initialized(SessionId),
-    /// Commands for the session have changed.
-    Updated(SessionId),
 }
 
 /// This holds the aggregated data from the "commands" table in sqlite. We aggregate as a means of

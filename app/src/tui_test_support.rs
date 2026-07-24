@@ -127,7 +127,7 @@ pub fn add_tui_history_test_models(
         HistoryEvent::Initialized(id) if *id == session_id => {
             let _ = history_initialized_tx.try_send(());
         }
-        HistoryEvent::Initialized(_) | HistoryEvent::Updated(_) => {}
+        HistoryEvent::Initialized(_) => {}
     });
     history.update(ctx, |history, ctx| {
         history.init_session_with(session, async move { commands }, ctx);
@@ -165,17 +165,16 @@ pub fn add_tui_history_test_models(
     (active_session, session_id, initialized)
 }
 
-/// Appends a command and emits the update observed by an open TUI history menu.
+/// Appends a command to the history used by TUI tests.
 pub fn append_tui_history_test_command(
     session_id: SessionId,
     command: String,
     ctx: &mut AppContext,
 ) {
-    History::handle(ctx).update(ctx, |history, ctx| {
+    History::handle(ctx).update(ctx, |history, _| {
         let mut entry = HistoryEntry::command_only(command);
         entry.session_id = Some(session_id);
         history.append_commands(session_id, vec![entry]);
-        ctx.emit(crate::terminal::HistoryEvent::Updated(session_id));
     });
 }
 

@@ -1,5 +1,7 @@
 //! Public app APIs used by the `warp_tui` frontend.
 
+mod history;
+
 pub use ::ai::agent::action::{AskUserQuestionItem, AskUserQuestionOption, AskUserQuestionType};
 pub use ::ai::agent::action_result::AskUserQuestionAnswerItem;
 pub use ::ai::agent::{
@@ -20,6 +22,7 @@ use warp_completer::signatures::CommandRegistry;
 pub use warp_core::SessionId;
 use warpui::SingletonEntity as _;
 
+pub use self::history::{TuiUpArrowHistoryItem, TuiUpArrowHistoryItemKind, tui_up_arrow_history};
 pub use crate::ai::agent::api::ServerConversationToken;
 pub use crate::ai::agent::conversation::{
     AIConversation, AIConversationAutoexecuteMode, AIConversationId, ConversationStatus,
@@ -208,7 +211,7 @@ pub use crate::terminal::view::{ExecuteCommandEvent, WAKEUP_THROTTLE_PERIOD};
 pub use crate::terminal::{
     BlockPadding, History, HistoryEvent, PtyIntent, PtyIntentEvent, ShellLaunchData, SizeInfo,
     SizeUpdate, TerminalManager as TerminalManagerTrait, TerminalModel, TerminalSurface,
-    TuiHistoryItem, TuiHistoryItemKind, UpArrowHistoryConfig, up_arrow_history_for_terminal_view,
+    UpArrowHistoryConfig,
 };
 pub use crate::themes::default_themes::{dark_theme, light_theme};
 pub use crate::throttle::throttle;

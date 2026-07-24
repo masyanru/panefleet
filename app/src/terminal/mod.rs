@@ -10,9 +10,7 @@ use pathfinder_geometry::vector::vec2f;
 use serde::{Deserialize, Serialize};
 mod package_installers;
 pub use history::{
-    History, HistoryEntry, HistoryEvent, LinkedWorkflowData, ShellHost, TuiHistoryItem,
-    TuiHistoryItemKind, UpArrowHistoryConfig, prompt_history_for_terminal_view,
-    up_arrow_history_for_terminal_view,
+    History, HistoryEntry, HistoryEvent, LinkedWorkflowData, ShellHost, UpArrowHistoryConfig,
 };
 pub use view::{Event, TerminalView};
 pub use warp_terminal::shell::{self, ShellLaunchData};

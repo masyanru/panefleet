@@ -46,7 +46,6 @@ impl History {
                                 let _ = tx.try_send(());
                             }
                         }
-                        HistoryEvent::Updated(_) => {}
                     });
                 });
                 history_initialization_receivers.push(rx);

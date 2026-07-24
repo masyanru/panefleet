@@ -4,8 +4,8 @@ use std::rc::Rc;
 
 use string_offset::CharOffset;
 use warp::tui_export::{
-    AcceptSlashCommandOrSavedPrompt, AgentConversationEntryId, LLMId, TuiHistoryItemKind,
-    TuiMcpAction,
+    AcceptSlashCommandOrSavedPrompt, AgentConversationEntryId, LLMId, TuiMcpAction,
+    TuiUpArrowHistoryItemKind,
 };
 use warp_search_core::inline_menu::{InlineMenuResultsUpdate, InlineMenuSelection};
 use warpui_core::elements::CrossAxisAlignment;
@@ -288,7 +288,7 @@ pub(crate) enum TuiInlineMenuAccepted {
     Mcp(TuiMcpAction),
     PromptAndCommandHistory {
         text: String,
-        kind: TuiHistoryItemKind,
+        kind: TuiUpArrowHistoryItemKind,
     },
     /// A shell completion and the exact input span it replaces.
     Completion(TuiCompletionAcceptance),

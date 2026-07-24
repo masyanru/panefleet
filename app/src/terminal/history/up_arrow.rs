@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use warp_core::features::FeatureFlag;
 use warpui::{AppContext, EntityId, SingletonEntity};
 
-use super::{History, LinkedWorkflowData};
+use super::History;
 use crate::ai::blocklist::history_model::AIQueryHistory;
 use crate::ai::blocklist::{BlocklistAIHistoryModel, InputConfig};
 use crate::input_suggestions::HistoryInputSuggestion;
@@ -16,22 +16,6 @@ use crate::terminal::model::session::SessionId;
 pub struct UpArrowHistoryConfig {
     pub include_commands: bool,
     pub include_prompts: bool,
-}
-
-/// An owned history item suitable for storage by the TUI history menu.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TuiHistoryItem {
-    pub text: String,
-    pub kind: TuiHistoryItemKind,
-}
-
-/// The input kind represented by a TUI history item.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum TuiHistoryItemKind {
-    Prompt,
-    Command {
-        linked_workflow_data: Option<LinkedWorkflowData>,
-    },
 }
 
 impl UpArrowHistoryConfig {
@@ -90,8 +74,8 @@ fn sort_and_dedupe_suggestions<'a>(
 ///
 /// Prompts from other terminal surfaces precede prompts from the requested
 /// surface, and repeated text keeps its newest occurrence.
-pub fn prompt_history_for_terminal_view(
-    terminal_view_id: EntityId,
+fn prompt_history_for_terminal_surface(
+    terminal_surface_id: EntityId,
     app: &AppContext,
 ) -> Vec<AIQueryHistory> {
     let ignored_prompts = if app.has_singleton_model::<IgnoredSuggestionsModel>() {
@@ -103,7 +87,7 @@ pub fn prompt_history_for_terminal_view(
     };
     let suggestions = BlocklistAIHistoryModel::handle(app)
         .as_ref(app)
-        .all_ai_queries(Some(terminal_view_id))
+        .all_ai_queries(Some(terminal_surface_id))
         .filter(|entry| !ignored_prompts.contains(&entry.query_text))
         .filter(|entry| !entry.query_text.trim().is_empty())
         .map(|entry| HistoryInputSuggestion::AIQuery { entry })
@@ -119,40 +103,10 @@ pub fn prompt_history_for_terminal_view(
         .collect()
 }
 
-/// Returns an owned, de-duplicated combined history snapshot for the TUI.
-pub fn up_arrow_history_for_terminal_view(
-    terminal_view_id: EntityId,
-    session_id: Option<SessionId>,
-    config: UpArrowHistoryConfig,
-    app: &AppContext,
-) -> Vec<TuiHistoryItem> {
-    History::handle(app)
-        .as_ref(app)
-        .up_arrow_suggestions_for_terminal_view(terminal_view_id, session_id, config, app)
-        .into_iter()
-        .filter_map(|suggestion| match suggestion {
-            HistoryInputSuggestion::Command { entry } => {
-                let text = entry.command.trim();
-                (!text.is_empty()).then(|| TuiHistoryItem {
-                    text: text.to_owned(),
-                    kind: TuiHistoryItemKind::Command {
-                        linked_workflow_data: entry.linked_workflow_data(),
-                    },
-                })
-            }
-            HistoryInputSuggestion::AIQuery { entry } => (!entry.query_text.trim().is_empty())
-                .then_some(TuiHistoryItem {
-                    text: entry.query_text,
-                    kind: TuiHistoryItemKind::Prompt,
-                }),
-        })
-        .collect()
-}
-
 impl History {
-    pub(crate) fn up_arrow_suggestions_for_terminal_view<'a>(
+    pub(crate) fn up_arrow_suggestions_for_terminal_surface<'a>(
         &'a self,
-        terminal_view_id: EntityId,
+        terminal_surface_id: EntityId,
         session_id: Option<SessionId>,
         config: UpArrowHistoryConfig,
         app: &'a AppContext,
@@ -200,7 +154,7 @@ impl History {
             );
         }
 
-        let ai_queries = prompt_history_for_terminal_view(terminal_view_id, app)
+        let ai_queries = prompt_history_for_terminal_surface(terminal_surface_id, app)
             .into_iter()
             .map(|entry| HistoryInputSuggestion::AIQuery { entry });
 

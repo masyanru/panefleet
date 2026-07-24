@@ -26576,18 +26576,10 @@ impl TypedActionView for TerminalView {
             #[cfg(feature = "local_fs")]
             OpenCodeInWarp {
                 path,
-                layout,
+                layout: _,
                 line_col,
             } => {
-                self.open_code_in_warp(
-                    CodeSource::Link {
-                        path: path.clone(),
-                        range_start: *line_col,
-                        range_end: None,
-                    },
-                    *layout,
-                    ctx,
-                );
+                self.open_file_path(path.clone(), *line_col, ctx);
             }
             OpenWorkflowModal => self.open_workflow_modal(ctx),
             OpenWorkflowModalForAIWorkflow(workflow) => {

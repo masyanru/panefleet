@@ -6352,6 +6352,22 @@ pub enum AIBlockAction {
     },
 }
 
+#[cfg(feature = "local_fs")]
+fn configured_editor_file_open_event(source: &CodeSource) -> Option<AIBlockEvent> {
+    let CodeSource::Link {
+        path, range_start, ..
+    } = source
+    else {
+        return None;
+    };
+
+    Some(AIBlockEvent::OpenDetectedFilePath {
+        absolute_path: path.clone(),
+        line_and_column_num: *range_start,
+        target_override: None,
+    })
+}
+
 impl TypedActionView for AIBlock {
     type Action = AIBlockAction;
 
@@ -6852,12 +6868,18 @@ impl TypedActionView for AIBlock {
 
                 #[cfg(feature = "local_fs")]
                 {
-                    ctx.emit(AIBlockEvent::OpenCodeInWarp {
-                        source: source.clone(),
-                        layout: *crate::util::file::external_editor::EditorSettings::as_ref(ctx)
+                    if let Some(event) = configured_editor_file_open_event(source) {
+                        ctx.emit(event);
+                    } else {
+                        ctx.emit(AIBlockEvent::OpenCodeInWarp {
+                            source: source.clone(),
+                            layout: *crate::util::file::external_editor::EditorSettings::as_ref(
+                                ctx,
+                            )
                             .open_file_layout
                             .value(),
-                    })
+                        });
+                    }
                 }
             }
             AIBlockAction::ToggleTodoListExpanded(id) => {

@@ -18,6 +18,7 @@ use warp_cli::{
     SESSION_SHARING_SERVER_URL_OVERRIDE_ENV, WS_SERVER_URL_OVERRIDE_ENV,
 };
 use warp_core::channel::ChannelState;
+use warp_core::features::FeatureFlag;
 use warp_graphql::mutations::create_managed_mcp_client_config::{
     CreateManagedMcpClientConfigOutput, ManagedMcpTransportKind,
 };
@@ -206,6 +207,7 @@ fn managed_resolver_non_local_uuid_calls_managed_client() {
 
 #[test]
 fn well_known_spec_resolves_via_managed_client() {
+    let _flag = FeatureFlag::WellKnownMcpIds.override_enabled(true);
     let config_json = r#"{"mcpServers":{"linear":{"url":"https://app.warp.dev/mcp/integration-proxy/linear","headers":{"Authorization":"Bearer tok"}}}}"#;
     let mut mock = MockManagedMcpClient::new();
     mock.expect_create_managed_mcp_client_config()
@@ -228,6 +230,7 @@ fn well_known_spec_resolves_via_managed_client() {
 
 #[test]
 fn well_known_resolution_failure_skips_server() {
+    let _flag = FeatureFlag::WellKnownMcpIds.override_enabled(true);
     let mut mock = MockManagedMcpClient::new();
     mock.expect_create_managed_mcp_client_config()
         .times(1)
@@ -248,6 +251,7 @@ fn well_known_resolution_failure_skips_server() {
 
 #[test]
 fn well_known_resolution_failure_does_not_drop_other_specs() {
+    let _flag = FeatureFlag::WellKnownMcpIds.override_enabled(true);
     let uuid = uuid::Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
     let config_json =
         r#"{"mcpServers":{"GitHub MCP":{"command":"npx","env":{"API_TOKEN":"{{API_TOKEN}}"}}}}"#;
@@ -274,6 +278,24 @@ fn well_known_resolution_failure_does_not_drop_other_specs() {
     .unwrap();
 
     assert_eq!(resolved.ephemeral_installations.len(), 1);
+}
+
+#[test]
+fn well_known_spec_is_skipped_when_flag_disabled() {
+    let _flag = FeatureFlag::WellKnownMcpIds.override_enabled(false);
+    // The managed client must not be called for well-known specs when the
+    // feature is disabled (e.g. a persisted config from a dogfood build).
+    let mock = MockManagedMcpClient::new();
+
+    let resolved = block_on(AgentDriver::resolve_mcp_specs_with_local_uuids(
+        &[MCPSpec::WellKnown("linear".to_string())],
+        &HashSet::new(),
+        Arc::new(mock),
+    ))
+    .unwrap();
+
+    assert!(resolved.local_uuids.is_empty());
+    assert!(resolved.ephemeral_installations.is_empty());
 }
 
 #[test]

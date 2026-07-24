@@ -1228,6 +1228,14 @@ impl AgentDriver {
                     resolved.ephemeral_installations.extend(installations);
                 }
                 MCPSpec::WellKnown(id) => {
+                    // Backstop for specs created before the flag was disabled
+                    // (e.g. persisted configs): skip rather than resolve.
+                    if !FeatureFlag::WellKnownMcpIds.is_enabled() {
+                        log::warn!(
+                            "Skipping well-known MCP server '{id}': WellKnownMcpIds is disabled"
+                        );
+                        continue;
+                    }
                     // Well-known MCP ids (e.g. "linear") resolve best-effort:
                     // the server owns the set of recognized ids, and the
                     // backing integration may be disconnected or the feature

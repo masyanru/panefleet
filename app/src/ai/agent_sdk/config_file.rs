@@ -3,6 +3,7 @@ use std::path::Path;
 use anyhow::Context as _;
 use serde_json::{Map, Value};
 use warp_cli::mcp::MCPSpec;
+use warp_core::features::FeatureFlag;
 
 use crate::ai::ambient_agents::AgentConfigSnapshot;
 
@@ -102,7 +103,8 @@ fn supported_keys_context() -> String {
 ///
 /// Behavior:
 /// - Entries with a UUID `warp_id` become `MCPSpec::Uuid`.
-/// - Entries with any other non-empty `warp_id` (e.g. `"linear"`) become `MCPSpec::WellKnown`;
+/// - Entries with any other non-empty `warp_id` (e.g. `"linear"`) become `MCPSpec::WellKnown`
+///   when `FeatureFlag::WellKnownMcpIds` is enabled (and are rejected otherwise);
 ///   the server owns the set of recognized ids and unknown ids are skipped at resolution.
 /// - Entries with `command`/`url` remain as inline JSON (`MCPSpec::Json`) containing the unwrapped server map.
 pub fn mcp_specs_from_mcp_servers(
@@ -120,6 +122,10 @@ pub fn mcp_specs_from_mcp_servers(
         if let Some(warp_id) = obj.get("warp_id").and_then(Value::as_str) {
             if let Ok(uuid) = uuid::Uuid::parse_str(warp_id) {
                 uuids.push(uuid);
+            } else if !FeatureFlag::WellKnownMcpIds.is_enabled() {
+                return Err(anyhow::anyhow!(
+                    "MCP server '{name}' field 'warp_id' must be a UUID"
+                ));
             } else if warp_id.trim().is_empty() {
                 return Err(anyhow::anyhow!(
                     "MCP server '{name}' field 'warp_id' must be non-empty"

@@ -4,6 +4,7 @@ use std::io::Write as _;
 
 use serde_json::json;
 use warp_cli::mcp::MCPSpec;
+use warp_core::features::FeatureFlag;
 
 use crate::ai::ambient_agents::AgentConfigSnapshot;
 
@@ -157,6 +158,7 @@ fn mcp_servers_map_converts_to_runtime_specs() {
 
 #[test]
 fn well_known_warp_id_converts_to_well_known_spec() {
+    let _flag = FeatureFlag::WellKnownMcpIds.override_enabled(true);
     let contents = json!({
         "mcp_servers": {
             "linear": { "warp_id": "linear" }
@@ -182,6 +184,7 @@ fn any_non_uuid_warp_id_becomes_well_known_spec() {
     // The server owns the set of recognized ids: the client forwards any
     // non-UUID warp_id for resolution instead of rejecting it, so new ids can
     // be introduced server-side without a client change.
+    let _flag = FeatureFlag::WellKnownMcpIds.override_enabled(true);
     let map = serde_json::Map::from_iter([(
         "future".to_string(),
         json!({ "warp_id": "some-future-integration" }),
@@ -194,10 +197,20 @@ fn any_non_uuid_warp_id_becomes_well_known_spec() {
 
 #[test]
 fn empty_warp_id_is_rejected() {
+    let _flag = FeatureFlag::WellKnownMcpIds.override_enabled(true);
     let map = serde_json::Map::from_iter([("bogus".to_string(), json!({ "warp_id": "" }))]);
 
     let err = super::mcp_specs_from_mcp_servers(&map).unwrap_err();
     assert!(format!("{err:#}").contains("must be non-empty"));
+}
+
+#[test]
+fn non_uuid_warp_id_is_rejected_when_flag_disabled() {
+    let _flag = FeatureFlag::WellKnownMcpIds.override_enabled(false);
+    let map = serde_json::Map::from_iter([("linear".to_string(), json!({ "warp_id": "linear" }))]);
+
+    let err = super::mcp_specs_from_mcp_servers(&map).unwrap_err();
+    assert!(format!("{err:#}").contains("must be a UUID"));
 }
 
 #[test]

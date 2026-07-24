@@ -22,11 +22,19 @@ fn test_parse_uuid() {
 
 #[test]
 fn test_parse_well_known_integration_id() {
+    let _flag = FeatureFlag::WellKnownMcpIds.override_enabled(true);
     let result = parse_mcp_spec("linear").unwrap();
     match result {
         MCPSpec::WellKnown(id) => assert_eq!(id, "linear"),
         other => panic!("Expected WellKnown variant, got {other:?}"),
     }
+}
+
+#[test]
+fn test_bare_identifier_treated_as_json_when_flag_disabled() {
+    let _flag = FeatureFlag::WellKnownMcpIds.override_enabled(false);
+    let result = parse_mcp_spec("linear").unwrap();
+    assert!(matches!(result, MCPSpec::Json(_)));
 }
 
 #[test]
@@ -82,6 +90,7 @@ fn test_bare_identifier_treated_as_well_known() {
     // A bare non-UUID identifier is a well-known managed MCP id: the server
     // owns the set of recognized ids and unknown ones are skipped at run
     // setup, so new ids work without a client change.
+    let _flag = FeatureFlag::WellKnownMcpIds.override_enabled(true);
     let result = parse_mcp_spec("not-a-valid-uuid").unwrap();
     assert!(matches!(result, MCPSpec::WellKnown(id) if id == "not-a-valid-uuid"));
 }

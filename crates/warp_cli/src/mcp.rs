@@ -3,6 +3,7 @@ use std::ffi::OsStr;
 use clap::builder::PossibleValue;
 use clap::error::ErrorKind;
 use clap::{Arg, Command, Subcommand};
+use warp_core::features::FeatureFlag;
 
 /// MCP-related subcommands.
 #[derive(Debug, Clone, Subcommand)]
@@ -84,7 +85,7 @@ impl clap::builder::TypedValueParser for MCPSpecParser {
                     format!("Failed to read MCP config file '{}': {e}", path.display()),
                 )
             })?
-        } else if is_well_known_mcp_id(s) {
+        } else if FeatureFlag::WellKnownMcpIds.is_enabled() && is_well_known_mcp_id(s) {
             // Bare identifiers (e.g. "linear") are well-known managed MCP ids
             // resolved by the server at run setup.
             return Ok(MCPSpec::WellKnown(s.to_string()));

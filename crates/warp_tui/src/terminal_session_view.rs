@@ -15,27 +15,24 @@ use warp::tui_export::{
     AIAgentActionId, AIAgentActionResultType, AIAgentContext, AIAgentExchangeId,
     AIAgentPtyWriteMode, AIConversation, AIConversationId, AcceptSlashCommandOrSavedPrompt,
     ActiveSession, ActiveSessionEvent, AgentConversationEntryId, AgentConversationListEntryState,
-    AgentConversationsModel, AgentInteractionMetadata, AgentViewEntryOrigin, AttachmentInput,
-    BlockId, BlocklistAIActionEvent, BlocklistAIActionModel, BlocklistAIContextModel,
-    BlocklistAIController, BlocklistAIHistoryEvent, BlocklistAIHistoryModel, BlocklistAIInputModel,
-    CLISubagentController, CLISubagentEvent, CLISubagentTarget, COMMAND_REGISTRY,
-    CancellationReason, ChangelogModel, ChangelogRequestType, CloudConversationData,
-    CommandExecutionSource, ConversationFileExport, ConversationSelection,
-    ConversationSelectionHandle, ConversationUsageTotals, ExecuteCommandEvent,
-    GetRelevantFilesController, GitRepoModels, GitRepoStatusModel, GitStatusMetadata,
-    HandoffEntryPoint, HandoffLaunchAttachments, HandoffPrepareError, HandoffPrepareInput,
-    HandoffRestoration, HandoffSurface, LLMId, LLMPreferences, LLMPreferencesEvent,
+    AgentConversationsModel, AgentInteractionMetadata, AgentViewEntryOrigin, BlockId,
+    BlocklistAIActionEvent, BlocklistAIActionModel, BlocklistAIContextModel, BlocklistAIController,
+    BlocklistAIHistoryEvent, BlocklistAIHistoryModel, BlocklistAIInputModel, CLISubagentController,
+    CLISubagentEvent, CLISubagentTarget, COMMAND_REGISTRY, CancellationReason, ChangelogModel,
+    ChangelogRequestType, CloudConversationData, CommandExecutionSource, ConversationFileExport,
+    ConversationSelection, ConversationSelectionHandle, ConversationUsageTotals,
+    ExecuteCommandEvent, GetRelevantFilesController, GitRepoModels, GitRepoStatusModel,
+    GitStatusMetadata, HandoffRestoration, LLMId, LLMPreferences, LLMPreferencesEvent,
     LOCAL_SKILLS_REMOTE_EXECUTION_ERROR_MESSAGE, ModelEvent, ParsedSlashCommandInput,
-    PendingCloudLaunch, PersistenceWriter, PtyIntent, PtyIntentEvent, RepoDetectionSessionType,
-    RepoDetectionSource, ServerApiProvider, ServerConversationToken, Sessions,
-    ShellCommandExecutorEvent, SizeInfo, SizeUpdate, SkillReference, SlashCommandDataSource as _,
-    SlashCommandKind, SlashCommandSelectionBehavior, SnapshotUploadTarget, StartAgentExecutorEvent,
-    StartAgentRequest, StaticCommand, TerminalModel, TerminalSurface, TerminalSurfaceInit,
-    TranscriptScope, TuiMcpAction, TuiMcpManager, TuiSlashCommandDataSource,
+    PersistenceWriter, PtyIntent, PtyIntentEvent, RepoDetectionSessionType, RepoDetectionSource,
+    ServerConversationToken, Sessions, ShellCommandExecutorEvent, SizeInfo, SizeUpdate,
+    SkillReference, SlashCommandDataSource as _, SlashCommandKind, SlashCommandSelectionBehavior,
+    StartAgentExecutorEvent, StartAgentRequest, StaticCommand, TerminalModel, TerminalSurface,
+    TerminalSurfaceInit, TranscriptScope, TuiMcpAction, TuiMcpManager, TuiSlashCommandDataSource,
     TuiSlashCommandDataSourceArgs, TuiZeroStateDataSource, UserTakeOverReason,
     WAKEUP_THROTTLE_PERIOD, block_context_from_terminal_model, build_slash_command_mixer,
     detect_possible_git_repo, export_conversation_markdown, log_out_tui,
-    maybe_build_ai_query_upsert_event, prepare_conversation_block_restoration, prepare_handoff,
+    maybe_build_ai_query_upsert_event, prepare_conversation_block_restoration,
     record_autodetection_toggle_from_slash_command, record_saved_prompt_accepted,
     record_static_slash_command_accepted, saved_prompt_text_for_id,
     slash_command_selection_behavior, slash_commands, throttle,
@@ -72,6 +69,7 @@ use crate::conversation_selection::TuiConversationSelection;
 use crate::editor_interaction::TuiEditorCommand;
 use crate::exit_confirmation::{CTRL_C_EXIT_WINDOW, ExitConfirmation};
 use crate::handoff_block::{TuiHandoffBlock, TuiHandoffBlockEvent};
+use crate::handoff_model::{TuiHandoffModel, TuiHandoffModelEvent};
 use crate::inline_menu::{MAX_INLINE_MENU_ROWS, TuiInlineMenu, active_inline_menu};
 use crate::input::view::TuiInputAction;
 use crate::input::{TuiInputView, TuiInputViewEvent};
@@ -1853,7 +1851,7 @@ impl TuiTerminalSessionView {
         else {
             return None;
         };
-        handoff.as_ref(ctx).is_active().then(|| handoff.clone())
+        handoff.as_ref(ctx).is_active(ctx).then(|| handoff.clone())
     }
 
     #[cfg(test)]
@@ -3111,62 +3109,6 @@ impl TuiTerminalSessionView {
         }
     }
 
-    fn input_after_handoff_prepare_error(
-        error: &HandoffPrepareError,
-        source_was_active: bool,
-        argument: Option<&String>,
-    ) -> Option<String> {
-        (source_was_active && matches!(error, HandoffPrepareError::MissingServerConversationToken))
-            .then(|| {
-                argument
-                    .map(|argument| argument.trim())
-                    .unwrap_or_default()
-                    .to_owned()
-            })
-    }
-
-    fn handoff_prepare_error_message(error: &HandoffPrepareError) -> &'static str {
-        match error {
-            HandoffPrepareError::LongRunningCommand => {
-                "Can't hand off while a command is running. Cancel it or wait for it to finish."
-            }
-            HandoffPrepareError::ActiveOrBlockedChild => {
-                "Can't hand off while child work is active or waiting for input."
-            }
-            HandoffPrepareError::EmptySourceAndPrompt => {
-                "Nothing to hand off — start a conversation or add a prompt."
-            }
-            HandoffPrepareError::MissingServerConversationToken => {
-                "This conversation hasn't synced yet. Send another message, then try again."
-            }
-            HandoffPrepareError::InvalidModel => "The selected model can't run in Oz cloud.",
-            HandoffPrepareError::SourceConversationChanged
-            | HandoffPrepareError::SourceNotInProgress
-            | HandoffPrepareError::HandoffDisabled
-            | HandoffPrepareError::MissingRequiredEnvironment
-            | HandoffPrepareError::InvalidEnvironment => {
-                "Couldn't start the handoff. Check the current conversation and try again."
-            }
-        }
-    }
-
-    fn collect_handoff_attachments(&self, ctx: &AppContext) -> HandoffLaunchAttachments {
-        let context = self.ai_context_model.as_ref(ctx);
-        let request_attachments = context
-            .pending_images()
-            .into_iter()
-            .map(|image| AttachmentInput {
-                file_name: image.file_name.clone(),
-                mime_type: image.mime_type.clone(),
-                data: image.data.clone(),
-            })
-            .collect();
-        HandoffLaunchAttachments {
-            request_attachments,
-            display_attachments: context.pending_attachments().to_vec(),
-        }
-    }
-
     fn start_handoff(&mut self, argument: Option<&String>, ctx: &mut ViewContext<Self>) {
         if matches!(
             self.blocking_input_source(ctx),
@@ -3179,111 +3121,39 @@ impl TuiTerminalSessionView {
         ) {
             return;
         }
-        if !AISettings::as_ref(ctx).is_cloud_handoff_enabled(ctx) {
-            self.show_transient_hint("Cloud handoff is unavailable.".to_owned(), ctx);
-            return;
-        }
-        let selected_conversation = self
-            .conversation_selection
-            .as_ref(ctx)
-            .selected_conversation(ctx);
-        if selected_conversation.is_some_and(|conversation| {
-            self.slash_commands_source
-                .as_ref(ctx)
-                .conversation_is_cloud_agent_run(conversation.id(), ctx)
-        }) {
-            self.show_transient_hint(
-                "/handoff is only available for local Oz conversations.".to_owned(),
-                ctx,
-            );
-            return;
-        }
-        let source_model_id = selected_conversation
-            .and_then(|conversation| conversation.latest_exchange())
-            .map(|exchange| exchange.model_id.to_string());
-        let source_conversation_id = selected_conversation.map(|conversation| conversation.id());
-        let source_was_active = selected_conversation.is_some_and(|conversation| {
-            conversation.status().is_in_progress() || conversation.status().is_blocked()
-        });
-        let has_long_running_command = {
-            let terminal_model = self.terminal_model.lock();
-            terminal_model
-                .block_list()
-                .active_block()
-                .is_active_and_long_running()
-        };
-        if has_long_running_command {
-            self.show_transient_hint(
-                Self::handoff_prepare_error_message(&HandoffPrepareError::LongRunningCommand)
-                    .to_owned(),
-                ctx,
-            );
-            return;
-        }
-
-        let prompt = argument.cloned().unwrap_or_default();
-        let launch = PendingCloudLaunch {
-            prompt,
-            attachments: self.collect_handoff_attachments(ctx),
-        };
-        let provider = ServerApiProvider::as_ref(ctx);
-        let pending = prepare_handoff(
-            HandoffPrepareInput {
-                terminal_surface_id: self.terminal_surface_id,
-                expected_conversation_id: source_conversation_id,
-                history: BlocklistAIHistoryModel::handle(ctx),
-                controller: self.ai_controller.clone(),
-                context: self.ai_context_model.clone(),
-                current_working_directory: self.current_working_directory(ctx),
-                snapshot_target: SnapshotUploadTarget::Local {
-                    ai_client: provider.get_ai_client(),
-                    http: provider.get_http_client(),
-                },
-                has_long_running_command,
-                launch: Some(launch),
-                environment_id: None,
-                environment_required: true,
-                entry_point: HandoffEntryPoint::SlashCommand,
-                surface: HandoffSurface::Tui,
-                cancellation_reason: CancellationReason::ManuallyCancelled,
-                require_in_progress_source: false,
-            },
+        let current_working_directory = self.current_working_directory(ctx);
+        let model = match TuiHandoffModel::prepare(
+            self.terminal_surface_id,
+            self.terminal_model.clone(),
+            self.ai_controller.clone(),
+            self.ai_context_model.clone(),
+            current_working_directory,
+            argument.cloned(),
             ctx,
-        );
-        let mut pending = match pending {
-            Ok(pending) => pending,
-            Err(error) => {
-                if let Some(input) =
-                    Self::input_after_handoff_prepare_error(&error, source_was_active, argument)
-                {
+        ) {
+            Ok(model) => model,
+            Err(failure) => {
+                let (replacement_input, message) = failure.into_parts();
+                if let Some(input) = replacement_input {
                     self.input_view.update(ctx, |input_view, ctx| {
                         input_view.set_text(&input, ctx);
                     });
                 }
-                self.show_transient_hint(
-                    Self::handoff_prepare_error_message(&error).to_owned(),
-                    ctx,
-                );
+                self.show_transient_hint(message, ctx);
                 return;
             }
         };
-        if let Some(source_model_id) = source_model_id {
-            pending.set_model_id(source_model_id, false, ctx);
-        }
 
         self.input_view.update(ctx, |input, ctx| input.clear(ctx));
-        let current_working_directory = self.current_working_directory(ctx);
-        let handoff = ctx.add_typed_action_tui_view(move |ctx| {
-            TuiHandoffBlock::new(
-                pending,
-                current_working_directory,
-                source_conversation_id,
-                ctx,
-            )
-        });
+        let model_for_view = model.clone();
+        let handoff =
+            ctx.add_typed_action_tui_view(move |ctx| TuiHandoffBlock::new(model_for_view, ctx));
         let handoff_for_events = handoff.clone();
-        ctx.subscribe_to_view(&handoff, move |view, _, event, ctx| {
-            view.handle_handoff_event(&handoff_for_events, event, ctx);
+        ctx.subscribe_to_model(&model, move |view, _, event, ctx| {
+            view.handle_handoff_model_event(&handoff_for_events, event, ctx);
+        });
+        ctx.subscribe_to_view(&handoff, |_, _, event, ctx| match event {
+            TuiHandoffBlockEvent::LayoutInvalidated => ctx.notify(),
         });
         self.blocking_input_source = Some(BlockingInputSource::Handoff(handoff));
         self.sync_blocking_input_source(ctx);
@@ -3314,20 +3184,21 @@ impl TuiTerminalSessionView {
         }
     }
 
-    fn handle_handoff_event(
+    fn handle_handoff_model_event(
         &mut self,
         handoff: &ViewHandle<TuiHandoffBlock>,
-        event: &TuiHandoffBlockEvent,
+        event: &TuiHandoffModelEvent,
         ctx: &mut ViewContext<Self>,
     ) {
         match event {
-            TuiHandoffBlockEvent::Cancelled(restoration) => {
+            TuiHandoffModelEvent::Changed { .. } => return,
+            TuiHandoffModelEvent::Cancelled(restoration) => {
                 self.clear_handoff_interaction();
                 if let Some(restoration) = restoration {
                     self.restore_handoff_input(restoration, ctx);
                 }
             }
-            TuiHandoffBlockEvent::Failed {
+            TuiHandoffModelEvent::Failed {
                 restoration,
                 message,
             } => {
@@ -3337,19 +3208,15 @@ impl TuiTerminalSessionView {
                 }
                 self.show_transient_hint(message.clone(), ctx);
             }
-            TuiHandoffBlockEvent::ContinueLocally => {
+            TuiHandoffModelEvent::ContinueLocally => {
                 self.clear_handoff_interaction();
                 self.transcript.update(ctx, |transcript, ctx| {
                     transcript.attach_handoff(handoff.clone(), ctx);
                 });
             }
-            TuiHandoffBlockEvent::StartNewConversation => {
+            TuiHandoffModelEvent::StartNewConversation => {
                 self.clear_handoff_interaction();
                 self.start_new_conversation(None, ctx);
-            }
-            TuiHandoffBlockEvent::LayoutInvalidated => {
-                ctx.notify();
-                return;
             }
         }
         self.sync_blocking_input_source(ctx);

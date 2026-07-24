@@ -2,10 +2,11 @@
 
 ## Context
 
-This top PR implements [`PRODUCT.md`](PRODUCT.md) using two reviewed downstack foundations:
+This top PR implements [`PRODUCT.md`](PRODUCT.md) using three downstack foundations:
 
 1. `code-1827-blocking-interactions` centralizes TUI blocking/focus/render placement.
 2. `code-1827-shared-handoff-pipeline` provides `prepare_handoff`, `PendingHandoff`, `execute_handoff`, shared startup classification, and GUI-proven behavior.
+3. `code-1827-shared-environment-catalog` provides the live cloud-environment catalog shared by GUI and TUI consumers.
 
 This PR contains no GUI pipeline refactor and no restructuring of existing blockers.
 
@@ -37,19 +38,20 @@ Keep handoff independent of orchestration-card state while reusing lower-level p
 - Reuse saved/recent environment selection and persistence.
 - Start current-directory repository suggestion after preparation; apply it only while selection is non-explicit.
 
-Add a narrow shared environment projection exported through `app/src/tui_export.rs`:
+Consume the downstack `CloudEnvironmentCatalog` singleton through `app/src/tui_export.rs`:
 
-- Return current environments.
-- Emit on creation/deletion/initial load changes.
-- Trigger existing out-of-band refresh for `R`.
+- Build rows and valid IDs from its recency-ordered environment summaries.
+- Subscribe to its creation/deletion/update events.
+- Use its saved/default selection and persistence operations.
+- Trigger its existing out-of-band refresh operation for `R`.
 
-Do not export unrelated cloud-object internals or add card-owned polling.
+Keep repository-overlap suggestion in the shared handoff domain. Do not export cloud-object persistence internals or add card-owned polling.
 
 ### Handoff card
 
-Add `crates/warp_tui/src/handoff_block.rs` with `TuiHandoffBlock`.
+Add `crates/warp_tui/src/handoff_model.rs` and `crates/warp_tui/src/handoff_block.rs`.
 
-The view owns presentation state only:
+`TuiHandoffModel` owns:
 
 - Acceptance summary with `PendingHandoff`.
 - Two-page environment/model configuration flow.
@@ -57,6 +59,10 @@ The view owns presentation state only:
 - Committed progress.
 - Static created decision.
 - Compact persisted result after local continuation.
+- Preparation errors and restoration outcomes.
+- Environment/model subscriptions, validation, and handoff execution.
+
+`TuiHandoffBlock` owns selector navigation, focus, keybindings, rendering, and layout measurement. `TuiTerminalSessionView` only installs/removes the interaction and applies model-produced restoration outcomes.
 
 It installs as the `Handoff(ViewHandle<TuiHandoffBlock>)` variant of the session-owned `BlockingInputSource`. The transcript stays visible while the normal input, attachments, menus, footer, and response-status rows are suppressed.
 
@@ -109,7 +115,7 @@ On fatal outcome:
 - Render setup-required state with no creation form.
 - Enter opens `https://docs.warp.dev/agent-platform/cloud-agents/environments`.
 - `R` invokes shared refresh.
-- Automatically transition when the environment projection reports an environment.
+- Automatically transition when `CloudEnvironmentCatalog` reports an environment.
 
 ### Telemetry
 
@@ -178,7 +184,7 @@ Do not use GUI integration tests for the TUI card.
 - Consume pending state once and ignore stale completions to prevent duplicate runs.
 - Restore images idempotently.
 - Use the session-owned `BlockingInputSource` as the sole focus/suppression source.
-- Use existing cloud synchronization plus explicit refresh.
+- Use the shared `CloudEnvironmentCatalog` plus explicit refresh.
 - Derive accent styles from themed normal magenta.
 
 ## Parallelization

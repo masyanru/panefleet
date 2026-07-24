@@ -103,10 +103,6 @@ impl TuiTranscriptView {
             TuiHandoffBlockEvent::LayoutInvalidated => {
                 transcript.mark_agent_block_dirty(view_id, ctx);
             }
-            TuiHandoffBlockEvent::Cancelled(_)
-            | TuiHandoffBlockEvent::Failed { .. }
-            | TuiHandoffBlockEvent::ContinueLocally
-            | TuiHandoffBlockEvent::StartNewConversation => {}
         });
         self.handoff_blocks.borrow_mut().insert(view_id, view);
         {
@@ -121,6 +117,7 @@ impl TuiTranscriptView {
         self.viewport.scroll_to_end();
         ctx.notify();
     }
+
     /// Creates a transcript view for one terminal surface.
     pub(super) fn new(
         terminal_surface_id: EntityId,
@@ -626,7 +623,7 @@ impl TuiTranscriptView {
                 .borrow()
                 .iter()
                 .filter_map(|(view_id, view)| {
-                    (view.as_ref(ctx).source_conversation_id() == Some(conversation_id))
+                    (view.as_ref(ctx).source_conversation_id(ctx) == Some(conversation_id))
                         .then_some(*view_id)
                 }),
         );

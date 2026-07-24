@@ -287,8 +287,7 @@ pub fn model_snapshot(state: &OrchestrationConfigState, ctx: &AppContext) -> Opt
     let is_local = !state.execution_mode.is_remote();
     let harness = Harness::parse_orchestration_harness(&state.harness_type);
     match harness {
-        Some(Harness::Oz) | None if is_local => oz_model_snapshot(&state.model_id, true, ctx),
-        Some(Harness::Oz) | None => oz_cloud_model_snapshot(&state.model_id, ctx),
+        Some(Harness::Oz) | None => oz_model_snapshot(&state.model_id, is_local, ctx),
         Some(Harness::Codex) if is_local => {
             // Local Codex: only "Default model" entry.
             OptionSnapshot::ready(
@@ -314,12 +313,15 @@ pub fn model_snapshot(state: &OrchestrationConfigState, ctx: &AppContext) -> Opt
     }
 }
 
-/// Builds the Oz model options available to cloud execution for a selected model id.
-pub fn oz_cloud_model_snapshot(selected_model_id: &str, ctx: &AppContext) -> OptionSnapshot {
-    oz_model_snapshot(selected_model_id, false, ctx)
-}
-
-fn oz_model_snapshot(selected_model_id: &str, is_local: bool, ctx: &AppContext) -> OptionSnapshot {
+/// Builds the Oz model options available for the requested execution location.
+///
+/// Local execution includes custom models backed by local endpoints. Cloud
+/// execution excludes them because remote workers cannot reach those endpoints.
+pub fn oz_model_snapshot(
+    selected_model_id: &str,
+    is_local: bool,
+    ctx: &AppContext,
+) -> OptionSnapshot {
     // Oz / unset: Warp LLM catalog. Custom models are excluded for cloud
     // execution because remote workers cannot use local custom endpoints.
     let llm_prefs = LLMPreferences::as_ref(ctx);
@@ -343,6 +345,7 @@ fn oz_model_snapshot(selected_model_id: &str, is_local: bool, ctx: &AppContext) 
         .collect();
     build_oz_model_snapshot(choices, selected_model_id)
 }
+
 /// Pure core for the Oz / unset branch of [`model_snapshot`].
 fn build_oz_model_snapshot(
     choices: Vec<ModelChoiceInput>,

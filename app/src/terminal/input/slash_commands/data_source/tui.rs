@@ -3,17 +3,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use parking_lot::FairMutex;
-use warpui::{AppContext, Entity, EntityId, ModelContext, ModelHandle, SingletonEntity};
+use warpui::{AppContext, Entity, EntityId, ModelContext, ModelHandle, SingletonEntity as _};
 
 use super::core::subscribe_to_shared_dependencies;
 use super::{
     InlineItem, SlashCommandDataSource, SlashCommandDataSourceState, UpdatedActiveCommands,
 };
-use crate::ai::agent::conversation::AIConversationId;
-use crate::ai::agent_conversations_model::{
-    AgentConversationsModel, AgentManagementFilters, OwnerFilter,
-};
-use crate::ai::blocklist::BlocklistAIHistoryModel;
 use crate::ai::blocklist::block::cli_controller::CLISubagentController;
 #[cfg(feature = "voice_input")]
 use crate::ai::{AIRequestUsageModel, AIRequestUsageModelEvent};
@@ -99,26 +94,6 @@ impl TuiSlashCommandDataSource {
         let terminal_model = self.terminal_model.lock();
         resolve_ai_query_routing(self.terminal_view_id(), None, &terminal_model, app).is_local()
     }
-
-    /// Uses the same normalized ambient-run classification as the GUI conversation list.
-    pub fn conversation_is_cloud_agent_run(
-        &self,
-        conversation_id: AIConversationId,
-        app: &AppContext,
-    ) -> bool {
-        AgentConversationsModel::as_ref(app)
-            .get_entries(
-                &AgentManagementFilters {
-                    owners: OwnerFilter::All,
-                    ..Default::default()
-                },
-                app,
-            )
-            .into_iter()
-            .find(|entry| entry.identity.local_conversation_id == Some(conversation_id))
-            .is_some_and(|entry| entry.is_cloud_agent_run())
-    }
-
     pub fn set_active_repo_root(
         &mut self,
         repo_root: Option<PathBuf>,
@@ -154,19 +129,10 @@ impl TuiSlashCommandDataSource {
     }
 
     fn availability(&self, ctx: &AppContext) -> Availability {
-        let cloud_availability = if BlocklistAIHistoryModel::as_ref(ctx)
-            .active_conversation(self.terminal_view_id())
-            .is_some_and(|conversation| {
-                self.conversation_is_cloud_agent_run(conversation.id(), ctx)
-            }) {
-            Availability::CLOUD_AGENT
-        } else {
-            Availability::NOT_CLOUD_AGENT
-        };
         self.base_availability(ctx)
             | Availability::AGENT_VIEW
             | Availability::ACTIVE_CONVERSATION
-            | cloud_availability
+            | Availability::NOT_CLOUD_AGENT
     }
 }
 

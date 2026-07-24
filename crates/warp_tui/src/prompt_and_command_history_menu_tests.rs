@@ -1,3 +1,4 @@
+use std::future::Future;
 use std::rc::Rc;
 
 use warp::appearance::Appearance;
@@ -7,7 +8,9 @@ use warp::tui_export::{
     BlocklistAIInputModel, ConversationSelectionEvent, InputConfig, InputModePolicy, InputType,
     PolicyConfigUpdate, TuiHistoryItemKind, add_tui_history_test_models,
     append_tui_history_test_command, blocklist_ai_history_model_with_queries,
+    register_tui_input_mode_test_settings,
 };
+use warp_core::features::FeatureFlag;
 use warp_editor::model::CoreEditorModel;
 use warpui_core::elements::tui::{Modifier, TuiBufferExt, TuiRect};
 use warpui_core::presenter::tui::TuiPresenter;
@@ -61,6 +64,11 @@ impl InputModePolicy for TestInputModePolicy {
     }
 }
 
+fn agent_mode_test<T: 'static, F: Future<Output = T> + 'static>(test: impl FnOnce(App) -> F) -> T {
+    let _agent_mode = FeatureFlag::AgentMode.override_enabled(true);
+    App::test((), test)
+}
+
 struct MenuSetup {
     input: ModelHandle<CodeEditorModel>,
     input_mode: ModelHandle<BlocklistAIInputModel>,
@@ -73,7 +81,8 @@ fn setup(
     prompts: &[&str],
     commands: &[&str],
     input_type: InputType,
-) -> MenuSetup {
+) -> (MenuSetup, impl Future<Output = ()> + use<>) {
+    register_tui_input_mode_test_settings(ctx);
     ctx.add_singleton_model(|_| Appearance::mock());
     add_test_semantic_selection(ctx);
     ctx.add_singleton_model(|_| {
@@ -81,7 +90,7 @@ fn setup(
             prompts.iter().map(|prompt| (*prompt).to_owned()).collect(),
         )
     });
-    let (active_session, session_id) = add_tui_history_test_models(
+    let (active_session, session_id, initialized) = add_tui_history_test_models(
         commands
             .iter()
             .map(|command| (*command).to_owned())
@@ -104,12 +113,26 @@ fn setup(
             ctx,
         )
     });
-    MenuSetup {
-        input,
-        input_mode,
-        menu,
-        session_id,
-    }
+    (
+        MenuSetup {
+            input,
+            input_mode,
+            menu,
+            session_id,
+        },
+        initialized,
+    )
+}
+
+async fn initialized_setup(
+    app: &mut App,
+    prompts: &[&str],
+    commands: &[&str],
+    input_type: InputType,
+) -> MenuSetup {
+    let (setup, initialized) = app.update(|ctx| setup(ctx, prompts, commands, input_type));
+    initialized.await;
+    setup
 }
 
 fn set_text(input: &ModelHandle<CodeEditorModel>, text: &str, ctx: &mut AppContext) {
@@ -140,27 +163,28 @@ fn row_titles(
 
 #[test]
 fn agent_mode_combines_ordered_deduped_prompts_and_commands() {
-    App::test((), |mut app| async move {
+    agent_mode_test(|mut app| async move {
+        let setup = initialized_setup(
+            &mut app,
+            &["deploy", "test", "deploy", "   "],
+            &["ls", "pwd", "ls", "   "],
+            InputType::AI,
+        )
+        .await;
         app.update(|ctx| {
-            let setup = setup(
-                ctx,
-                &["deploy", "test", "deploy", "   "],
-                &["ls", "pwd", "ls", "   "],
-                InputType::AI,
-            );
             setup.menu.update(ctx, |menu, ctx| menu.open(ctx));
 
             assert_eq!(
                 row_titles(&setup.menu, ctx),
-                vec!["test", "deploy", "pwd", "ls"]
+                vec!["pwd", "ls", "test", "deploy"]
             );
             let snapshot = setup.menu.as_ref(ctx).snapshot(ctx).expect("menu is open");
             assert_eq!(snapshot.selected_index, Some(3));
-            assert_eq!(buffer_text(&setup.input, ctx), "ls");
-            assert_eq!(setup.input_mode.as_ref(ctx).input_type(), InputType::Shell);
-            assert!(snapshot.rows[0].prefix.is_none());
+            assert_eq!(buffer_text(&setup.input, ctx), "deploy");
+            assert_eq!(setup.input_mode.as_ref(ctx).input_type(), InputType::AI);
+            assert!(snapshot.rows[2].prefix.is_none());
             assert!(matches!(
-                snapshot.rows[2].prefix.as_ref().map(|prefix| prefix.style),
+                snapshot.rows[0].prefix.as_ref().map(|prefix| prefix.style),
                 Some(TuiInlineMenuRowPrefixStyle::ShellCommand)
             ));
         });
@@ -169,14 +193,15 @@ fn agent_mode_combines_ordered_deduped_prompts_and_commands() {
 
 #[test]
 fn shell_mode_excludes_prompts_and_previews_commands() {
-    App::test((), |mut app| async move {
+    agent_mode_test(|mut app| async move {
+        let setup = initialized_setup(
+            &mut app,
+            &["deploy the app"],
+            &["git status", "cargo test"],
+            InputType::Shell,
+        )
+        .await;
         app.update(|ctx| {
-            let setup = setup(
-                ctx,
-                &["deploy the app"],
-                &["git status", "cargo test"],
-                InputType::Shell,
-            );
             setup.menu.update(ctx, |menu, ctx| menu.open(ctx));
 
             assert_eq!(
@@ -191,47 +216,52 @@ fn shell_mode_excludes_prompts_and_previews_commands() {
 
 #[test]
 fn prompt_and_command_with_same_text_remain_distinct() {
-    App::test((), |mut app| async move {
+    agent_mode_test(|mut app| async move {
+        let setup = initialized_setup(&mut app, &["build"], &["build"], InputType::AI).await;
         app.update(|ctx| {
-            let setup = setup(ctx, &["build"], &["build"], InputType::AI);
             setup.menu.update(ctx, |menu, ctx| menu.open(ctx));
             let snapshot = setup.menu.as_ref(ctx).snapshot(ctx).expect("menu is open");
 
             assert_eq!(row_titles(&setup.menu, ctx), vec!["build", "build"]);
-            assert!(snapshot.rows[0].prefix.is_none());
-            assert!(snapshot.rows[1].prefix.is_some());
+            assert!(snapshot.rows[0].prefix.is_some());
+            assert!(snapshot.rows[1].prefix.is_none());
         });
     });
 }
 
 #[test]
 fn prefix_filter_matches_any_line_without_changing_source_text() {
-    App::test((), |mut app| async move {
+    agent_mode_test(|mut app| async move {
+        let prompt = "deploy the app\nverify the deployment";
+        let setup = initialized_setup(
+            &mut app,
+            &[prompt, "unrelated prompt"],
+            &["verify shell"],
+            InputType::AI,
+        )
+        .await;
         app.update(|ctx| {
-            let prompt = "deploy the app\nverify the deployment";
-            let setup = setup(
-                ctx,
-                &[prompt, "unrelated prompt"],
-                &["verify shell"],
-                InputType::AI,
-            );
             set_text(&setup.input, "verify", ctx);
             setup.menu.update(ctx, |menu, ctx| menu.open(ctx));
 
             assert_eq!(
                 row_titles(&setup.menu, ctx),
-                vec!["deploy the app...", "verify shell"]
+                vec!["verify shell", "deploy the app..."]
             );
-            assert_eq!(buffer_text(&setup.input, ctx), "verify shell");
+            assert_eq!(
+                buffer_text(&setup.input, ctx),
+                "deploy the app\nverify the deployment"
+            );
         });
     });
 }
 
 #[test]
 fn selection_preview_switches_input_type_and_dismiss_restores_both() {
-    App::test((), |mut app| async move {
+    agent_mode_test(|mut app| async move {
+        let setup = initialized_setup(&mut app, &["deploy"], &[], InputType::AI).await;
         app.update(|ctx| {
-            let setup = setup(ctx, &["deploy"], &["deploy.sh"], InputType::AI);
+            append_tui_history_test_command(setup.session_id, "deploy.sh".to_owned(), ctx);
             set_text(&setup.input, "de", ctx);
             setup.menu.update(ctx, |menu, ctx| menu.open(ctx));
             assert_eq!(buffer_text(&setup.input, ctx), "deploy.sh");
@@ -255,9 +285,14 @@ fn selection_preview_switches_input_type_and_dismiss_restores_both() {
 
 #[test]
 fn accepting_selected_item_returns_its_kind() {
-    App::test((), |mut app| async move {
+    agent_mode_test(|mut app| async move {
+        let command_setup = initialized_setup(&mut app, &["prompt"], &[], InputType::AI).await;
         app.update(|ctx| {
-            let command_setup = setup(ctx, &["prompt"], &["echo command"], InputType::AI);
+            append_tui_history_test_command(
+                command_setup.session_id,
+                "echo command".to_owned(),
+                ctx,
+            );
             command_setup.menu.update(ctx, |menu, ctx| menu.open(ctx));
             let accepted = command_setup
                 .menu
@@ -273,9 +308,9 @@ fn accepting_selected_item_returns_its_kind() {
         });
     });
 
-    App::test((), |mut app| async move {
+    agent_mode_test(|mut app| async move {
+        let prompt_setup = initialized_setup(&mut app, &["prompt"], &[], InputType::AI).await;
         app.update(|ctx| {
-            let prompt_setup = setup(ctx, &["prompt"], &[], InputType::AI);
             prompt_setup.menu.update(ctx, |menu, ctx| menu.open(ctx));
             let accepted = prompt_setup
                 .menu
@@ -289,9 +324,9 @@ fn accepting_selected_item_returns_its_kind() {
 
 #[test]
 fn command_history_updates_refresh_an_open_menu() {
-    App::test((), |mut app| async move {
+    agent_mode_test(|mut app| async move {
+        let setup = initialized_setup(&mut app, &[], &["first"], InputType::Shell).await;
         let (menu, session_id) = app.update(|ctx| {
-            let setup = setup(ctx, &[], &["first"], InputType::Shell);
             setup.menu.update(ctx, |menu, ctx| menu.open(ctx));
             (setup.menu, setup.session_id)
         });
@@ -306,9 +341,9 @@ fn command_history_updates_refresh_an_open_menu() {
 
 #[test]
 fn empty_and_filtered_empty_states_use_history_copy() {
-    App::test((), |mut app| async move {
+    agent_mode_test(|mut app| async move {
+        let empty = initialized_setup(&mut app, &[], &[], InputType::AI).await;
         app.update(|ctx| {
-            let empty = setup(ctx, &[], &[], InputType::AI);
             empty.menu.update(ctx, |menu, ctx| menu.open(ctx));
             let snapshot = empty.menu.as_ref(ctx).snapshot(ctx).expect("menu is open");
             assert_eq!(
@@ -322,9 +357,9 @@ fn empty_and_filtered_empty_states_use_history_copy() {
         });
     });
 
-    App::test((), |mut app| async move {
+    agent_mode_test(|mut app| async move {
+        let filtered = initialized_setup(&mut app, &["deploy"], &["build"], InputType::AI).await;
         app.update(|ctx| {
-            let filtered = setup(ctx, &["deploy"], &["build"], InputType::AI);
             set_text(&filtered.input, "no match", ctx);
             filtered.menu.update(ctx, |menu, ctx| menu.open(ctx));
             let snapshot = filtered
@@ -342,9 +377,9 @@ fn empty_and_filtered_empty_states_use_history_copy() {
 
 #[test]
 fn command_prefix_renders_bright_green_bold_without_transcript_background() {
-    App::test((), |mut app| async move {
+    agent_mode_test(|mut app| async move {
+        let setup = initialized_setup(&mut app, &[], &["older", "newer"], InputType::Shell).await;
         app.update(|ctx| {
-            let setup = setup(ctx, &[], &["older", "newer"], InputType::Shell);
             setup.menu.update(ctx, |menu, ctx| menu.open(ctx));
             let snapshot = setup.menu.as_ref(ctx).snapshot(ctx).expect("menu is open");
             let builder = TuiUiBuilder::from_app(ctx);
@@ -355,7 +390,7 @@ fn command_prefix_renders_bright_green_bold_without_transcript_background() {
                 ctx,
             );
             let rendered = frame.buffer.to_lines().join("\n");
-            let expected = builder.shell_command_menu_prefix_style();
+            let expected = builder.shell_command_prefix_style();
 
             assert!(rendered.contains("History"));
             assert!(rendered.contains("! older"));

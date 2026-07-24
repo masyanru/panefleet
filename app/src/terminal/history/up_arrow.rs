@@ -118,6 +118,7 @@ pub fn prompt_history_for_terminal_view(
         })
         .collect()
 }
+
 /// Returns an owned, de-duplicated combined history snapshot for the TUI.
 pub fn up_arrow_history_for_terminal_view(
     terminal_view_id: EntityId,

@@ -43,6 +43,7 @@ pub fn update_command_history(
                 is_agent_executed,
             )],
         );
+
         ctx.emit(HistoryEvent::Updated(session_id));
     });
 

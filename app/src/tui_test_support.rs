@@ -1,6 +1,6 @@
 //! Test-only app initialization used by the external `warp_tui` crate.
-
-#[cfg(feature = "voice_input")]
+use std::collections::{HashMap, HashSet};
+use std::future::Future;
 use std::sync::Arc;
 
 use ai::api_keys::ApiKeyManager;
@@ -43,11 +43,17 @@ use crate::server::sync_queue::SyncQueue;
 use crate::server::voice_transcriber::ServerVoiceTranscriber;
 use crate::settings::manager::SettingsManager;
 use crate::settings::{AISettings, PrivacySettings, init_and_register_user_preferences};
-use crate::terminal::History;
 use crate::terminal::cli_agent_sessions::CLIAgentSessionsModel;
-use crate::terminal::model::session::Sessions;
+use crate::terminal::event::Event;
 use crate::terminal::model::session::active_session::ActiveSession;
-use crate::terminal::model_events::ModelEventDispatcher;
+use crate::terminal::model::session::command_executor::NoOpCommandExecutor;
+use crate::terminal::model::session::{
+    BootstrapSessionType, HostInfo, IsSSHWrapperSession, Session, SessionInfo, Sessions,
+};
+use crate::terminal::model::terminal_model::HandlerEvent;
+use crate::terminal::model_events::{AnsiHandlerEvent, ModelEvent, ModelEventDispatcher};
+use crate::terminal::shell::{Shell, ShellType};
+use crate::terminal::{History, HistoryEntry, HistoryEvent};
 use crate::user_config::WarpConfig;
 #[cfg(feature = "voice_input")]
 use crate::voice::transcriber::VoiceTranscriber;
@@ -77,23 +83,88 @@ pub fn blocklist_ai_history_model_with_queries(queries: Vec<String>) -> Blocklis
 
     BlocklistAIHistoryModel::new(persisted_queries, Vec::new(), &[])
 }
+
 /// Registers seeded command history and an active session for focused TUI history tests.
 pub fn add_tui_history_test_models(
     commands: Vec<String>,
     ctx: &mut AppContext,
-) -> (ModelHandle<ActiveSession>, SessionId) {
+) -> (
+    ModelHandle<ActiveSession>,
+    SessionId,
+    impl Future<Output = ()> + use<>,
+) {
     let session_id = SessionId::from(1);
-    ctx.add_singleton_model(|_| History::new_for_tui_test(session_id, commands));
-    let sessions = ctx.add_model(|_| Sessions::new_for_test());
-    let (_model_events_tx, model_events_rx) = async_channel::unbounded();
+    let session = Arc::new(Session::new(
+        SessionInfo {
+            session_id,
+            shell: Shell::new(ShellType::Zsh, None, None, HashSet::new(), None),
+            launch_data: None,
+            histfile: None,
+            user: "test-user".to_owned(),
+            hostname: "test-host".to_owned(),
+            subshell_info: None,
+            path: None,
+            environment_variable_names: HashSet::new(),
+            aliases: HashMap::new(),
+            abbreviations: HashMap::new(),
+            function_names: HashSet::new(),
+            builtins: HashSet::new(),
+            keywords: Vec::new(),
+            is_ssh_wrapper_session: IsSSHWrapperSession::No,
+            home_dir: None,
+            cdpath: None,
+            editor: None,
+            session_type: BootstrapSessionType::Local,
+            host_info: HostInfo::default(),
+            wsl_name: None,
+            spawning_session_id: None,
+        },
+        Arc::new(NoOpCommandExecutor::default()),
+    ));
+    let history = ctx.add_singleton_model(|_| History::default());
+    let (history_initialized_tx, history_initialized_rx) = async_channel::bounded(1);
+    ctx.subscribe_to_model(&history, move |_, event, _| match event {
+        HistoryEvent::Initialized(id) if *id == session_id => {
+            let _ = history_initialized_tx.try_send(());
+        }
+        HistoryEvent::Initialized(_) | HistoryEvent::Updated(_) => {}
+    });
+    history.update(ctx, |history, ctx| {
+        history.init_session_with(session, async move { commands }, ctx);
+    });
+
+    let (executor_command_tx, _executor_command_rx) = async_channel::unbounded();
+    let sessions = ctx.add_model(|ctx| Sessions::new(executor_command_tx, ctx));
+    let (model_events_tx, model_events_rx) = async_channel::unbounded();
     let model_events =
         ctx.add_model(|ctx| ModelEventDispatcher::new(model_events_rx, sessions.clone(), ctx));
-    model_events.update(ctx, |dispatcher, _| {
-        dispatcher.set_active_session_id(session_id);
+    let (precmd_tx, precmd_rx) = async_channel::bounded(1);
+    ctx.subscribe_to_model(&model_events, move |_, event, _| {
+        if matches!(event, ModelEvent::Handler(AnsiHandlerEvent::Precmd)) {
+            let _ = precmd_tx.try_send(());
+        }
     });
     let active_session = ctx.add_model(|ctx| ActiveSession::new(sessions, model_events, ctx));
-    (active_session, session_id)
+    model_events_tx
+        .try_send(Event::Handler(HandlerEvent::Precmd {
+            session_id: Some(session_id),
+            handled_after_inband: false,
+            env_vars: HashMap::new(),
+        }))
+        .expect("model event dispatcher should receive Precmd");
+    let initialized = async move {
+        history_initialized_rx
+            .recv()
+            .await
+            .expect("history initialization should complete");
+        precmd_rx
+            .recv()
+            .await
+            .expect("Precmd should set the active session");
+    };
+    (active_session, session_id, initialized)
 }
+
 /// Appends a command and emits the update observed by an open TUI history menu.
 pub fn append_tui_history_test_command(
     session_id: SessionId,
@@ -101,8 +172,33 @@ pub fn append_tui_history_test_command(
     ctx: &mut AppContext,
 ) {
     History::handle(ctx).update(ctx, |history, ctx| {
-        history.append_command_for_tui_test(session_id, command);
+        let mut entry = HistoryEntry::command_only(command);
+        entry.session_id = Some(session_id);
+        history.append_commands(session_id, vec![entry]);
         ctx.emit(crate::terminal::HistoryEvent::Updated(session_id));
+    });
+}
+
+/// Registers the production settings dependencies required by focused TUI input-mode tests.
+pub fn register_tui_input_mode_test_settings(ctx: &mut AppContext) {
+    if ctx.has_singleton_model::<AISettings>() {
+        return;
+    }
+    init_and_register_user_preferences(ctx);
+    ctx.add_singleton_model(|_| SettingsManager::default());
+    ctx.add_singleton_model(WarpConfig::mock);
+    warpui_extras::secure_storage::register_noop("test", ctx);
+    ctx.add_singleton_model(|_| ServerApiProvider::new_for_test());
+    ctx.add_singleton_model(|_| AuthStateProvider::new_for_test());
+    AISettings::register_and_subscribe_to_events(ctx);
+    ctx.add_singleton_model(|ctx| {
+        let provider = ServerApiProvider::as_ref(ctx);
+        UserWorkspaces::mock(
+            provider.get_team_client(),
+            provider.get_workspace_client(),
+            Vec::new(),
+            ctx,
+        )
     });
 }
 

@@ -188,10 +188,6 @@ pub struct History {
     /// Each time a history file is read, it gets "joined" to the commands in here to add the
     /// execution metadata from the most recent run.
     persisted_commands_summary: HashMap<ShellHost, HashMap<String, CommandHistorySummary>>,
-    /// TUI commands loaded from SQLite, ordered chronologically for each host.
-    /// The TUI has no GUI-style block restoration, so these commands are used
-    /// as a fallback when its shell exits before flushing them to `HISTFILE`.
-    persisted_commands_to_restore: HashMap<ShellHost, Vec<Arc<HistoryEntry>>>,
 
     /// Entries from the history file for the host.  Immutable once loaded and
     /// shared between sessions.
@@ -468,101 +464,27 @@ impl SingletonEntity for History {}
 
 impl History {
     pub fn new(persisted_commands: Vec<PersistedCommand>) -> Self {
-        Self::from_persisted_commands(persisted_commands, false)
-    }
-
-    pub(crate) fn new_for_tui(persisted_commands: Vec<PersistedCommand>) -> Self {
-        Self::from_persisted_commands(persisted_commands, true)
-    }
-
-    fn from_persisted_commands(
-        persisted_commands: Vec<PersistedCommand>,
-        restore_persisted_commands: bool,
-    ) -> Self {
         log::debug!("Creating new History model with persisted commands {persisted_commands:?}");
         let mut persisted_commands_summary =
             HashMap::<ShellHost, HashMap<String, CommandHistorySummary>>::new();
-        let mut persisted_commands_to_restore = HashMap::<ShellHost, Vec<Arc<HistoryEntry>>>::new();
 
         for command in persisted_commands {
-            let Some(shell_host) = command.shell_host.clone() else {
-                continue;
-            };
-            let hist_entry: HistoryEntry = command.into();
-            let summaries = persisted_commands_summary
-                .entry(shell_host.clone())
-                .or_default();
-            summaries
-                .entry(hist_entry.command.clone())
-                .and_modify(|summary| summary.count += 1)
-                .or_insert_with(|| CommandHistorySummary::new(hist_entry.clone()));
-            if restore_persisted_commands {
-                persisted_commands_to_restore
-                    .entry(shell_host)
-                    .or_default()
-                    .push(Arc::new(hist_entry));
+            if let Some(shell_host) = command.shell_host.as_ref() {
+                let summaries = persisted_commands_summary
+                    .entry(shell_host.clone())
+                    .or_default();
+                let hist_entry: HistoryEntry = command.into();
+                summaries
+                    .entry(hist_entry.command.clone())
+                    .and_modify(|summary| summary.count += 1)
+                    .or_insert(CommandHistorySummary::new(hist_entry));
             }
-        }
-        // SQLite returns newest-first so the first duplicate supplies summary
-        // metadata. History storage and rendering expect chronological order.
-        for commands in persisted_commands_to_restore.values_mut() {
-            commands.reverse();
         }
 
         Self {
             persisted_commands_summary,
-            persisted_commands_to_restore,
             ..Default::default()
         }
-    }
-    #[cfg(any(test, feature = "test-util"))]
-    #[cfg_attr(test, allow(dead_code))]
-    pub(crate) fn new_for_tui_test(session_id: SessionId, commands: Vec<String>) -> Self {
-        let entries = commands
-            .into_iter()
-            .map(|command| {
-                let mut entry = HistoryEntry::command_only(command);
-                entry.session_id = Some(session_id);
-                entry
-            })
-            .collect();
-        Self::new_with_test_entries(session_id, entries)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn new_for_up_arrow_test(session_id: SessionId, entries: Vec<HistoryEntry>) -> Self {
-        Self::new_with_test_entries(session_id, entries)
-    }
-
-    #[cfg(any(test, feature = "test-util"))]
-    fn new_with_test_entries(session_id: SessionId, entries: Vec<HistoryEntry>) -> Self {
-        let shell_host = ShellHost {
-            shell_type: ShellType::Bash,
-            user: "test-user".to_owned(),
-            hostname: "test-host".to_owned(),
-        };
-        Self {
-            history_file_commands: HashMap::from([(shell_host.clone(), Vec::new())]),
-            session_commands: HashMap::from([(
-                shell_host.clone(),
-                entries.into_iter().map(Arc::new).collect(),
-            )]),
-            session_skip_indices: HashMap::from([(session_id, HashSet::new())]),
-            session_start_indices: HashMap::from([(session_id, 0)]),
-            read_history_file_state: HashMap::from([(
-                shell_host.clone(),
-                ReadHistoryFileState::Done,
-            )]),
-            session_id_to_shell_host: HashMap::from([(session_id, shell_host)]),
-            ..Default::default()
-        }
-    }
-    #[cfg(any(test, feature = "test-util"))]
-    #[cfg_attr(test, allow(dead_code))]
-    pub(crate) fn append_command_for_tui_test(&mut self, session_id: SessionId, command: String) {
-        let mut entry = HistoryEntry::command_only(command);
-        entry.session_id = Some(session_id);
-        self.append_commands(session_id, vec![entry]);
     }
 
     pub fn all_live_session_ids(&self) -> HashSet<SessionId> {
@@ -720,26 +642,22 @@ impl History {
         ctx: &mut ModelContext<Self>,
     ) {
         let deduped_history_file_commands = dedupe_from_last(history_file_commands);
-        let mut loaded_commands = deduped_history_file_commands
-            .into_iter()
-            .map(|command| {
-                self.persisted_commands_summary
-                    .get(&host)
-                    .and_then(|summaries| summaries.get(&command))
-                    .map(|summary| summary.most_recent_entry.clone())
-                    .unwrap_or_else(|| HistoryEntry::command_only(command))
-            })
-            .map(Arc::new)
-            .collect::<Vec<_>>();
 
-        if let Some(persisted_commands) = self.persisted_commands_to_restore.get(&host) {
-            loaded_commands.extend(persisted_commands.iter().cloned());
-            loaded_commands = dedupe_history_entries_from_last(loaded_commands);
-        }
-
-        let mut start_index = loaded_commands.len();
-        self.history_file_commands
-            .insert(host.clone(), loaded_commands);
+        let mut start_index = deduped_history_file_commands.len();
+        self.history_file_commands.insert(
+            host.clone(),
+            deduped_history_file_commands
+                .into_iter()
+                .map(|command| {
+                    self.persisted_commands_summary
+                        .get(&host)
+                        .and_then(|summaries| summaries.get(&command))
+                        .map(|summary| summary.most_recent_entry.clone())
+                        .unwrap_or_else(|| HistoryEntry::command_only(command))
+                })
+                .map(Arc::new)
+                .collect(),
+        );
 
         if let Some(session_commands_to_append) = session_commands_to_append {
             start_index += session_commands_to_append.len();
@@ -1033,17 +951,6 @@ impl History {
             }
         }
     }
-}
-
-fn dedupe_history_entries_from_last(entries: Vec<Arc<HistoryEntry>>) -> Vec<Arc<HistoryEntry>> {
-    let mut seen_commands = HashSet::new();
-    let mut unique_entries = entries
-        .into_iter()
-        .rev()
-        .filter(|entry| seen_commands.insert(entry.command.clone()))
-        .collect::<Vec<_>>();
-    unique_entries.reverse();
-    unique_entries
 }
 
 #[cfg(test)]

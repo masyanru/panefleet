@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use chrono::{Duration, Local};
 use settings::Setting;
 use warp_core::SessionId;
@@ -14,6 +16,8 @@ use crate::ai::blocklist::{BlocklistAIHistoryModel, PersistedAIInput, PersistedA
 use crate::ai::llms::LLMId;
 use crate::settings::AISettings;
 use crate::suggestions::ignored_suggestions_model::{IgnoredSuggestionsModel, SuggestionType};
+use crate::terminal::model::session::command_executor::NoOpCommandExecutor;
+use crate::terminal::model::session::{Session, SessionInfo};
 use crate::terminal::{History, HistoryEntry, LinkedWorkflowData};
 use crate::test_util::settings::initialize_settings_for_tests;
 
@@ -80,6 +84,37 @@ fn combined_history(
     )
 }
 
+async fn add_command_history(app: &mut App, session_id: SessionId, entries: Vec<HistoryEntry>) {
+    let mut session_info = SessionInfo::new_for_test();
+    session_info.session_id = session_id;
+    let session = Arc::new(Session::new(
+        session_info,
+        Arc::new(NoOpCommandExecutor::default()),
+    ));
+    let (initialized_tx, initialized_rx) = async_channel::bounded(1);
+    let history = app.add_singleton_model(|_| History::default());
+    app.update(|ctx| {
+        ctx.subscribe_to_model(&history, move |_, event, _| match event {
+            crate::terminal::HistoryEvent::Initialized(id) if *id == session_id => {
+                let _ = initialized_tx.try_send(());
+            }
+            crate::terminal::HistoryEvent::Initialized(_)
+            | crate::terminal::HistoryEvent::Updated(_) => {}
+        });
+        history.update(ctx, |history, ctx| {
+            history.init_session_with(session, async { Vec::new() }, ctx);
+        });
+    });
+    initialized_rx
+        .recv()
+        .await
+        .expect("history initialization should complete");
+    history.update(app, |history, _| {
+        for entry in entries {
+            history.append_commands(session_id, vec![entry]);
+        }
+    });
+}
 fn assert_prompt_history(prompts: &[&str], expected: &[&str]) {
     let prompts: Vec<String> = prompts.iter().map(|prompt| (*prompt).to_owned()).collect();
     let expected: Vec<String> = expected.iter().map(|entry| (*entry).to_owned()).collect();
@@ -140,7 +175,7 @@ fn prompt_history_excludes_ignored_prompts() {
 
 #[test]
 fn combined_history_returns_owned_kinds_and_dedupes_each_kind() {
-    App::test((), |app| async move {
+    App::test((), |mut app| async move {
         let terminal_surface_id = EntityId::new();
         let session_id = SessionId::from(1);
         app.add_singleton_model(|_| {
@@ -151,17 +186,17 @@ fn combined_history_returns_owned_kinds_and_dedupes_each_kind() {
                 "   ".to_owned(),
             ])
         });
-        app.add_singleton_model(|_| {
-            History::new_for_up_arrow_test(
-                session_id,
-                vec![
-                    command_entry(session_id, " same ", 0, false, None),
-                    command_entry(session_id, "older command", 1, false, None),
-                    command_entry(session_id, " same ", 2, false, None),
-                    command_entry(session_id, "   ", 3, false, None),
-                ],
-            )
-        });
+        add_command_history(
+            &mut app,
+            session_id,
+            vec![
+                command_entry(session_id, " same ", 0, false, None),
+                command_entry(session_id, "older command", 1, false, None),
+                command_entry(session_id, " same ", 2, false, None),
+                command_entry(session_id, "   ", 3, false, None),
+            ],
+        )
+        .await;
 
         app.read(|ctx| {
             assert_eq!(
@@ -195,22 +230,22 @@ fn combined_history_returns_owned_kinds_and_dedupes_each_kind() {
 
 #[test]
 fn combined_history_preserves_command_workflow_data() {
-    App::test((), |app| async move {
+    App::test((), |mut app| async move {
         let terminal_surface_id = EntityId::new();
         let session_id = SessionId::from(1);
         app.add_singleton_model(|_| build_history_model(vec!["prompt".to_owned()]));
-        app.add_singleton_model(|_| {
-            History::new_for_up_arrow_test(
+        add_command_history(
+            &mut app,
+            session_id,
+            vec![command_entry(
                 session_id,
-                vec![command_entry(
-                    session_id,
-                    "deploy",
-                    0,
-                    false,
-                    Some("deploy {{environment}}"),
-                )],
-            )
-        });
+                "deploy",
+                0,
+                false,
+                Some("deploy {{environment}}"),
+            )],
+        )
+        .await;
 
         app.read(|ctx| {
             assert_eq!(
@@ -236,21 +271,21 @@ fn combined_history_preserves_command_workflow_data() {
 
 #[test]
 fn combined_history_excludes_ignored_prompts_and_commands() {
-    App::test((), |app| async move {
+    App::test((), |mut app| async move {
         let terminal_surface_id = EntityId::new();
         let session_id = SessionId::from(1);
         app.add_singleton_model(|_| {
             build_history_model(vec!["keep prompt".to_owned(), "ignore prompt".to_owned()])
         });
-        app.add_singleton_model(|_| {
-            History::new_for_up_arrow_test(
-                session_id,
-                vec![
-                    command_entry(session_id, "keep command", 0, false, None),
-                    command_entry(session_id, "ignore command", 1, false, None),
-                ],
-            )
-        });
+        add_command_history(
+            &mut app,
+            session_id,
+            vec![
+                command_entry(session_id, "keep command", 0, false, None),
+                command_entry(session_id, "ignore command", 1, false, None),
+            ],
+        )
+        .await;
         app.add_singleton_model(|_| {
             IgnoredSuggestionsModel::new(vec![
                 ("ignore prompt".to_owned(), SuggestionType::AIQuery),
@@ -278,15 +313,15 @@ fn combined_history_respects_agent_command_setting() {
         let terminal_surface_id = EntityId::new();
         let session_id = SessionId::from(1);
         app.add_singleton_model(|_| build_history_model(Vec::new()));
-        app.add_singleton_model(|_| {
-            History::new_for_up_arrow_test(
-                session_id,
-                vec![
-                    command_entry(session_id, "user command", 0, false, None),
-                    command_entry(session_id, "agent command", 1, true, None),
-                ],
-            )
-        });
+        add_command_history(
+            &mut app,
+            session_id,
+            vec![
+                command_entry(session_id, "user command", 0, false, None),
+                command_entry(session_id, "agent command", 1, true, None),
+            ],
+        )
+        .await;
 
         app.read(|ctx| {
             assert_eq!(

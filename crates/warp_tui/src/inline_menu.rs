@@ -953,7 +953,7 @@ fn menu_result_row(
     };
     let title = if let Some(prefix) = &row.prefix {
         let prefix_style = match prefix.style {
-            TuiInlineMenuRowPrefixStyle::ShellCommand => builder.shell_command_menu_prefix_style(),
+            TuiInlineMenuRowPrefixStyle::ShellCommand => builder.shell_command_prefix_style(),
         };
         TuiText::from_spans([(prefix.text.clone(), prefix_style), (title, title_style)])
             .truncate_with_ellipsis()

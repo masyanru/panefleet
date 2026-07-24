@@ -70,6 +70,7 @@ impl ActiveSession {
         self.session_id(app)
             .and_then(|session_id| self.sessions.as_ref(app).get(session_id))
     }
+
     pub fn session_id(&self, app: &AppContext) -> Option<SessionId> {
         self.model_event_dispatcher.as_ref(app).active_session_id()
     }

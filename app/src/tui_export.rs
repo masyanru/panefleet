@@ -220,7 +220,7 @@ pub use crate::tui::{
 pub use crate::tui_test_support::{
     add_tui_history_test_models, append_tui_history_test_command,
     blocklist_ai_history_model_with_queries, queue_tui_permission_action,
-    register_tui_session_view_test_singletons,
+    register_tui_input_mode_test_settings, register_tui_session_view_test_singletons,
 };
 pub use crate::util::image::{
     MAX_IMAGE_COUNT_FOR_QUERY, MAX_IMAGE_SIZE_BYTES, MIME_SNIFF_BYTES, ProcessImageResult,

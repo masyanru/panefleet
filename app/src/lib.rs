@@ -1928,14 +1928,7 @@ pub(crate) fn initialize_app(
         ProjectManagementModel::new(persisted_projects, persistence_writer.sender(), ctx)
     });
 
-    let restore_persisted_commands = matches!(launch_mode, LaunchMode::Tui { .. });
-    ctx.add_singleton_model(move |_| {
-        if restore_persisted_commands {
-            History::new_for_tui(command_history)
-        } else {
-            History::new(command_history)
-        }
-    });
+    ctx.add_singleton_model(move |_| History::new(command_history));
 
     ctx.add_singleton_model(CustomSecretRegexUpdater::new);
 

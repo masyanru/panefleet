@@ -16,7 +16,7 @@ use warpui_core::presenter::tui::TuiPresenter;
 
 use super::TuiTerminalSessionView;
 use crate::autoupdate::TuiAutoupdater;
-use crate::handoff_block::TuiHandoffBlock;
+use crate::handoff::TuiHandoffBlock;
 use crate::orchestration_model::TuiOrchestrationModel;
 use crate::root_view::RootTuiView;
 use crate::session_registry::TuiSessions;
@@ -80,8 +80,8 @@ fn submit_handoff(app: &mut App, fixture: &Fixture, text: &str) -> ViewHandle<Tu
         &[fixture.view.id(), input_id],
         "enter",
     ));
-    fixture.view.read(app, |view, _| {
-        view.handoff_for_test().expect("handoff card is installed")
+    fixture.view.read(app, |view, ctx| {
+        view.active_handoff(ctx).expect("handoff card is installed")
     })
 }
 
@@ -108,7 +108,7 @@ fn render_session(app: &mut App, fixture: &Fixture) -> Vec<String> {
         invalidation
             .updated
             .extend(session.transcript.as_ref(ctx).child_view_ids(ctx));
-        if let Some(handoff) = session.handoff_for_test() {
+        if let Some(handoff) = session.active_handoff(ctx) {
             invalidation
                 .updated
                 .extend(handoff.as_ref(ctx).child_view_ids(ctx));
@@ -167,7 +167,7 @@ fn no_environment_card_has_top_padding_and_ctrl_c_restores_prompt_and_images() {
         let lines = render_session(&mut app, &fixture).join("\n");
         assert!(lines.contains("Hand off to cloud"), "{lines}");
         assert!(lines.contains("A cloud environment is required"), "{lines}");
-        assert!(lines.contains("Enter open setup guide"), "{lines}");
+        assert!(lines.contains("Enter open environments"), "{lines}");
         assert!(!lines.contains("finish the task"), "{lines}");
         let title_row = lines
             .lines()
@@ -203,7 +203,8 @@ fn no_environment_card_has_top_padding_and_ctrl_c_restores_prompt_and_images() {
                     .rich_content_row_range(handoff.id())
                     .is_none()
             );
-            assert!(view.handoff_for_test().is_none());
+            assert!(view.active_handoff(ctx).is_none());
+            assert!(view.blocking_input_source.is_none());
         });
     });
 }
@@ -222,9 +223,9 @@ fn settings_invalidation_restores_the_draft_and_repeated_submission_keeps_one_ca
                 ctx,
             );
         });
-        fixture.view.read(&app, |view, _| {
+        fixture.view.read(&app, |view, ctx| {
             assert_eq!(
-                view.handoff_for_test().map(|view| view.id()),
+                view.active_handoff(ctx).map(|view| view.id()),
                 Some(handoff.id())
             );
         });
@@ -236,8 +237,8 @@ fn settings_invalidation_restores_the_draft_and_repeated_submission_keeps_one_ca
                 .expect("test setting persists");
         });
         assert_eq!(input_text(&app, &fixture), "preserve me");
-        fixture.view.read(&app, |view, _| {
-            assert!(view.handoff_for_test().is_none());
+        fixture.view.read(&app, |view, ctx| {
+            assert!(view.active_handoff(ctx).is_none());
         });
     });
 }
@@ -262,7 +263,7 @@ fn privacy_invalidation_restores_the_draft_and_removes_handoff_from_commands() {
 
         assert_eq!(input_text(&app, &fixture), "preserve privacy draft");
         fixture.view.read(&app, |view, ctx| {
-            assert!(view.handoff_for_test().is_none());
+            assert!(view.active_handoff(ctx).is_none());
             assert!(!matches!(
                 view.slash_commands_source
                     .as_ref(ctx)
@@ -293,8 +294,8 @@ fn long_running_command_rejection_preserves_the_full_local_draft() {
             );
         });
         assert_eq!(input_text(&app, &fixture), "/handoff keep this prompt");
-        fixture.view.read(&app, |view, _| {
-            assert!(view.handoff_for_test().is_none());
+        fixture.view.read(&app, |view, ctx| {
+            assert!(view.active_handoff(ctx).is_none());
             assert!(
                 view.transient_hint
                     .current()

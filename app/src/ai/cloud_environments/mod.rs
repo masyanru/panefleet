@@ -22,6 +22,10 @@ use crate::cloud_object::{
 use crate::server::sync_queue::QueueItem;
 use crate::workspaces::user_workspaces::UserWorkspaces;
 
+/// Oz web app page for viewing and creating cloud environments.
+#[cfg(feature = "tui")]
+pub const OZ_ENVIRONMENTS_URL: &str = "https://oz.warp.dev/environments";
+
 impl StringModel for AmbientAgentEnvironment {
     type CloudObjectType = CloudAmbientAgentEnvironment;
 

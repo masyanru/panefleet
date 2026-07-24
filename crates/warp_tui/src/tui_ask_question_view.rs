@@ -59,7 +59,7 @@ pub(crate) fn init(app: &mut AppContext) {
         EditableBinding::new(
             "tui:ask-question:previous",
             "Show the previous question",
-            TuiAskQuestionViewAction::Previous,
+            TuiAskQuestionViewAction::Navigate(PageNavigationDirection::Previous),
         )
         .with_context_predicate(predicate.clone())
         .with_group(TUI_BINDING_GROUP)
@@ -67,7 +67,7 @@ pub(crate) fn init(app: &mut AppContext) {
         EditableBinding::new(
             "tui:ask-question:next",
             "Show the next question",
-            TuiAskQuestionViewAction::Next,
+            TuiAskQuestionViewAction::Navigate(PageNavigationDirection::Next),
         )
         .with_context_predicate(predicate.clone())
         .with_group(TUI_BINDING_GROUP)
@@ -75,7 +75,7 @@ pub(crate) fn init(app: &mut AppContext) {
         EditableBinding::new(
             "tui:ask-question:next",
             "Show the next question",
-            TuiAskQuestionViewAction::Next,
+            TuiAskQuestionViewAction::Navigate(PageNavigationDirection::Next),
         )
         .with_context_predicate(predicate)
         .with_group(TUI_BINDING_GROUP)
@@ -84,12 +84,18 @@ pub(crate) fn init(app: &mut AppContext) {
     app.register_tui_binding_validator::<TuiAskQuestionView>(is_tui_owned_binding);
 }
 
+/// Direction through a sequence of interactive card pages.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PageNavigationDirection {
+    Previous,
+    Next,
+}
+
 #[derive(Clone, Debug)]
 pub(super) enum TuiAskQuestionViewAction {
     Enter,
     AdvanceMultiselect,
-    Previous,
-    Next,
+    Navigate(PageNavigationDirection),
     SkipAll,
 }
 
@@ -706,14 +712,13 @@ impl TypedActionView for TuiAskQuestionView {
                 let effect = self.session.apply(AskUserQuestionAction::Confirm);
                 self.handle_effect(effect, ctx);
             }
-            TuiAskQuestionViewAction::Previous => {
+            TuiAskQuestionViewAction::Navigate(direction) => {
                 self.commit_active_other_text(ctx);
-                let effect = self.session.apply(AskUserQuestionAction::NavigatePrev);
-                self.handle_effect(effect, ctx);
-            }
-            TuiAskQuestionViewAction::Next => {
-                self.commit_active_other_text(ctx);
-                let effect = self.session.apply(AskUserQuestionAction::NavigateNext);
+                let action = match direction {
+                    PageNavigationDirection::Previous => AskUserQuestionAction::NavigatePrev,
+                    PageNavigationDirection::Next => AskUserQuestionAction::NavigateNext,
+                };
+                let effect = self.session.apply(action);
                 self.handle_effect(effect, ctx);
             }
             TuiAskQuestionViewAction::SkipAll => {

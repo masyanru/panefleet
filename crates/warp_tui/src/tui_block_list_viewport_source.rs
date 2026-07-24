@@ -19,7 +19,7 @@ use warpui_core::elements::tui::{
 };
 
 use super::agent_block::TuiAIBlock;
-use super::handoff_block::TuiHandoffBlock;
+use super::handoff::TuiHandoffBlock;
 use super::terminal_block::{TerminalBlockElement, should_render_terminal_block};
 use super::tui_cli_subagent_view::TuiCLISubagentView;
 

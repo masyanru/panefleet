@@ -22,7 +22,7 @@ use warp::tui_export::{
     ChangelogRequestType, CloudConversationData, CommandExecutionSource, ConversationFileExport,
     ConversationSelection, ConversationSelectionHandle, ConversationUsageTotals,
     ExecuteCommandEvent, GetRelevantFilesController, GitRepoModels, GitRepoStatusModel,
-    GitStatusMetadata, HandoffRestoration, LLMId, LLMPreferences, LLMPreferencesEvent,
+    GitStatusMetadata, LLMId, LLMPreferences, LLMPreferencesEvent,
     LOCAL_SKILLS_REMOTE_EXECUTION_ERROR_MESSAGE, ModelEvent, ParsedSlashCommandInput,
     PersistenceWriter, PtyIntent, PtyIntentEvent, RepoDetectionSessionType, RepoDetectionSource,
     ServerConversationToken, Sessions, ShellCommandExecutorEvent, SizeInfo, SizeUpdate,
@@ -68,8 +68,7 @@ use crate::conversation_menu::{TuiConversationMenuEvent, TuiConversationMenuMode
 use crate::conversation_selection::TuiConversationSelection;
 use crate::editor_interaction::TuiEditorCommand;
 use crate::exit_confirmation::{CTRL_C_EXIT_WINDOW, ExitConfirmation};
-use crate::handoff_block::{TuiHandoffBlock, TuiHandoffBlockEvent};
-use crate::handoff_model::{TuiHandoffModel, TuiHandoffModelEvent};
+use crate::handoff::TuiHandoffBlock;
 use crate::inline_menu::{MAX_INLINE_MENU_ROWS, TuiInlineMenu, active_inline_menu};
 use crate::input::view::TuiInputAction;
 use crate::input::{TuiInputView, TuiInputViewEvent};
@@ -118,8 +117,10 @@ use crate::zero_state_animation::{
     ZeroStateAnimationConfig, ZeroStateAnimationConfigEvent, ZeroStateAnimationLoadFailure,
 };
 mod completions;
-mod input_detection;
 
+#[path = "handoff/session.rs"]
+mod handoff_session;
+mod input_detection;
 use self::completions::CompletionRequestState;
 use self::input_detection::InputDetectionState;
 
@@ -1846,22 +1847,6 @@ impl TuiTerminalSessionView {
             .active_blocking_input_source(ctx)
     }
 
-    fn active_handoff(&self, ctx: &AppContext) -> Option<ViewHandle<TuiHandoffBlock>> {
-        let Some(BlockingInputSource::Handoff(handoff)) = self.blocking_input_source.as_ref()
-        else {
-            return None;
-        };
-        handoff.as_ref(ctx).is_active(ctx).then(|| handoff.clone())
-    }
-
-    #[cfg(test)]
-    fn handoff_for_test(&self) -> Option<ViewHandle<TuiHandoffBlock>> {
-        let BlockingInputSource::Handoff(handoff) = self.blocking_input_source.as_ref()? else {
-            return None;
-        };
-        Some(handoff.clone())
-    }
-
     /// Activates this session after the registry has made it authoritative.
     pub(crate) fn activate(&mut self, ctx: &mut ViewContext<Self>) {
         self.blocking_input_source = self.blocking_input_source(ctx);
@@ -3109,119 +3094,6 @@ impl TuiTerminalSessionView {
         }
     }
 
-    fn start_handoff(&mut self, argument: Option<&String>, ctx: &mut ViewContext<Self>) {
-        if matches!(
-            self.blocking_input_source(ctx),
-            Some(
-                BlockingInputSource::AskQuestion(_)
-                    | BlockingInputSource::Permission(_)
-                    | BlockingInputSource::Orchestration(_)
-                    | BlockingInputSource::Handoff(_)
-            )
-        ) {
-            return;
-        }
-        let current_working_directory = self.current_working_directory(ctx);
-        let model = match TuiHandoffModel::prepare(
-            self.terminal_surface_id,
-            self.terminal_model.clone(),
-            self.ai_controller.clone(),
-            self.ai_context_model.clone(),
-            current_working_directory,
-            argument.cloned(),
-            ctx,
-        ) {
-            Ok(model) => model,
-            Err(failure) => {
-                let (replacement_input, message) = failure.into_parts();
-                if let Some(input) = replacement_input {
-                    self.input_view.update(ctx, |input_view, ctx| {
-                        input_view.set_text(&input, ctx);
-                    });
-                }
-                self.show_transient_hint(message, ctx);
-                return;
-            }
-        };
-
-        self.input_view.update(ctx, |input, ctx| input.clear(ctx));
-        let model_for_view = model.clone();
-        let handoff =
-            ctx.add_typed_action_tui_view(move |ctx| TuiHandoffBlock::new(model_for_view, ctx));
-        let handoff_for_events = handoff.clone();
-        ctx.subscribe_to_model(&model, move |view, _, event, ctx| {
-            view.handle_handoff_model_event(&handoff_for_events, event, ctx);
-        });
-        ctx.subscribe_to_view(&handoff, |_, _, event, ctx| match event {
-            TuiHandoffBlockEvent::LayoutInvalidated => ctx.notify(),
-        });
-        self.blocking_input_source = Some(BlockingInputSource::Handoff(handoff));
-        self.sync_blocking_input_source(ctx);
-        record_static_slash_command_accepted("/handoff", true, ctx);
-    }
-
-    fn restore_handoff_input(
-        &mut self,
-        restoration: &HandoffRestoration,
-        ctx: &mut ViewContext<Self>,
-    ) {
-        self.input_view.update(ctx, |input, ctx| {
-            input.set_text(&restoration.prompt, ctx);
-        });
-        if !restoration.attachments.is_empty() {
-            self.ai_context_model.update(ctx, |context, ctx| {
-                context.append_pending_attachments(restoration.attachments.clone(), ctx);
-            });
-        }
-    }
-
-    fn clear_handoff_interaction(&mut self) {
-        if matches!(
-            self.blocking_input_source.as_ref(),
-            Some(BlockingInputSource::Handoff(_))
-        ) {
-            self.blocking_input_source = None;
-        }
-    }
-
-    fn handle_handoff_model_event(
-        &mut self,
-        handoff: &ViewHandle<TuiHandoffBlock>,
-        event: &TuiHandoffModelEvent,
-        ctx: &mut ViewContext<Self>,
-    ) {
-        match event {
-            TuiHandoffModelEvent::Changed { .. } => return,
-            TuiHandoffModelEvent::Cancelled(restoration) => {
-                self.clear_handoff_interaction();
-                if let Some(restoration) = restoration {
-                    self.restore_handoff_input(restoration, ctx);
-                }
-            }
-            TuiHandoffModelEvent::Failed {
-                restoration,
-                message,
-            } => {
-                self.clear_handoff_interaction();
-                if let Some(restoration) = restoration {
-                    self.restore_handoff_input(restoration, ctx);
-                }
-                self.show_transient_hint(message.clone(), ctx);
-            }
-            TuiHandoffModelEvent::ContinueLocally => {
-                self.clear_handoff_interaction();
-                self.transcript.update(ctx, |transcript, ctx| {
-                    transcript.attach_handoff(handoff.clone(), ctx);
-                });
-            }
-            TuiHandoffModelEvent::StartNewConversation => {
-                self.clear_handoff_interaction();
-                self.start_new_conversation(None, ctx);
-            }
-        }
-        self.sync_blocking_input_source(ctx);
-    }
-
     fn start_new_conversation(
         &mut self,
         prompt: Option<&String>,
@@ -4015,7 +3887,7 @@ impl TerminalSurface for TuiTerminalSessionView {
 }
 
 #[cfg(test)]
-#[path = "handoff_block_tests.rs"]
+#[path = "handoff/tests.rs"]
 mod handoff_tests;
 #[cfg(test)]
 #[path = "terminal_session_view_tests.rs"]

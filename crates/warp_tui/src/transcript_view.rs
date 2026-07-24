@@ -23,7 +23,7 @@ use warpui_core::{
 };
 
 use super::agent_block::{TuiAIBlock, TuiAIBlockEvent};
-use super::handoff_block::{TuiHandoffBlock, TuiHandoffBlockEvent};
+use super::handoff::{TuiHandoffBlock, TuiHandoffBlockEvent};
 use super::terminal_block::{block_content_rows, should_render_terminal_block};
 use super::terminal_session_view::BlockingInputSource;
 use super::tui_block_list_viewport_source::{

@@ -109,7 +109,7 @@ pub use crate::ai::blocklist::{
     PreparedLocalOzChildLaunch, apply_child_agent_model_override, prepare_local_oz_child_launch,
 };
 pub use crate::ai::cloud_environments::{
-    CloudEnvironment, CloudEnvironmentCatalog, CloudEnvironmentCatalogEvent,
+    CloudEnvironment, CloudEnvironmentCatalog, CloudEnvironmentCatalogEvent, OZ_ENVIRONMENTS_URL,
 };
 pub use crate::ai::connected_self_hosted_workers::{
     ConnectedSelfHostedWorkersEvent, ConnectedSelfHostedWorkersModel,

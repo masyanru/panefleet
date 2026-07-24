@@ -1,8 +1,18 @@
-//! TUI presentation for the model-backed local-to-cloud handoff flow.
+//! TUI card for presenting and configuring a local-to-cloud handoff.
+//!
+//! The card renders each handoff phase, from initial acceptance and the
+//! environment/model selectors through launch progress and the created cloud
+//! run. It owns keyboard actions, focus transitions, selector coordination,
+//! links, and layout invalidation for the embedded transcript surface.
+//!
+//! Handoff state, validation, environment-catalog updates, and asynchronous
+//! execution remain in [`super::model::TuiHandoffModel`]. This module
+//! translates that model state into terminal elements and forwards user intent
+//! back to the model.
 
 use std::cell::Cell;
 
-use warp::tui_export::AIConversationId;
+use warp::tui_export::{AIConversationId, OZ_ENVIRONMENTS_URL};
 use warpui_core::elements::CrossAxisAlignment;
 use warpui_core::elements::tui::{
     TuiChildView, TuiConstraint, TuiContainer, TuiElement, TuiFlex, TuiLayoutContext, TuiSize,
@@ -14,7 +24,7 @@ use warpui_core::{
     AppContext, Entity, EntityId, ModelHandle, TuiView, TypedActionView, ViewContext, ViewHandle,
 };
 
-use crate::handoff_model::{
+use super::model::{
     TuiHandoffModel, TuiHandoffModelEvent, TuiHandoffPhase, TuiHandoffSelectorKind,
 };
 use crate::keybindings::TUI_BINDING_GROUP;
@@ -23,11 +33,14 @@ use crate::option_selector::{
     OptionSelectorHeader, OptionSelectorPage, TuiOptionSelector, TuiOptionSelectorEvent,
 };
 use crate::transcript_view::BLOCK_TOP_PADDING_ROWS;
+use crate::tui_ask_question_view::PageNavigationDirection;
 use crate::tui_builder::TuiUiBuilder;
 
 const HANDOFF_TITLE: &str = "Hand off to cloud";
-const ENVIRONMENTS_DOCS_URL: &str =
-    "https://docs.warp.dev/agent-platform/cloud-agents/environments";
+const HANDOFF_PAGE_SEQUENCE: [TuiHandoffSelectorKind; 2] = [
+    TuiHandoffSelectorKind::Environment,
+    TuiHandoffSelectorKind::Model,
+];
 const ACCEPTANCE_CONTEXT_FLAG: &str = "TuiHandoffBlockAcceptance";
 const CONFIGURING_CONTEXT_FLAG: &str = "TuiHandoffBlockConfiguring";
 const NO_ENVIRONMENT_CONTEXT_FLAG: &str = "TuiHandoffBlockNoEnvironment";
@@ -50,13 +63,13 @@ pub(crate) fn init(app: &mut AppContext) {
             .with_group(TUI_BINDING_GROUP),
         FixedBinding::new(
             "enter",
-            TuiHandoffBlockAction::OpenEnvironmentDocs,
+            TuiHandoffBlockAction::OpenEnvironments,
             no_environment(),
         )
         .with_group(TUI_BINDING_GROUP),
         FixedBinding::new(
             "numpadenter",
-            TuiHandoffBlockAction::OpenEnvironmentDocs,
+            TuiHandoffBlockAction::OpenEnvironments,
             no_environment(),
         )
         .with_group(TUI_BINDING_GROUP),
@@ -105,13 +118,6 @@ pub(crate) fn init(app: &mut AppContext) {
     ]);
 }
 
-/// Direction requested after committing the highlighted selector row.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum PageConfirmationNavigation {
-    Previous,
-    Next,
-}
-
 /// Events owned by the view rather than the handoff model.
 #[derive(Clone)]
 pub(crate) enum TuiHandoffBlockEvent {
@@ -126,7 +132,7 @@ pub(crate) enum TuiHandoffBlockAction {
     CommitAndPreviousPage,
     CommitAndNextPage,
     NextPage,
-    OpenEnvironmentDocs,
+    OpenEnvironments,
     RefreshEnvironments,
     Back,
     Cancel,
@@ -140,7 +146,7 @@ pub(crate) enum TuiHandoffBlockAction {
 pub(crate) struct TuiHandoffBlock {
     model: ModelHandle<TuiHandoffModel>,
     selector: ViewHandle<TuiOptionSelector>,
-    pending_page_navigation: Option<PageConfirmationNavigation>,
+    pending_page_navigation: Option<PageNavigationDirection>,
     link: TuiLink,
     last_measured_width: Cell<Option<u16>>,
 }
@@ -167,7 +173,7 @@ impl TuiHandoffBlock {
         self.model.as_ref(ctx).is_active()
     }
 
-    pub(super) fn source_conversation_id(&self, ctx: &AppContext) -> Option<AIConversationId> {
+    pub(crate) fn source_conversation_id(&self, ctx: &AppContext) -> Option<AIConversationId> {
         self.model.as_ref(ctx).source_conversation_id()
     }
 
@@ -191,29 +197,22 @@ impl TuiHandoffBlock {
         }
     }
 
-    fn page_sequence() -> [TuiHandoffSelectorKind; 2] {
-        [
-            TuiHandoffSelectorKind::Environment,
-            TuiHandoffSelectorKind::Model,
-        ]
-    }
-
     fn finish_page_confirmation(
         &mut self,
         page: TuiHandoffSelectorKind,
         ctx: &mut ViewContext<Self>,
     ) {
-        let sequence = Self::page_sequence();
+        let sequence = HANDOFF_PAGE_SEQUENCE;
         let Some(index) = sequence.iter().position(|candidate| *candidate == page) else {
             self.return_to_acceptance(ctx);
             return;
         };
         let navigation = self.pending_page_navigation.take();
         let target = match navigation {
-            Some(PageConfirmationNavigation::Previous) => {
+            Some(PageNavigationDirection::Previous) => {
                 index.checked_sub(1).and_then(|index| sequence.get(index))
             }
-            Some(PageConfirmationNavigation::Next) | None => sequence.get(index + 1),
+            Some(PageNavigationDirection::Next) | None => sequence.get(index + 1),
         };
         match target.copied() {
             Some(target) => self.open_page(target, ctx),
@@ -222,19 +221,20 @@ impl TuiHandoffBlock {
         }
     }
 
-    fn navigate_page(&mut self, forward: bool, ctx: &mut ViewContext<Self>) {
+    fn navigate_page(&mut self, direction: PageNavigationDirection, ctx: &mut ViewContext<Self>) {
         let TuiHandoffPhase::Configuring { page } = self.model.as_ref(ctx).phase() else {
             return;
         };
         let page = *page;
-        let sequence = Self::page_sequence();
+        let sequence = HANDOFF_PAGE_SEQUENCE;
         let Some(index) = sequence.iter().position(|candidate| *candidate == page) else {
             return;
         };
-        let target = if forward {
-            sequence.get(index + 1)
-        } else {
-            index.checked_sub(1).and_then(|index| sequence.get(index))
+        let target = match direction {
+            PageNavigationDirection::Previous => {
+                index.checked_sub(1).and_then(|index| sequence.get(index))
+            }
+            PageNavigationDirection::Next => sequence.get(index + 1),
         };
         if let Some(target) = target.copied() {
             self.open_page(target, ctx);
@@ -251,7 +251,7 @@ impl TuiHandoffBlock {
 
     fn handle_arrow_navigation(
         &mut self,
-        navigation: PageConfirmationNavigation,
+        navigation: PageNavigationDirection,
         ctx: &mut ViewContext<Self>,
     ) {
         self.pending_page_navigation = Some(navigation);
@@ -260,7 +260,7 @@ impl TuiHandoffBlock {
             .update(ctx, |selector, ctx| selector.confirm_selected(ctx));
         if !confirmation_started {
             self.pending_page_navigation = None;
-            self.navigate_page(matches!(navigation, PageConfirmationNavigation::Next), ctx);
+            self.navigate_page(navigation, ctx);
         }
     }
 
@@ -272,7 +272,7 @@ impl TuiHandoffBlock {
             return;
         }
         let snapshot = self.model.as_ref(ctx).selector_snapshot(page, ctx);
-        let sequence = Self::page_sequence();
+        let sequence = HANDOFF_PAGE_SEQUENCE;
         let position = sequence
             .iter()
             .position(|candidate| *candidate == page)
@@ -367,37 +367,6 @@ impl TuiHandoffBlock {
         }
     }
 
-    fn open_run(&self, ctx: &mut ViewContext<Self>) {
-        if let Some(url) = self.model.as_ref(ctx).url() {
-            ctx.open_url(url);
-        }
-    }
-
-    fn continue_locally(&mut self, ctx: &mut ViewContext<Self>) {
-        self.model
-            .update(ctx, |model, ctx| model.continue_locally(ctx));
-        if matches!(
-            self.model.as_ref(ctx).phase(),
-            TuiHandoffPhase::Persisted { .. }
-        ) {
-            self.invalidate_layout(ctx);
-        }
-    }
-
-    fn invalidate_layout(&self, ctx: &mut ViewContext<Self>) {
-        self.last_measured_width.set(None);
-        ctx.emit(TuiHandoffBlockEvent::LayoutInvalidated);
-        ctx.notify();
-    }
-
-    fn render_title(&self, builder: &TuiUiBuilder) -> Box<dyn TuiElement> {
-        TuiText::from_spans([
-            ("■ ".to_owned(), builder.option_selector_selected_style()),
-            (HANDOFF_TITLE.to_owned(), builder.primary_text_style()),
-        ])
-        .finish()
-    }
-
     fn render_configuration(
         &self,
         ctx: &AppContext,
@@ -412,7 +381,7 @@ impl TuiHandoffBlock {
                         .finish(),
                 )
                 .child(
-                    TuiText::new("Create one in Warp, then refresh this card.")
+                    TuiText::new("Create one in Oz, then refresh this card.")
                         .with_style(builder.muted_text_style())
                         .finish(),
                 )
@@ -475,7 +444,7 @@ impl TuiHandoffBlock {
         let spans = match model.phase() {
             TuiHandoffPhase::Acceptance if model.no_environments(ctx) => vec![
                 ("Enter ".to_owned(), builder.primary_text_style()),
-                ("open setup guide  ".to_owned(), builder.muted_text_style()),
+                ("open environments  ".to_owned(), builder.muted_text_style()),
                 ("R ".to_owned(), builder.primary_text_style()),
                 ("refresh  ".to_owned(), builder.muted_text_style()),
                 ("Ctrl + C".to_owned(), builder.primary_text_style()),
@@ -550,15 +519,15 @@ impl TuiHandoffBlock {
             .finish()
     }
 
-    pub(super) fn needs_height_measurement(&self, width: u16) -> bool {
+    pub(crate) fn needs_height_measurement(&self, width: u16) -> bool {
         self.last_measured_width.get() != Some(width)
     }
 
-    pub(super) fn record_height_measurement(&self, width: u16) {
+    pub(crate) fn record_height_measurement(&self, width: u16) {
         self.last_measured_width.set(Some(width));
     }
 
-    pub(super) fn desired_height(
+    pub(crate) fn desired_height(
         &self,
         width: u16,
         ctx: &mut TuiLayoutContext,
@@ -620,10 +589,16 @@ impl TuiView for TuiHandoffBlock {
             return self.render_completed(url, ctx);
         }
         let builder = TuiUiBuilder::from_app(ctx);
-        let header = TuiContainer::new(self.render_title(&builder))
-            .with_background(builder.orchestration_header_background())
-            .with_padding_x(1)
-            .finish();
+        let header = TuiContainer::new(
+            TuiText::from_spans([
+                ("■ ".to_owned(), builder.option_selector_selected_style()),
+                (HANDOFF_TITLE.to_owned(), builder.primary_text_style()),
+            ])
+            .finish(),
+        )
+        .with_background(builder.orchestration_header_background())
+        .with_padding_x(1)
+        .finish();
         let body = TuiContainer::new(self.render_body(ctx, &builder))
             .with_background(builder.orchestration_surface_background())
             .with_padding_x(3)
@@ -654,13 +629,15 @@ impl TypedActionView for TuiHandoffBlock {
             TuiHandoffBlockAction::Confirm => self.confirm(ctx),
             TuiHandoffBlockAction::Configure => self.handle_configure(ctx),
             TuiHandoffBlockAction::CommitAndPreviousPage => {
-                self.handle_arrow_navigation(PageConfirmationNavigation::Previous, ctx)
+                self.handle_arrow_navigation(PageNavigationDirection::Previous, ctx)
             }
             TuiHandoffBlockAction::CommitAndNextPage => {
-                self.handle_arrow_navigation(PageConfirmationNavigation::Next, ctx)
+                self.handle_arrow_navigation(PageNavigationDirection::Next, ctx)
             }
-            TuiHandoffBlockAction::NextPage => self.navigate_page(true, ctx),
-            TuiHandoffBlockAction::OpenEnvironmentDocs => ctx.open_url(ENVIRONMENTS_DOCS_URL),
+            TuiHandoffBlockAction::NextPage => {
+                self.navigate_page(PageNavigationDirection::Next, ctx)
+            }
+            TuiHandoffBlockAction::OpenEnvironments => ctx.open_url(OZ_ENVIRONMENTS_URL),
             TuiHandoffBlockAction::RefreshEnvironments => {
                 self.model
                     .update(ctx, |model, ctx| model.refresh_environments(ctx));
@@ -670,8 +647,23 @@ impl TypedActionView for TuiHandoffBlock {
                 self.model.update(ctx, |model, ctx| model.cancel(ctx));
             }
             TuiHandoffBlockAction::ConsumeInterrupt => {}
-            TuiHandoffBlockAction::OpenRun => self.open_run(ctx),
-            TuiHandoffBlockAction::ContinueLocally => self.continue_locally(ctx),
+            TuiHandoffBlockAction::OpenRun => {
+                if let Some(url) = self.model.as_ref(ctx).url() {
+                    ctx.open_url(url);
+                }
+            }
+            TuiHandoffBlockAction::ContinueLocally => {
+                self.model
+                    .update(ctx, |model, ctx| model.continue_locally(ctx));
+                if matches!(
+                    self.model.as_ref(ctx).phase(),
+                    TuiHandoffPhase::Persisted { .. }
+                ) {
+                    self.last_measured_width.set(None);
+                    ctx.emit(TuiHandoffBlockEvent::LayoutInvalidated);
+                    ctx.notify();
+                }
+            }
             TuiHandoffBlockAction::StartNewConversation => {
                 self.model
                     .update(ctx, |model, ctx| model.start_new_conversation(ctx));

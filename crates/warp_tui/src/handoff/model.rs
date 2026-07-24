@@ -3,7 +3,7 @@
 //! The terminal session supplies its concrete terminal/controller handles once
 //! at preparation time. After that, this model owns handoff data, catalog
 //! subscriptions, validation, asynchronous execution, and lifecycle outcomes.
-//! [`crate::handoff_block::TuiHandoffBlock`] only presents and edits this state.
+//! [`super::block::TuiHandoffBlock`] only presents and edits this state.
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -91,8 +91,8 @@ pub(crate) struct TuiHandoffModel {
 }
 
 impl TuiHandoffModel {
-    /// Performs synchronous handoff preparation and creates the retained model.
-    pub(crate) fn prepare(
+    /// Prepares a handoff and registers its retained model.
+    pub(crate) fn new(
         terminal_surface_id: EntityId,
         terminal_model: Arc<FairMutex<TerminalModel>>,
         controller: ModelHandle<BlocklistAIController>,
@@ -164,89 +164,76 @@ impl TuiHandoffModel {
             pending.set_model_id(source_model_id, false, ctx);
         }
 
-        Ok(ctx.add_model(move |ctx| {
-            Self::new(
-                pending,
-                current_working_directory,
-                source_conversation_id,
-                ctx,
-            )
-        }))
-    }
-
-    fn new(
-        pending: PendingHandoff,
-        current_working_directory: Option<String>,
-        source_conversation_id: Option<AIConversationId>,
-        ctx: &mut ModelContext<Self>,
-    ) -> Self {
-        let environments = CloudEnvironmentCatalog::handle(ctx);
-        ctx.subscribe_to_model(&environments, |model, _, _, ctx| {
-            model.handle_environment_change(ctx);
-        });
-        ctx.subscribe_to_model(&LLMPreferences::handle(ctx), |_, _, event, ctx| {
-            if matches!(event, LLMPreferencesEvent::UpdatedAvailableLLMs) {
-                ctx.emit(TuiHandoffModelEvent::Changed { focus_block: false });
-                ctx.notify();
-            }
-        });
-        ctx.subscribe_to_model(
-            &AISettings::handle(ctx),
-            |model, _, _: &AISettingsChangedEvent, ctx| {
-                if model.is_editable() && !AISettings::as_ref(ctx).is_cloud_handoff_enabled(ctx) {
-                    model.cancel(ctx);
-                }
-            },
-        );
-        ctx.subscribe_to_model(&PrivacySettings::handle(ctx), |model, _, event, ctx| {
-            if matches!(
-                event,
-                PrivacySettingsChangedEvent::UpdateIsCloudConversationStorageEnabled { .. }
-            ) && model.is_editable()
-                && !AISettings::as_ref(ctx).is_cloud_handoff_enabled(ctx)
-            {
-                model.cancel(ctx);
-            }
-        });
-        ctx.subscribe_to_model(&UserWorkspaces::handle(ctx), |model, _, event, ctx| {
-            if matches!(event, UserWorkspacesEvent::TeamsChanged)
-                && model.is_editable()
-                && !AISettings::as_ref(ctx).is_cloud_handoff_enabled(ctx)
-            {
-                model.cancel(ctx);
-            }
-        });
-
-        let forked_existing_conversation =
-            pending.presentation_snapshot().forked_existing_conversation;
-        let mut model = Self {
-            source_conversation_id,
-            pending: Some(pending),
-            phase: TuiHandoffPhase::Acceptance,
-            environments,
-            forked_existing_conversation,
-            validation_error: None,
-            next_operation_id: 0,
-            dismissed: false,
-        };
-        model.refresh_pending_environments(ctx);
-
-        if let Some(path) = current_working_directory.map(PathBuf::from) {
-            let suggestion = suggest_handoff_environment(path, ctx);
-            ctx.spawn(suggestion, |model, environment_id, ctx| {
-                if !model.is_editable() || model.dismissed {
-                    return;
-                }
-                if let Some(environment_id) = environment_id
-                    && let Some(pending) = model.pending.as_mut()
-                {
-                    pending.set_environment_id(Some(environment_id), false);
+        Ok(ctx.add_model(move |ctx: &mut ModelContext<Self>| {
+            let environments = CloudEnvironmentCatalog::handle(ctx);
+            ctx.subscribe_to_model(&environments, |model, _, _, ctx| {
+                model.handle_environment_change(ctx);
+            });
+            ctx.subscribe_to_model(&LLMPreferences::handle(ctx), |_, _, event, ctx| {
+                if matches!(event, LLMPreferencesEvent::UpdatedAvailableLLMs) {
                     ctx.emit(TuiHandoffModelEvent::Changed { focus_block: false });
                     ctx.notify();
                 }
             });
-        }
-        model
+            ctx.subscribe_to_model(
+                &AISettings::handle(ctx),
+                |model, _, _: &AISettingsChangedEvent, ctx| {
+                    if model.is_editable() && !AISettings::as_ref(ctx).is_cloud_handoff_enabled(ctx)
+                    {
+                        model.cancel(ctx);
+                    }
+                },
+            );
+            ctx.subscribe_to_model(&PrivacySettings::handle(ctx), |model, _, event, ctx| {
+                if matches!(
+                    event,
+                    PrivacySettingsChangedEvent::UpdateIsCloudConversationStorageEnabled { .. }
+                ) && model.is_editable()
+                    && !AISettings::as_ref(ctx).is_cloud_handoff_enabled(ctx)
+                {
+                    model.cancel(ctx);
+                }
+            });
+            ctx.subscribe_to_model(&UserWorkspaces::handle(ctx), |model, _, event, ctx| {
+                if matches!(event, UserWorkspacesEvent::TeamsChanged)
+                    && model.is_editable()
+                    && !AISettings::as_ref(ctx).is_cloud_handoff_enabled(ctx)
+                {
+                    model.cancel(ctx);
+                }
+            });
+
+            let forked_existing_conversation =
+                pending.presentation_snapshot().forked_existing_conversation;
+            let mut model = Self {
+                source_conversation_id,
+                pending: Some(pending),
+                phase: TuiHandoffPhase::Acceptance,
+                environments,
+                forked_existing_conversation,
+                validation_error: None,
+                next_operation_id: 0,
+                dismissed: false,
+            };
+            model.refresh_pending_environments(ctx);
+
+            if let Some(path) = current_working_directory.map(PathBuf::from) {
+                let suggestion = suggest_handoff_environment(path, ctx);
+                ctx.spawn(suggestion, |model, environment_id, ctx| {
+                    if !model.is_editable() || model.dismissed {
+                        return;
+                    }
+                    if let Some(environment_id) = environment_id
+                        && let Some(pending) = model.pending.as_mut()
+                    {
+                        pending.set_environment_id(Some(environment_id), false);
+                        ctx.emit(TuiHandoffModelEvent::Changed { focus_block: false });
+                        ctx.notify();
+                    }
+                });
+            }
+            model
+        }))
     }
 
     fn collect_attachments(
@@ -665,5 +652,5 @@ impl Entity for TuiHandoffModel {
 }
 
 #[cfg(test)]
-#[path = "handoff_model_tests.rs"]
+#[path = "model_tests.rs"]
 mod tests;

@@ -206,7 +206,6 @@ pub(crate) async fn resolve_repo_for_path(path: &Path) -> Option<TouchedRepo> {
 
 /// Suggests the available environment whose configured repositories overlap
 /// the Git repository containing `path`.
-#[cfg_attr(not(feature = "tui"), allow(dead_code))]
 pub fn suggest_handoff_environment(
     path: PathBuf,
     ctx: &AppContext,

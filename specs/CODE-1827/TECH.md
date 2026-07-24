@@ -8,7 +8,7 @@ This top PR implements [`PRODUCT.md`](PRODUCT.md) using three downstack foundati
 2. `code-1827-shared-handoff-pipeline` provides `prepare_handoff`, `PendingHandoff`, `execute_handoff`, shared startup classification, and GUI-proven behavior.
 3. `code-1827-shared-environment-catalog` provides the live cloud-environment catalog shared by GUI and TUI consumers.
 
-This PR contains no GUI pipeline refactor and no restructuring of existing blockers.
+This PR leaves the GUI handoff pipeline and existing blocker architecture intact. It moves the GUI compose surface onto the same repository-aware environment suggestion helper used by the TUI, so both frontends share that policy.
 
 Relevant TUI references at warp commit `c4cc7be9477897c75c34bdc75c1a324c25b12f27`:
 
@@ -45,11 +45,16 @@ Consume the downstack `CloudEnvironmentCatalog` singleton through `app/src/tui_e
 - Use its saved/default selection and persistence operations.
 - Trigger its existing out-of-band refresh operation for `R`.
 
-Keep repository-overlap suggestion in the shared handoff domain. Do not export cloud-object persistence internals or add card-owned polling.
+Keep repository-overlap suggestion in the shared handoff domain. `suggest_handoff_environment` resolves the current directory’s repository and applies the shared overlap/recency policy for both GUI compose and TUI handoff. Do not export cloud-object persistence internals or add card-owned polling.
 
 ### Handoff card
 
-Add `crates/warp_tui/src/handoff_model.rs` and `crates/warp_tui/src/handoff_block.rs`.
+Keep the TUI handoff feature under `crates/warp_tui/src/handoff/`:
+
+- `model.rs` owns handoff state and execution.
+- `block.rs` owns presentation and input handling.
+- `session.rs` owns the active card’s session integration.
+- `model_tests.rs` and `tests.rs` cover model and session behavior.
 
 `TuiHandoffModel` owns:
 
@@ -62,7 +67,9 @@ Add `crates/warp_tui/src/handoff_model.rs` and `crates/warp_tui/src/handoff_bloc
 - Preparation errors and restoration outcomes.
 - Environment/model subscriptions, validation, and handoff execution.
 
-`TuiHandoffBlock` owns selector navigation, focus, keybindings, rendering, and layout measurement. `TuiTerminalSessionView` only installs/removes the interaction and applies model-produced restoration outcomes.
+`TuiHandoffBlock` owns selector navigation, focus, keybindings, rendering, and layout measurement.
+
+Session-specific coordination lives in the terminal session’s `handoff/session.rs` child module: it constructs the model and block, installs the active view in `BlockingInputSource`, restores prompt/images, transfers a completed card into the transcript, or starts a new conversation in response to model outcomes. `TuiTerminalSessionView` retains the enum-owned active view without a parallel interaction wrapper.
 
 It installs as the `Handoff(ViewHandle<TuiHandoffBlock>)` variant of the session-owned `BlockingInputSource`. The transcript stays visible while the normal input, attachments, menus, footer, and response-status rows are suppressed.
 
@@ -88,7 +95,7 @@ Register phase-scoped fixed bindings:
 On valid Enter:
 
 1. Consume pending card state into `execute_handoff`.
-2. Pass no `materialize_local_fork` callback.
+2. Pass no `materialize_handoff_target` callback.
 3. Keep the blocker installed in non-cancellable progress state.
 4. Ignore late callbacks after the card/session is removed.
 
@@ -113,7 +120,7 @@ On fatal outcome:
 ### No environment
 
 - Render setup-required state with no creation form.
-- Enter opens `https://docs.warp.dev/agent-platform/cloud-agents/environments`.
+- Enter opens `https://oz.warp.dev/environments`.
 - `R` invokes shared refresh.
 - Automatically transition when `CloudEnvironmentCatalog` reports an environment.
 
@@ -143,16 +150,16 @@ flowchart LR
 
 ## Testing and validation
 
-Add `handoff_block_tests.rs` plus terminal-session integration-style unit tests.
+Add `handoff/model_tests.rs` plus session-level render and interaction tests in `handoff/tests.rs`.
 
 Map [`PRODUCT.md`](PRODUCT.md) invariants:
 
 - 1-7: command availability, insertion, ghost argument, parsing, fresh launch.
 - 8-15: guard errors, eager cancellation, and source-state capture through the shared API.
 - 16-20: input-area placement, focus, hidden-input preservation, and magenta theme.
-- 21-35: metadata, Ctrl-E editing, searchable environment/model pages, page navigation, no-environment docs/refresh, automatic environment transition, incompatible model.
+- 21-35: metadata, Ctrl-E editing, searchable environment/model pages, page navigation, no-environment creation-link/refresh, automatic environment transition, incompatible model.
 - 36-41: image transfer/restoration and pre-confirmation cancellation.
-- 42-52: progress state, point of no return, shared commit integration, snapshot degradation, prompt semantics.
+- 42-52: progress state, point of no return, shared execution integration, snapshot degradation, prompt semantics.
 - 53-60: created decision card, URL open without dismissal, `C` persistence and local continuation, fresh-launch behavior, and `N` new-conversation behavior.
 - 61-66: fatal cleanup, single-card invariant, settings changes, and stale callbacks.
 

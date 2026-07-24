@@ -57,13 +57,11 @@ use warpui_core::{
     AppContext, Entity, EntityId, ModelHandle, TuiView, TypedActionView, ViewContext, ViewHandle,
 };
 
-use crate::agent_block::TuiBlockingChild;
 use crate::alt_screen_view::AltScreenElement;
 use crate::attachment_bar::{
     FOCUS_ATTACHMENTS_BINDING_NAME, TuiAttachmentBar, TuiAttachmentBarEvent, TuiAttachmentModel,
     TuiAttachmentPasteDisposition,
 };
-use crate::blocking_interaction::TuiBlockingInteractionModel;
 use crate::clipboard::copy_to_clipboard;
 use crate::completion_menu::TuiCompletionMenuModel;
 use crate::conversation_menu::{TuiConversationMenuEvent, TuiConversationMenuModel};
@@ -83,6 +81,7 @@ use crate::keybindings::{
 };
 use crate::mcp_menu::{TuiMcpMenuEvent, TuiMcpMenuModel};
 use crate::model_menu::{TuiModelMenuEvent, TuiModelMenuModel};
+use crate::orchestration_block::TuiOrchestrationBlock;
 use crate::orchestration_model::{TuiOrchestrationModel, TuiOrchestrationSnapshot};
 use crate::orchestration_tab_bar::{
     ORCHESTRATION_TAB_BAR_FOCUSED_FLAG, TuiOrchestrationTabNavigationAction,
@@ -104,8 +103,10 @@ use crate::terminal_use::{
 };
 use crate::transcript_view::{TuiTranscriptView, TuiTranscriptViewEvent};
 use crate::transient_hint::{TransientHint, TransientHintTone};
+use crate::tui_ask_question_view::TuiAskQuestionView;
 use crate::tui_builder::TuiUiBuilder;
 use crate::tui_cli_subagent_view::{HAND_BACK_KEY_BINDING, TuiCLISubagentView};
+use crate::tui_permission_prompt::TuiPermissionPrompt;
 use crate::ui::{compact_footer_path, conversation_restore_failed, conversation_restoring};
 use crate::usage::UsageToggle;
 use crate::voice_input::{TuiVoiceInputEvent, TuiVoiceInputState, VoiceInputStartSource};
@@ -136,6 +137,18 @@ pub(crate) const SESSION_COMPOSER_OWNS_INPUT_FLAG: &str = "TuiSessionComposerOwn
 pub(crate) const PASTE_IMAGE_BINDING_NAME: &str = "tui:session:paste_image";
 pub(crate) const AUTO_APPROVE_TOGGLE_BINDING_NAME: &str = "tui:session:toggle_auto_approve";
 pub(crate) const VOICE_INPUT_BINDING_NAME: &str = "tui:session:start_voice_input";
+/// The current source preventing the normal session composer from owning input.
+#[derive(Clone)]
+pub(super) enum TuiBlockInputSource {
+    /// A user-controlled long-running terminal command.
+    LongRunningCommand,
+    /// An ask-user-question questionnaire.
+    AskQuestion(ViewHandle<TuiAskQuestionView>),
+    /// A standard Yes/No/Other permission request.
+    Permission(ViewHandle<TuiPermissionPrompt>),
+    /// The specialized orchestration configuration request.
+    Orchestration(ViewHandle<TuiOrchestrationBlock>),
+}
 
 /// Events emitted by the TUI terminal session surface.
 pub(crate) enum TuiTerminalSessionEvent {
@@ -592,7 +605,7 @@ pub(crate) struct TuiTerminalSessionView {
     conversation_restore_state: ConversationRestoreState,
     next_restore_request_id: u64,
     exit_summary: TuiExitSummaryHandle,
-    blocking_interaction_model: ModelHandle<TuiBlockingInteractionModel>,
+    should_block_input: Option<TuiBlockInputSource>,
     orchestration_tab_bar: ViewHandle<TuiTabBarView>,
     orchestration_tabs_focused: bool,
     zero_state_view: ViewHandle<TuiZeroStateView>,
@@ -756,28 +769,42 @@ impl TuiTerminalSessionView {
         tui_input_target(&terminal_model)
     }
 
-    fn update_process_input_focus(&mut self, ctx: &mut ViewContext<Self>) {
-        self.focus_current_owner_if_active(ctx);
+    fn block_input_source(&self, ctx: &AppContext) -> Option<TuiBlockInputSource> {
+        if let Some(source) = self.active_block_input_source(ctx) {
+            return Some(source);
+        }
+
+        let terminal_model = self.terminal_model.lock();
+        inline_process_owns_input(&terminal_model)
+            .then_some(TuiBlockInputSource::LongRunningCommand)
     }
 
-    fn focus_blocking_child(blocker: TuiBlockingChild, ctx: &mut ViewContext<Self>) {
-        match blocker {
-            TuiBlockingChild::AskQuestion(view) => {
+    fn sync_block_input_source(&mut self, ctx: &mut ViewContext<Self>) {
+        self.should_block_input = self.block_input_source(ctx);
+        self.focus_current_owner_if_active(ctx);
+        ctx.notify();
+    }
+
+    fn focus_block_input_source(source: TuiBlockInputSource, ctx: &mut ViewContext<Self>) {
+        match source {
+            TuiBlockInputSource::LongRunningCommand => ctx.focus_self(),
+            TuiBlockInputSource::AskQuestion(view) => {
                 view.update(ctx, |view, ctx| view.focus(ctx));
             }
-            TuiBlockingChild::Permission(view) => {
+            TuiBlockInputSource::Permission(view) => {
                 view.update(ctx, |view, ctx| view.focus(ctx));
             }
-            TuiBlockingChild::Orchestration(view) => ctx.focus(&view),
+            TuiBlockInputSource::Orchestration(view) => ctx.focus(&view),
         }
     }
 
     fn focus_current_owner(&mut self, ctx: &mut ViewContext<Self>) {
+        let block_input_source = self.should_block_input.clone();
         match self.input_target() {
             TuiInputTarget::Disabled => {
-                if let Some(blocker) = self.active_blocking_child(ctx) {
+                if let Some(source) = block_input_source {
                     self.orchestration_tabs_focused = false;
-                    Self::focus_blocking_child(blocker, ctx);
+                    Self::focus_block_input_source(source, ctx);
                 } else if self.orchestration_tabs_focused {
                     ctx.focus_self();
                 } else {
@@ -789,9 +816,9 @@ impl TuiTerminalSessionView {
                 ctx.focus_self();
             }
             TuiInputTarget::AgentEditor => {
-                if let Some(blocker) = self.active_blocking_child(ctx) {
+                if let Some(source) = block_input_source {
                     self.orchestration_tabs_focused = false;
-                    Self::focus_blocking_child(blocker, ctx);
+                    Self::focus_block_input_source(source, ctx);
                 } else if self.orchestration_tabs_focused {
                     ctx.focus_self();
                 } else {
@@ -924,7 +951,7 @@ impl TuiTerminalSessionView {
                 });
             }
         }
-        self.update_process_input_focus(ctx);
+        self.sync_block_input_source(ctx);
         ctx.notify();
     }
 
@@ -950,7 +977,7 @@ impl TuiTerminalSessionView {
                         ctx,
                     );
                 });
-                self.update_process_input_focus(ctx);
+                self.sync_block_input_source(ctx);
                 true
             }
             TerminalUseInterruptAction::InterruptCommand => {
@@ -967,7 +994,7 @@ impl TuiTerminalSessionView {
         self.cli_subagent_controller.update(ctx, |controller, ctx| {
             controller.handoff_active_command_control_to_agent(ctx);
         });
-        self.update_process_input_focus(ctx);
+        self.sync_block_input_source(ctx);
     }
 
     fn active_agent_controlled_target(&self, ctx: &AppContext) -> Option<CLISubagentTarget> {
@@ -1071,12 +1098,6 @@ impl TuiTerminalSessionView {
             )
         });
 
-        let blocking_interaction_model = ctx.add_model(TuiBlockingInteractionModel::new);
-        ctx.subscribe_to_model(&blocking_interaction_model, |view, _, _, ctx| {
-            view.focus_current_owner_if_active(ctx);
-            ctx.notify();
-        });
-
         let ai_input_model = ctx.add_model(|ctx| {
             BlocklistAIInputModel::new(
                 model.clone(),
@@ -1147,11 +1168,9 @@ impl TuiTerminalSessionView {
                 ctx,
             )
         });
-        // Publish the concrete front-of-queue blocker on every action-queue
-        // transition; the centralized model drives visibility and focus
-        // notifications.
+        // Reconcile input blocking on every action-queue transition.
         ctx.subscribe_to_model(&action_model, |view, _, _, ctx| {
-            view.sync_blocker_state(ctx);
+            view.sync_block_input_source(ctx);
         });
         let input_editor_model =
             ctx.add_model(|ctx| CodeEditorModel::new_tui(INITIAL_INPUT_WIDTH, ctx));
@@ -1349,7 +1368,7 @@ impl TuiTerminalSessionView {
                 }
             },
             TuiTranscriptViewEvent::BlockingStateChanged => {
-                view.sync_blocker_state(ctx);
+                view.sync_block_input_source(ctx);
             }
             TuiTranscriptViewEvent::PermissionReplacementGuidanceSubmitted {
                 conversation_id,
@@ -1470,15 +1489,15 @@ impl TuiTerminalSessionView {
         ctx.subscribe_to_model(&model_events, |view, _, event, ctx| match event {
             ModelEvent::BlockCompleted(completed) => {
                 view.resume_after_user_controlled_command(&completed.block_id, ctx);
-                view.update_process_input_focus(ctx);
+                view.sync_block_input_source(ctx);
                 ctx.notify();
             }
             ModelEvent::AfterBlockStarted { .. } => {
-                view.update_process_input_focus(ctx);
+                view.sync_block_input_source(ctx);
                 ctx.notify();
             }
             ModelEvent::VisibleBootstrapBlock | ModelEvent::BootstrapPrecmdDone => {
-                view.update_process_input_focus(ctx);
+                view.sync_block_input_source(ctx);
                 ctx.notify();
             }
             ModelEvent::Typeahead => view.handle_typeahead_event(ctx),
@@ -1634,7 +1653,7 @@ impl TuiTerminalSessionView {
             conversation_restore_state: ConversationRestoreState::Idle,
             next_restore_request_id: 0,
             exit_summary,
-            blocking_interaction_model,
+            should_block_input: None,
             orchestration_tab_bar,
             orchestration_tabs_focused: false,
             zero_state_view,
@@ -1810,12 +1829,13 @@ impl TuiTerminalSessionView {
         render_orchestration_tab_footer(builder)
     }
     /// The active front-of-queue blocking interaction, if any.
-    fn active_blocking_child(&self, ctx: &AppContext) -> Option<TuiBlockingChild> {
-        self.transcript.as_ref(ctx).active_blocking_child(ctx)
+    fn active_block_input_source(&self, ctx: &AppContext) -> Option<TuiBlockInputSource> {
+        self.transcript.as_ref(ctx).active_block_input_source(ctx)
     }
 
     /// Activates this session after the registry has made it authoritative.
     pub(crate) fn activate(&mut self, ctx: &mut ViewContext<Self>) {
+        self.should_block_input = self.block_input_source(ctx);
         self.focus_current_owner(ctx);
         self.write_exit_summary(ctx);
         ctx.notify();
@@ -1826,34 +1846,6 @@ impl TuiTerminalSessionView {
         TuiSessions::as_ref(ctx)
             .focused_session_id()
             .is_some_and(|id| id.surface_id() == self.terminal_surface_id)
-    }
-
-    /// Publishes the effective front-of-queue blocker without moving concrete
-    /// rendering or focus behavior into the centralized model.
-    fn sync_blocker_state(&mut self, ctx: &mut ViewContext<Self>) {
-        let next = self
-            .active_blocking_child(ctx)
-            .as_ref()
-            .map(TuiBlockingChild::id);
-        self.blocking_interaction_model.update(ctx, |model, ctx| {
-            let current = model.blocker();
-            match (current, next) {
-                (None, Some(next)) => {
-                    let result = model.activate(next, ctx);
-                    debug_assert!(result.is_ok());
-                }
-                (Some(current), Some(next)) if current != next => {
-                    if model.deactivate(current, ctx) {
-                        let result = model.activate(next, ctx);
-                        debug_assert!(result.is_ok());
-                    }
-                }
-                (Some(current), None) => {
-                    model.deactivate(current, ctx);
-                }
-                (None, None) | (Some(_), Some(_)) => {}
-            }
-        });
     }
 
     /// Restores an Oz conversation into the TUI's sole conversation surface.
@@ -2136,7 +2128,7 @@ impl TuiTerminalSessionView {
         }
         let is_focused = self.is_focused_session(ctx);
         if is_focused {
-            self.update_process_input_focus(ctx);
+            self.sync_block_input_source(ctx);
             ctx.notify();
         }
         is_focused
@@ -3520,12 +3512,11 @@ impl TuiView for TuiTerminalSessionView {
         }
         // While a full-screen (alt-screen) app is active, hand the whole pane to
         // it: render its grid and forward input, instead of the block UI.
-        let (alt_screen_active, input_target, user_owns_running_command) = {
+        let (alt_screen_active, input_target) = {
             let terminal_model = self.terminal_model.lock();
             (
                 terminal_model.is_alt_screen_active(),
                 tui_input_target(&terminal_model),
-                inline_process_owns_input(&terminal_model),
             )
         };
         if alt_screen_active {
@@ -3568,10 +3559,20 @@ impl TuiView for TuiTerminalSessionView {
         // While a `RunAgents` card (or another blocking interaction) is the
         // active front-of-queue blocker, the input box, inline menus, normal
         // footer, and the warping/summary row are omitted; the blocker
-        // renders its own action hints in their place. Visibility derives from
-        // the centralized blocker identity, and the hidden input model is
-        // never written to, so its draft/cursor/selection/scroll survive.
-        let blocker_active = self.blocking_interaction_model.as_ref(ctx).is_active();
+        // renders its own action hints in their place. The hidden input model
+        // is never written to, so its draft/cursor/selection/scroll survive.
+        let blocker_active = matches!(
+            self.should_block_input.as_ref(),
+            Some(
+                TuiBlockInputSource::AskQuestion(_)
+                    | TuiBlockInputSource::Permission(_)
+                    | TuiBlockInputSource::Orchestration(_)
+            )
+        );
+        let user_owns_running_command = matches!(
+            self.should_block_input.as_ref(),
+            Some(TuiBlockInputSource::LongRunningCommand)
+        );
         if !blocker_active && matches!(input_target, TuiInputTarget::Disabled) {
             content = content.child(
                 TuiContainer::new(

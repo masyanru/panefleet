@@ -16,8 +16,7 @@ use warp_core::settings::Setting as _;
 use warp_editor::model::CoreEditorModel;
 use warpui::platform::WindowStyle;
 use warpui::{
-    AddWindowOptions, EntityId, EntityIdMap, ModelHandle, ReadModel, SingletonEntity, UpdateModel,
-    ViewHandle,
+    AddWindowOptions, EntityIdMap, ModelHandle, ReadModel, SingletonEntity, UpdateModel, ViewHandle,
 };
 use warpui_core::r#async::Timer;
 use warpui_core::elements::tui::{
@@ -36,9 +35,9 @@ use super::{
     COST_CONVERSATION_IN_PROGRESS_HINT, COST_EMPTY_CONVERSATION_HINT,
     COST_NO_ACTIVE_CONVERSATION_HINT, CTRL_C_EXIT_HINT, ConversationRestoreState, FooterSegments,
     INLINE_MENU_TOP_PADDING_ROWS, LOADING_CONVERSATION_HINT, LOG_BUNDLE_FAILED_HINT,
-    SESSION_COMPOSER_OWNS_INPUT_FLAG, SHELL_MODE_HINT, TuiConversationRestoreOrigin,
-    TuiTerminalSessionAction, TuiTerminalSessionEvent, TuiTerminalSessionView,
-    VOICE_INPUT_BINDING_NAME, VOICE_USAGE_HINT, attachment_focus_available,
+    SESSION_COMPOSER_OWNS_INPUT_FLAG, SHELL_MODE_HINT, TuiBlockInputSource,
+    TuiConversationRestoreOrigin, TuiTerminalSessionAction, TuiTerminalSessionEvent,
+    TuiTerminalSessionView, VOICE_INPUT_BINDING_NAME, VOICE_USAGE_HINT, attachment_focus_available,
     cost_command_unavailable_hint, export_file_success_message, log_bundle_success_message,
     raw_prompt_if_not_blank, render_status_footer_row, voice_argument_is_empty,
     voice_command_argument,
@@ -112,50 +111,6 @@ fn voice_slash_command_rejects_arguments_before_prompt_fallback() {
                     .map(|(text, _)| text.to_owned())
             }),
             Some(VOICE_USAGE_HINT.to_owned())
-        );
-    });
-}
-
-#[test]
-fn centralized_blocker_state_controls_input_suppression() {
-    App::test((), |mut app| async move {
-        let fixture = focus_test_fixture(&mut app);
-        let (view, _) = add_focus_test_session(&mut app, &fixture, true);
-        let blocker = EntityId::new();
-
-        let unblocked = render_session(&mut app, &view, 80, 40);
-        assert!(
-            unblocked
-                .iter()
-                .any(|line| line.contains('┌') || line.contains('─')),
-            "input renders before a blocker is active:\n{}",
-            unblocked.join("\n")
-        );
-
-        view.read(&app, |view, _| view.blocking_interaction_model.clone())
-            .update(&mut app, |model, ctx| {
-                model.activate(blocker, ctx).expect("blocker activates");
-            });
-        let blocked = render_session(&mut app, &view, 80, 40);
-        assert!(
-            !blocked
-                .iter()
-                .any(|line| line.contains('┌') || line.contains('─')),
-            "central blocker state suppresses input:\n{}",
-            blocked.join("\n")
-        );
-
-        view.read(&app, |view, _| view.blocking_interaction_model.clone())
-            .update(&mut app, |model, ctx| {
-                assert!(model.deactivate(blocker, ctx));
-            });
-        let unblocked = render_session(&mut app, &view, 80, 40);
-        assert!(
-            unblocked
-                .iter()
-                .any(|line| line.contains('┌') || line.contains('─')),
-            "input returns after the matching blocker deactivates:\n{}",
-            unblocked.join("\n")
         );
     });
 }
@@ -1179,10 +1134,15 @@ fn long_running_command_keeps_input_hidden() {
     App::test((), |mut app| async move {
         let fixture = focus_test_fixture(&mut app);
         let (view, _) = add_focus_test_session(&mut app, &fixture, true);
-        view.update(&mut app, |view, _| {
+        view.update(&mut app, |view, ctx| {
             view.terminal_model
                 .lock()
                 .simulate_long_running_block("cat", "");
+            view.sync_block_input_source(ctx);
+            assert!(matches!(
+                view.should_block_input.as_ref(),
+                Some(TuiBlockInputSource::LongRunningCommand)
+            ));
         });
 
         let lines = render_session(&mut app, &view, 80, 40);

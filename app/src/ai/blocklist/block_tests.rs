@@ -154,7 +154,7 @@ fn linked_code_source_uses_configured_editor_and_preserves_location() {
                 column_num: Some(7),
             }),
             target_override: None,
-        }) if absolute_path == PathBuf::from("/workspace/project/src/main.rs")
+        }) if absolute_path.as_path() == std::path::Path::new("/workspace/project/src/main.rs")
     ));
 }
 #[test]

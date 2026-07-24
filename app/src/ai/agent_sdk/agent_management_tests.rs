@@ -55,6 +55,40 @@ fn table_format_does_not_include_available_column() {
 }
 
 #[test]
+fn table_format_truncates_prompt_to_sixty_characters() {
+    let mut agent = agent("1", "agent", 1);
+    agent.prompt = Some("a".repeat(PROMPT_DISPLAY_MAX_CHARS + 1));
+
+    let prompt = agent
+        .row()
+        .last()
+        .expect("prompt cell")
+        .content()
+        .to_string();
+
+    assert_eq!(prompt.chars().count(), PROMPT_DISPLAY_MAX_CHARS);
+    assert_eq!(
+        prompt,
+        format!("{}…", "a".repeat(PROMPT_DISPLAY_MAX_CHARS - 1))
+    );
+}
+
+#[test]
+fn table_format_preserves_short_prompt_and_flattens_newlines() {
+    let mut agent = agent("1", "agent", 1);
+    agent.prompt = Some("first line\nsecond line".to_string());
+
+    let prompt = agent
+        .row()
+        .last()
+        .expect("prompt cell")
+        .content()
+        .to_string();
+
+    assert_eq!(prompt, "first line second line");
+}
+
+#[test]
 fn visible_agents_and_hidden_count_filters_disabled_agents() {
     let agents = vec![
         agent_with_available("1", "enabled", 1, true),

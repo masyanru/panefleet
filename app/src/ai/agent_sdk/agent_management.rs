@@ -386,6 +386,24 @@ fn sort_agents(
     });
 }
 
+const PROMPT_DISPLAY_MAX_CHARS: usize = 60;
+
+fn display_prompt(prompt: Option<&str>) -> String {
+    let Some(prompt) = prompt else {
+        return display_optional(None);
+    };
+    let prompt = prompt.lines().collect::<Vec<_>>().join(" ");
+    if prompt.chars().count() <= PROMPT_DISPLAY_MAX_CHARS {
+        return prompt;
+    }
+
+    prompt
+        .chars()
+        .take(PROMPT_DISPLAY_MAX_CHARS - 1)
+        .chain(std::iter::once('…'))
+        .collect()
+}
+
 impl TableFormat for AgentResponse {
     fn header() -> Vec<Cell> {
         vec![
@@ -413,7 +431,7 @@ impl TableFormat for AgentResponse {
             Cell::new(display_list(self.skills.iter().map(String::as_str))),
             Cell::new(display_optional(self.base_model.as_deref())),
             Cell::new(display_optional(self.environment_id.as_deref())),
-            Cell::new(display_optional(self.prompt.as_deref())),
+            Cell::new(display_prompt(self.prompt.as_deref())),
         ]
     }
 }

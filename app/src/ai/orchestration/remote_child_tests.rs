@@ -1,6 +1,7 @@
+use std::path::PathBuf;
+
 use ai::skills::parse_skill;
 use anyhow::anyhow;
-use std::path::PathBuf;
 use tempfile::TempDir;
 use warpui::App;
 

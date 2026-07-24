@@ -66,9 +66,11 @@ brew install jq
 brew install getsentry/tools/sentry-cli
 brew install clang-format
 brew install create-dmg
+brew install fish
 brew install multitime
 brew install powershell
 brew install pkgconf
+brew install shellcheck
 brew install llvm
 
 # Install PSScriptAnalyzer for PowerShell linting

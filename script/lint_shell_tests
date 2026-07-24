@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$REPO_ROOT"
+
+if ! command -v shellcheck >/dev/null 2>&1 || ! command -v fish >/dev/null 2>&1 || ! command -v zsh >/dev/null 2>&1; then
+    echo "Skipping shell lint regression tests because a required shell linter is unavailable."
+    exit 0
+fi
+./script/lint_shell --file app/assets/bundled/bootstrap/fish.sh >/dev/null
+./script/lint_shell --file app/assets/bundled/bootstrap/zsh.sh >/dev/null
+
+temporary_directory="$(mktemp -d)"
+trap 'rm -rf "$temporary_directory"' EXIT
+
+bad_bash="$temporary_directory/bad.sh"
+printf '%s\n' '#!/usr/bin/env bash' "printf \"%s\\n\" \$UNQUOTED" >"$bad_bash"
+if ./script/lint_shell --file "$bad_bash" >/dev/null 2>&1; then
+    echo "ShellCheck failed to reject an unquoted Bash expansion." >&2
+    exit 1
+fi
+
+bad_fish="$temporary_directory/bad.fish"
+printf '%s\n' "if test \"\$value\" = \"expected\"" "    echo \"\$value\"" >"$bad_fish"
+if ./script/lint_shell --file "$bad_fish" >/dev/null 2>&1; then
+    echo "Fish syntax checking failed to reject an unterminated if statement." >&2
+    exit 1
+fi
+
+bad_zsh="$temporary_directory/bad.zsh"
+printf '%s\n' 'if true; then' '    print "missing fi"' >"$bad_zsh"
+if ./script/lint_shell --file "$bad_zsh" >/dev/null 2>&1; then
+    echo "Zsh syntax checking failed to reject an unterminated if statement." >&2
+    exit 1
+fi
+
+echo "Shell lint regression tests succeeded."

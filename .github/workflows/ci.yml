@@ -666,6 +666,17 @@ jobs:
           # Make sure all of our dependencies use licenses that are compatible with
           # our usage.
           cargo deny -L error check licenses
+      - name: Install shells for linting
+        uses: ConorMacBride/install-package@3e7ad059e07782ee54fa35f827df52aae0626f30 # v1
+        with:
+          apt: fish shellcheck zsh
+
+      - name: Run shell lint
+        run: |
+          BASE_REF="${GITHUB_BASE_REF:-master}"
+          git fetch --no-tags origin "$BASE_REF" --depth=1
+          SHELL_LINT_BASE_REF="origin/$BASE_REF" ./script/lint_shell --ci
+          ./script/lint_shell_tests
 
       - name: Check deny.toml / about.toml license sync
         run: ./script/check_license_config_sync

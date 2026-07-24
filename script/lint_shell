@@ -1,0 +1,242 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$REPO_ROOT"
+
+ci=false
+explicit_files=false
+files=()
+
+while (($# > 0)); do
+    case "$1" in
+        --ci)
+            ci=true
+            shift
+            ;;
+        --file)
+            if (($# < 2)); then
+                echo "error: --file requires a path" >&2
+                exit 2
+            fi
+            explicit_files=true
+            files+=("$2")
+            shift 2
+            ;;
+        --help|-h)
+            cat <<'EOF'
+Usage: ./script/lint_shell [--ci] [--file PATH]...
+
+Lint changed shell files. ShellCheck diagnostics are blocking only when they
+land on changed lines, which keeps the existing baseline from preventing this
+gate from being introduced. Fish and Zsh files are checked with their native
+parse-only modes.
+
+Use --file to lint one or more files in full; this mode is intended for tests
+and for checking a new file before it is tracked by Git.
+EOF
+            exit 0
+            ;;
+        *)
+            echo "error: unexpected argument '$1' (use --file PATH)" >&2
+            exit 2
+            ;;
+    esac
+done
+
+missing_tools=()
+command -v shellcheck >/dev/null 2>&1 || missing_tools+=(shellcheck)
+command -v fish >/dev/null 2>&1 || missing_tools+=(fish)
+command -v zsh >/dev/null 2>&1 || missing_tools+=(zsh)
+if ((${#missing_tools[@]} > 0)); then
+    echo "Shell lint requires: ${missing_tools[*]}" >&2
+    if "$ci" || [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
+        exit 1
+    fi
+    echo "Skipping shell lint outside CI because a required tool is unavailable." >&2
+    exit 0
+fi
+
+shell_kind() {
+    local file="$1"
+    local basename="${file##*/}"
+    local first_line=""
+
+    if [[ "$basename" == *.fish || "$basename" == fish*.sh || "$basename" == fish_*.sh ]]; then
+        printf '%s\n' fish
+        return 0
+    fi
+    if [[ "$basename" == *.zsh || "$basename" == zsh*.sh || "$basename" == zsh_*.sh ]]; then
+        printf '%s\n' zsh
+        return 0
+    fi
+
+    if [[ -f "$file" ]]; then
+        first_line="$(sed -n '1p' "$file")"
+        case "$first_line" in
+            '#!'*fish*) printf '%s\n' fish; return 0 ;;
+            '#!'*zsh*) printf '%s\n' zsh; return 0 ;;
+            '#!'*bash*|'#!/bin/sh'|'#!/usr/bin/sh'|'#!/bin/env sh')
+                printf '%s\n' bash
+                return 0
+                ;;
+        esac
+    fi
+
+    if [[ "$basename" == *.sh ]]; then
+        printf '%s\n' bash
+    fi
+}
+
+is_changed_line() {
+    local file="$1"
+    local line_number="$2"
+    local start count end
+
+    if "$explicit_files"; then
+        return 0
+    fi
+
+    if [[ "${changed_files[$file]:-}" == untracked ]]; then
+        return 0
+    fi
+
+    while IFS= read -r hunk; do
+        if [[ "$hunk" =~ ^@@\ -[0-9]+(,[0-9]+)?\ +\+([0-9]+)(,([0-9]+))?\ @@ ]]; then
+            start="${BASH_REMATCH[2]}"
+            count="${BASH_REMATCH[4]:-1}"
+            if [[ "$count" -eq 0 ]]; then
+                continue
+            fi
+            end=$((start + count - 1))
+            if ((line_number >= start && line_number <= end)); then
+                return 0
+            fi
+        fi
+    done < <(git diff --unified=0 "$base_ref" -- "$file")
+
+    return 1
+}
+
+lint_bash_file() {
+    local file="$1"
+    local output=""
+    local status=0
+    local diagnostic_file diagnostic_line diagnostic_column diagnostic
+    local found_violation=false
+    local parsed_diagnostic=false
+
+    output="$(shellcheck --format=gcc "$file" 2>&1)" || status=$?
+    while IFS=: read -r diagnostic_file diagnostic_line diagnostic_column diagnostic; do
+        [[ -n "$diagnostic_file" && "$diagnostic_line" =~ ^[0-9]+$ ]] || continue
+        parsed_diagnostic=true
+        if is_changed_line "$file" "$diagnostic_line"; then
+            printf '%s:%s:%s:%s\n' "$diagnostic_file" "$diagnostic_line" "$diagnostic_column" "$diagnostic"
+            found_violation=true
+        fi
+    done <<< "$output"
+
+    if "$found_violation"; then
+        return 1
+    fi
+    if ((status != 0)) && [[ -n "$output" && "$parsed_diagnostic" == false ]]; then
+        echo "$output" >&2
+        return 1
+    fi
+    return 0
+}
+
+lint_native_file() {
+    local file="$1"
+    local kind="$2"
+    local output=""
+    local status=0
+
+    case "$kind" in
+        fish)
+            output="$(fish --no-config --no-execute "$file" 2>&1)" || status=$?
+            ;;
+        zsh)
+            output="$(zsh -f -n "$file" 2>&1)" || status=$?
+            ;;
+    esac
+
+    if ((status != 0)); then
+        printf '%s\n' "$output" >&2
+        return 1
+    fi
+}
+
+declare -A changed_files=()
+declare -A lint_files=()
+
+if "$explicit_files"; then
+    for file in "${files[@]}"; do
+        [[ -f "$file" ]] || {
+            echo "error: shell file does not exist: $file" >&2
+            exit 2
+        }
+        kind="$(shell_kind "$file")"
+        if [[ -n "$kind" ]]; then
+            lint_files["$file"]="$kind"
+        fi
+    done
+else
+    base_ref="${SHELL_LINT_BASE_REF:-}"
+    if [[ -z "$base_ref" && -n "${GITHUB_BASE_REF:-}" ]]; then
+        base_ref="origin/$GITHUB_BASE_REF"
+    fi
+    if [[ -z "$base_ref" ]] && git rev-parse --verify origin/master >/dev/null 2>&1; then
+        base_ref=origin/master
+    fi
+    if [[ -z "$base_ref" ]]; then
+        base_ref=HEAD
+    fi
+    git rev-parse --verify "$base_ref" >/dev/null 2>&1 || {
+        echo "error: unable to resolve shell lint base '$base_ref'" >&2
+        exit 2
+    }
+
+    while IFS= read -r file; do
+        [[ -n "$file" ]] || continue
+        if [[ -f "$file" ]]; then
+            kind="$(shell_kind "$file")"
+            if [[ -n "$kind" ]]; then
+                lint_files["$file"]="$kind"
+            fi
+        fi
+    done < <(git diff --name-only "$base_ref")
+
+    while IFS= read -r file; do
+        [[ -n "$file" ]] || continue
+        kind="$(shell_kind "$file")"
+        if [[ -n "$kind" ]]; then
+            changed_files["$file"]=untracked
+            lint_files["$file"]="$kind"
+        fi
+    done < <(git ls-files --others --exclude-standard)
+fi
+
+if ((${#lint_files[@]} == 0)); then
+    echo "No changed shell files to lint."
+    exit 0
+fi
+
+failed=false
+for file in "${!lint_files[@]}"; do
+    kind="${lint_files[$file]}"
+    echo "Linting $file ($kind)..."
+    if [[ "$kind" == bash ]]; then
+        lint_bash_file "$file" || failed=true
+    else
+        lint_native_file "$file" "$kind" || failed=true
+    fi
+done
+
+if "$failed"; then
+    echo "Shell lint failed." >&2
+    exit 1
+fi
+
+echo "Shell lint succeeded."

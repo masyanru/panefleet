@@ -20,8 +20,8 @@ if [[ "$(source /etc/os-release; echo $ID $ID_LIKE)" = *"debian"* ]]; then
   # Define the packages to install as a bash array so we can include
   # comments between lines.
   PACKAGES=(
-    # Install the zsh and fish shells.
-    zsh fish
+    # Install the zsh and fish shells plus the shell lint gate used by presubmit.
+    zsh fish shellcheck
     # We run vim in some integration tests to test the altscreen.
     vim
   )

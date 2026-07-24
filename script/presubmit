@@ -57,6 +57,10 @@ else
     # Otherwise, post a notice that we are skipping powershell
     echo "No Powershell detected! skipping PSScriptAnalyzer!"
 fi
+echo "Running shell lint..."
+./script/lint_shell
+./script/lint_shell_tests
+echo "Shell lint succeeded..."
 
 echo "Running tests via nextest..."
 cargo nextest run --no-fail-fast --workspace --exclude command-signatures-v2

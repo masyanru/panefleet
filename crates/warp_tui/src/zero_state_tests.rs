@@ -3,10 +3,17 @@ use std::path::PathBuf;
 use uuid::Uuid;
 use warp::tui_export::{
     TuiMcpConfigState, TuiMcpServerId, TuiMcpServerSnapshot, TuiMcpServerStatus, TuiMcpSnapshot,
-    TuiMcpTransport,
+    TuiMcpTransport, register_tui_session_view_test_singletons,
 };
+use warpui::EntityIdMap;
+use warpui_core::elements::tui::{
+    TuiBuffer, TuiConstraint, TuiElement, TuiLayoutContext, TuiPaintContext, TuiPaintSurface,
+    TuiRect, TuiScreenPosition, TuiSize,
+};
+use warpui_core::{App, AppContext};
 
 use super::mcp_status_label;
+use crate::tui_builder::TuiUiBuilder;
 
 fn server(id: u64, status: TuiMcpServerStatus) -> TuiMcpServerSnapshot {
     TuiMcpServerSnapshot {
@@ -80,4 +87,52 @@ fn mcp_summary_marks_config_errors() {
         mcp_status_label(&snapshot),
         ("Config error · run /mcp".to_string(), true)
     );
+}
+
+fn render_element_lines(
+    mut element: Box<dyn TuiElement>,
+    ctx: &AppContext,
+    width: u16,
+    height: u16,
+) -> Vec<String> {
+    let mut rendered_views = EntityIdMap::default();
+    let mut layout_ctx = TuiLayoutContext {
+        rendered_views: &mut rendered_views,
+    };
+    let size = element.layout(
+        TuiConstraint::loose(TuiSize::new(width, height)),
+        &mut layout_ctx,
+        ctx,
+    );
+    let area = TuiRect::new(0, 0, size.width, size.height);
+    let mut buffer = TuiBuffer::empty(area);
+    let mut paint_ctx = TuiPaintContext::new(&mut rendered_views);
+    {
+        let mut surface = TuiPaintSurface::new(&mut buffer);
+        element.render(
+            TuiScreenPosition::new(i32::from(area.x), i32::from(area.y)),
+            &mut surface,
+            &mut paint_ctx,
+        );
+    }
+    buffer.to_lines()
+}
+
+#[test]
+fn login_line_shows_signed_in_account_email() {
+    App::test((), |mut app| async move {
+        register_tui_session_view_test_singletons(&mut app);
+
+        let lines = app.read(|ctx| {
+            let builder = TuiUiBuilder::from_app(ctx);
+            render_element_lines(super::render_login_line(&builder, ctx), ctx, 48, 1)
+        });
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("Signed in as test_user@warp.dev")),
+            "zero-state login line should show the signed-in email:\n{}",
+            lines.join("\n")
+        );
+    });
 }

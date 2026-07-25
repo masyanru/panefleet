@@ -2,7 +2,7 @@ use super::*;
 
 fn team(name: &str, member_uids: &[&str]) -> Team {
     Team::from_local_cache(
-        ServerId::from_string_lossy(name),
+        ServerId::from_string_lossy(format!("{name:0>22}")),
         name.to_string(),
         None,
         None,
@@ -21,7 +21,7 @@ fn team(name: &str, member_uids: &[&str]) -> Team {
 
 fn workspace(teams: Vec<Team>) -> Workspace {
     Workspace::from_local_cache(
-        "workspace".to_string().into(),
+        format!("{:0>22}", "workspace").into(),
         "workspace".to_string(),
         Some(teams),
     )

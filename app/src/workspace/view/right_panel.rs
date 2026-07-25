@@ -6,12 +6,14 @@ use itertools::Itertools;
 use pathfinder_color::ColorU;
 use warp_core::features::FeatureFlag;
 use warp_core::ui::Icon;
+use warp_core::ui::theme::color::internal_colors;
 use warp_errors::report_error;
 use warp_util::path::LineAndColumnArg;
 use warpui::elements::{
-    ChildAnchor, ChildView, Clipped, ConstrainedBox, Container, CrossAxisAlignment, DragBarSide,
-    Element, Empty, Flex, MainAxisAlignment, MainAxisSize, MouseStateHandle, ParentElement,
-    PositionedElementAnchor, Resizable, ResizableStateHandle, Shrinkable, Text,
+    Border, ChildAnchor, ChildView, Clipped, ConstrainedBox, Container, CornerRadius,
+    CrossAxisAlignment, DragBarSide, Element, Empty, Fill as ElementFill, Flex, Hoverable,
+    MainAxisAlignment, MainAxisSize, MouseStateHandle, Padding, ParentElement,
+    PositionedElementAnchor, Radius, Resizable, ResizableStateHandle, Shrinkable, Text,
     resizable_state_handle,
 };
 use warpui::fonts::{Properties, Weight};
@@ -26,6 +28,7 @@ use warpui::{
 use crate::ai::agent::AgentReviewCommentBatch;
 use crate::appearance::{Appearance, AppearanceEvent};
 use crate::code::buffer_location::LocalOrRemotePath;
+use crate::code::file_tree::FileTreeView;
 use crate::code_review::code_review_header::HEADER_BUTTON_PADDING;
 #[cfg(feature = "local_fs")]
 use crate::code_review::code_review_view::CodeReviewAction;
@@ -393,12 +396,28 @@ impl CodeReviewState {
 #[cfg_attr(not(feature = "local_fs"), allow(dead_code))]
 pub enum RightPanelAction {
     ToggleFileSidebar,
+    SelectPaneFleetTab(PaneFleetRightPanelTab),
     SelectRepo {
         repo_path: LocalOrRemotePath,
         from_dropdown: bool,
     },
     OpenRepository,
     ToggleMaximize,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PaneFleetRightPanelTab {
+    #[default]
+    Files,
+    Changes,
+    Review,
+}
+
+#[derive(Default)]
+struct PaneFleetRightPanelMouseStates {
+    files: MouseStateHandle,
+    changes: MouseStateHandle,
+    review: MouseStateHandle,
 }
 
 #[derive(Clone, Debug)]
@@ -425,6 +444,8 @@ pub struct RightPanelView {
     resizable_state_handle: ResizableStateHandle,
     close_button_mouse_state: MouseStateHandle,
     file_navigation_button_mouse_state: MouseStateHandle,
+    panefleet_selected_tab: PaneFleetRightPanelTab,
+    panefleet_mouse_states: PaneFleetRightPanelMouseStates,
     #[cfg(feature = "local_fs")]
     open_repository_button: ViewHandle<ActionButton>,
     pub active_pane_group: Option<ViewHandle<PaneGroup>>,
@@ -521,6 +542,8 @@ impl RightPanelView {
             resizable_state_handle,
             close_button_mouse_state: Default::default(),
             file_navigation_button_mouse_state: Default::default(),
+            panefleet_selected_tab: Default::default(),
+            panefleet_mouse_states: Default::default(),
             #[cfg(feature = "local_fs")]
             open_repository_button,
             active_pane_group: None,
@@ -861,6 +884,119 @@ impl RightPanelView {
         .with_padding_left(16.)
         .with_padding_right(HEADER_EDGE_PADDING)
         .finish()
+    }
+
+    fn active_file_tree_view(&self, app: &AppContext) -> Option<ViewHandle<FileTreeView>> {
+        let pane_group_id = self.active_pane_group.as_ref().map(ViewHandle::id)?;
+        self.working_directories_model
+            .as_ref(app)
+            .get_file_tree_view(pane_group_id)
+    }
+
+    fn render_panefleet_tab(
+        &self,
+        tab: PaneFleetRightPanelTab,
+        label: &'static str,
+        icon: Icon,
+        mouse_state: MouseStateHandle,
+        appearance: &Appearance,
+    ) -> Box<dyn Element> {
+        let theme = appearance.theme();
+        let is_selected = self.panefleet_selected_tab == tab;
+        let text_color = if is_selected {
+            theme.main_text_color(theme.background())
+        } else {
+            theme.sub_text_color(theme.background())
+        };
+
+        Hoverable::new(mouse_state, move |state| {
+            let icon = ConstrainedBox::new(icon.to_warpui_icon(text_color).finish())
+                .with_width(14.)
+                .with_height(14.)
+                .finish();
+            let label = Text::new_inline(label, appearance.ui_font_family(), 12.)
+                .with_color(text_color.into())
+                .finish();
+            let content = Flex::row()
+                .with_main_axis_size(MainAxisSize::Min)
+                .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                .with_spacing(6.)
+                .with_child(icon)
+                .with_child(label)
+                .finish();
+            let mut button = Container::new(content)
+                .with_padding(Padding::uniform(10.).with_left(12.).with_right(12.))
+                .with_corner_radius(CornerRadius::with_top(Radius::Pixels(4.)))
+                .with_border(Border::bottom(2.).with_border_fill(if is_selected {
+                    ElementFill::Solid(theme.accent().into_solid())
+                } else {
+                    ElementFill::None
+                }));
+            if !is_selected && state.is_hovered() {
+                button = button.with_background(internal_colors::fg_overlay_1(theme));
+            }
+            button.finish()
+        })
+        .on_click(move |ctx, _, _| {
+            ctx.dispatch_typed_action(RightPanelAction::SelectPaneFleetTab(tab));
+        })
+        .with_cursor(Cursor::PointingHand)
+        .finish()
+    }
+
+    fn render_panefleet_panel_content(&self, app: &AppContext) -> Box<dyn Element> {
+        let appearance = Appearance::as_ref(app);
+        let tabs = Flex::row()
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_cross_axis_alignment(CrossAxisAlignment::End)
+            .with_child(self.render_panefleet_tab(
+                PaneFleetRightPanelTab::Files,
+                "Files",
+                Icon::File,
+                self.panefleet_mouse_states.files.clone(),
+                appearance,
+            ))
+            .with_child(self.render_panefleet_tab(
+                PaneFleetRightPanelTab::Changes,
+                "Changes",
+                Icon::Diff,
+                self.panefleet_mouse_states.changes.clone(),
+                appearance,
+            ))
+            .with_child(self.render_panefleet_tab(
+                PaneFleetRightPanelTab::Review,
+                "Review",
+                Icon::AddressedComment,
+                self.panefleet_mouse_states.review.clone(),
+                appearance,
+            ))
+            .finish();
+        let tabs = Container::new(tabs)
+            .with_padding_left(8.)
+            .with_padding_right(8.)
+            .with_border(Border::bottom(1.).with_border_fill(appearance.theme().outline()))
+            .finish();
+
+        let body = match self.panefleet_selected_tab {
+            PaneFleetRightPanelTab::Files => self
+                .active_file_tree_view(app)
+                .map(|file_tree| {
+                    Container::new(ChildView::new(&file_tree).finish())
+                        .with_padding_left(2.)
+                        .with_padding_right(2.)
+                        .finish()
+                })
+                .unwrap_or_else(|| Container::new(Empty::new().finish()).finish()),
+            PaneFleetRightPanelTab::Changes | PaneFleetRightPanelTab::Review => {
+                self.render_panel_content(app)
+            }
+        };
+
+        Flex::column()
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_child(tabs)
+            .with_child(Shrinkable::new(1., body).finish())
+            .finish()
     }
 
     fn render_panel_content(&self, app: &AppContext) -> Box<dyn Element> {
@@ -1811,6 +1947,10 @@ impl TypedActionView for RightPanelView {
                     }
                 }
             }
+            RightPanelAction::SelectPaneFleetTab(tab) => {
+                self.panefleet_selected_tab = *tab;
+                ctx.notify();
+            }
             RightPanelAction::SelectRepo {
                 repo_path,
                 from_dropdown,
@@ -1891,7 +2031,11 @@ impl View for RightPanelView {
     }
 
     fn render(&self, app: &AppContext) -> Box<dyn Element> {
-        let panel_content = self.render_panel_content(app);
+        let panel_content = if FeatureFlag::PaneFleetWorkbench.is_enabled() {
+            self.render_panefleet_panel_content(app)
+        } else {
+            self.render_panel_content(app)
+        };
 
         if self.is_maximized(app) {
             return Shrinkable::new(1.0, panel_content).finish();

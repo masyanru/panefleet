@@ -22,6 +22,9 @@ pub enum FeatureFlag {
 
     RuntimeFeatureFlags,
 
+    /// Enables the PaneFleet project- and agent-oriented workbench shell.
+    PaneFleetWorkbench,
+
     /// Enables cloud object related features for an explicit allowlist of team testers.
     CloudObjects,
 

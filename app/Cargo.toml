@@ -23,6 +23,11 @@ path = "src/bin/oss.rs"
 test = false
 
 [[bin]]
+name = "panefleet"
+path = "src/bin/panefleet.rs"
+test = false
+
+[[bin]]
 name = "warp"
 path = "src/bin/local.rs"
 test = false
@@ -1049,6 +1054,15 @@ name = "WarpOss"
 resources = ["assets/onboarding"]
 icon = ["channels/oss/icon/no-padding/512x512.png", "channels/oss/icon/no-padding/icon.ico"]
 short_description = "The open-source, cloud-backed terminal for individuals and teams."
+
+[package.metadata.bundle.bin.panefleet]
+category = "public.app-category.developer-tools"
+copyright = "© 2026 PaneFleet contributors"
+identifier = "dev.panefleet.PaneFleet"
+name = "PaneFleet"
+resources = ["assets/onboarding"]
+icon = ["channels/oss/icon/no-padding/512x512.png", "channels/oss/icon/no-padding/icon.ico"]
+short_description = "A project and agent workbench built on the open-source Warp terminal."
 
 [package.metadata.bundle.bin.stable]
 category = "public.app-category.developer-tools"

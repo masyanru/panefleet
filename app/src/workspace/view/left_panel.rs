@@ -1,15 +1,17 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 
+use warp_core::features::FeatureFlag;
 use warp_core::send_telemetry_from_ctx;
 use warp_core::ui::Icon;
 use warp_core::ui::theme::color::internal_colors;
 use warp_errors::report_error;
 use warp_util::path::LineAndColumnArg;
 use warpui::elements::{
-    Align, ChildView, ConstrainedBox, Container, CrossAxisAlignment, DragBarSide, Element, Empty,
-    Flex, MainAxisAlignment, MainAxisSize, MouseStateHandle, ParentElement, Resizable,
-    ResizableStateHandle, Shrinkable, resizable_state_handle,
+    Align, Border, ChildView, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment,
+    DragBarSide, Element, Empty, Fill as ElementFill, Flex, Hoverable, MainAxisAlignment,
+    MainAxisSize, MouseStateHandle, Padding, ParentElement, Radius, Resizable,
+    ResizableStateHandle, Shrinkable, Text, resizable_state_handle,
 };
 use warpui::fonts::Weight;
 use warpui::platform::Cursor;
@@ -40,6 +42,7 @@ use crate::pane_group::working_directories::WorkingDirectory;
 use crate::pane_group::{
     PaneGroup, WorkingDirectoriesEvent, WorkingDirectoriesModel, {self},
 };
+use crate::projects::ProjectManagementModel;
 #[cfg(feature = "local_fs")]
 use crate::server::telemetry::CodePanelsFileOpenEntrypoint;
 use crate::server::telemetry::{FileTreeSource, WarpDriveSource};
@@ -79,12 +82,38 @@ struct MouseStateHandles {
     sign_in_button: MouseStateHandle,
 }
 
+const PANEFLEET_PROJECT_LIMIT: usize = 6;
+
+#[derive(Default)]
+struct PaneFleetWorkspaceRowMouseStates {
+    row: MouseStateHandle,
+    close: MouseStateHandle,
+}
+
+struct PaneFleetMouseStateHandles {
+    add_project: MouseStateHandle,
+    project_rows: Vec<PaneFleetWorkspaceRowMouseStates>,
+}
+
+impl Default for PaneFleetMouseStateHandles {
+    fn default() -> Self {
+        Self {
+            add_project: Default::default(),
+            project_rows: (0..PANEFLEET_PROJECT_LIMIT)
+                .map(|_| PaneFleetWorkspaceRowMouseStates::default())
+                .collect(),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum LeftPanelAction {
     ProjectExplorer,
     GlobalSearch { entry_focus: GlobalSearchEntryFocus },
     WarpDrive,
     ConversationListView,
+    SwitchPaneFleetProject { path: PathBuf },
+    ClosePaneFleetProject { path: PathBuf },
     SignIn,
 }
 
@@ -136,6 +165,12 @@ pub enum LeftPanelEvent {
         line_col: Option<LineAndColumnArg>,
     },
     NewConversationInNewTab,
+    SwitchPaneFleetProject {
+        path: PathBuf,
+    },
+    ClosePaneFleetProject {
+        path: PathBuf,
+    },
     ShowDeleteConfirmationDialog {
         conversation_id: AIConversationId,
         conversation_title: String,
@@ -214,12 +249,14 @@ pub struct ToolbeltButtonConfig {
 pub struct LeftPanelView {
     resizable_state_handle: ResizableStateHandle,
     mouse_state_handles: MouseStateHandles,
+    panefleet_mouse_state_handles: PaneFleetMouseStateHandles,
     close_button_mouse_state: MouseStateHandle,
     warp_drive_view: ViewHandle<DrivePanel>,
     conversation_list_view: ViewHandle<ConversationListView>,
     active_view: active_view_state::ActiveViewState,
     toolbelt_buttons: Vec<ToolbeltButtonConfig>,
     active_pane_group: Option<WeakViewHandle<PaneGroup>>,
+    panefleet_active_project: Option<PathBuf>,
     #[cfg_attr(not(feature = "local_fs"), allow(dead_code))]
     working_directories_model: ModelHandle<WorkingDirectoriesModel>,
     is_agent_management_view_open: bool,
@@ -394,6 +431,13 @@ impl LeftPanelView {
             },
         );
 
+        if FeatureFlag::PaneFleetWorkbench.is_enabled() {
+            ctx.subscribe_to_model(
+                &ProjectManagementModel::handle(ctx),
+                |_me, _, _event, ctx| ctx.notify(),
+            );
+        }
+
         ctx.subscribe_to_model(&working_directories_model, |me, _, event, ctx| {
             if let WorkingDirectoriesEvent::DirectoriesChanged {
                 pane_group_id,
@@ -464,12 +508,14 @@ impl LeftPanelView {
         let mut view = Self {
             resizable_state_handle,
             mouse_state_handles: Default::default(),
+            panefleet_mouse_state_handles: Default::default(),
             close_button_mouse_state: Default::default(),
             warp_drive_view,
             conversation_list_view,
             active_view: active_view_state::new(active_view),
             toolbelt_buttons,
             active_pane_group: None,
+            panefleet_active_project: None,
             working_directories_model,
             is_agent_management_view_open: false,
             panel_position: super::PanelPosition::Left,
@@ -1026,6 +1072,166 @@ impl LeftPanelView {
         .finish()
     }
 
+    fn active_project_path(&self, app: &AppContext) -> Option<PathBuf> {
+        self.panefleet_active_project.clone().or_else(|| {
+            self.active_pane_group
+                .as_ref()
+                .and_then(|pane_group| pane_group.upgrade(app))
+                .and_then(|pane_group| pane_group.as_ref(app).active_session_view(app))
+                .and_then(|terminal| terminal.as_ref(app).pwd())
+                .map(PathBuf::from)
+        })
+    }
+
+    pub fn set_panefleet_active_project(
+        &mut self,
+        path: Option<PathBuf>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        self.panefleet_active_project = path;
+        ctx.notify();
+    }
+
+    fn render_panefleet_workspace_row(
+        &self,
+        project_path: PathBuf,
+        mouse_states: &PaneFleetWorkspaceRowMouseStates,
+        is_selected: bool,
+        appearance: &Appearance,
+    ) -> Box<dyn Element> {
+        let theme = appearance.theme();
+        let font_family = appearance.ui_font_family();
+        let main_text_color = theme.main_text_color(theme.background());
+        let sub_text_color = theme.sub_text_color(theme.background());
+        let title = project_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(str::to_owned)
+            .unwrap_or_else(|| project_path.to_string_lossy().into_owned());
+        let subtitle = project_path
+            .parent()
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "Local workspace".to_string());
+        let path_for_row = project_path.clone();
+        let path_for_close = project_path;
+        let close_mouse_state = mouse_states.close.clone();
+
+        Hoverable::new(mouse_states.row.clone(), move |state| {
+            let icon = ConstrainedBox::new(Icon::Terminal.to_warpui_icon(sub_text_color).finish())
+                .with_width(24.)
+                .with_height(24.)
+                .finish();
+
+            let labels = Flex::column()
+                .with_main_axis_size(MainAxisSize::Min)
+                .with_child(
+                    Text::new_inline(title.clone(), font_family, 12.)
+                        .with_color(main_text_color.into())
+                        .finish(),
+                )
+                .with_child(
+                    Text::new_inline(subtitle.clone(), font_family, 12.)
+                        .with_color(sub_text_color.into())
+                        .finish(),
+                )
+                .finish();
+
+            let mut content = Flex::row()
+                .with_main_axis_size(MainAxisSize::Max)
+                .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                .with_spacing(8.)
+                .with_child(icon)
+                .with_child(Shrinkable::new(1., labels).finish());
+
+            if state.is_hovered() {
+                let close_button = Hoverable::new(close_mouse_state.clone(), move |button_state| {
+                    let mut close = Container::new(
+                        ConstrainedBox::new(Icon::X.to_warpui_icon(sub_text_color).finish())
+                            .with_width(12.)
+                            .with_height(12.)
+                            .finish(),
+                    )
+                    .with_padding(Padding::uniform(2.))
+                    .with_corner_radius(CornerRadius::with_all(Radius::Pixels(4.)));
+                    if button_state.is_hovered() {
+                        close = close.with_background(internal_colors::fg_overlay_3(theme));
+                    }
+                    close.finish()
+                })
+                .with_cursor(Cursor::PointingHand)
+                .on_click({
+                    let path = path_for_close.clone();
+                    move |ctx, _, _| {
+                        ctx.dispatch_typed_action(LeftPanelAction::ClosePaneFleetProject {
+                            path: path.clone(),
+                        });
+                    }
+                })
+                .finish();
+                content.add_child(close_button);
+            }
+
+            let mut row = Container::new(content.finish())
+                .with_padding(Padding::uniform(8.))
+                .with_corner_radius(CornerRadius::with_all(Radius::Pixels(4.)))
+                .with_border(Border::all(1.).with_border_fill(if is_selected {
+                    internal_colors::fg_overlay_3(theme).into()
+                } else {
+                    ElementFill::None
+                }));
+            if is_selected {
+                row = row.with_background(internal_colors::fg_overlay_2(theme));
+            } else if state.is_hovered() {
+                row = row.with_background(internal_colors::fg_overlay_1(theme));
+            }
+            row.finish()
+        })
+        .with_defer_events_to_children()
+        .on_click(move |ctx, _, _| {
+            ctx.dispatch_typed_action(LeftPanelAction::SwitchPaneFleetProject {
+                path: path_for_row.clone(),
+            });
+        })
+        .with_cursor(Cursor::PointingHand)
+        .finish()
+    }
+
+    fn render_panefleet_project_sidebar(
+        &self,
+        appearance: &Appearance,
+        app: &AppContext,
+    ) -> Box<dyn Element> {
+        let active_path = self.active_project_path(app);
+        let mut content = Flex::column()
+            .with_main_axis_size(MainAxisSize::Min)
+            .with_spacing(4.);
+
+        let mut projects = ProjectManagementModel::as_ref(app)
+            .all_projects()
+            .map(|project| (project.path.clone(), project.added_ts))
+            .collect::<Vec<_>>();
+        projects.sort_by(|left, right| left.1.cmp(&right.1));
+
+        for ((project_path, _), mouse_states) in projects
+            .into_iter()
+            .take(PANEFLEET_PROJECT_LIMIT)
+            .zip(&self.panefleet_mouse_state_handles.project_rows)
+        {
+            let path = PathBuf::from(&project_path);
+            let row = self.render_panefleet_workspace_row(
+                path.clone(),
+                mouse_states,
+                active_path.as_ref() == Some(&path),
+                appearance,
+            );
+            content = content.with_child(row);
+        }
+
+        Container::new(content.finish())
+            .with_padding(Padding::uniform(8.).with_top(4.))
+            .finish()
+    }
+
     fn update_button_active_states(&mut self) {
         for button in &mut self.toolbelt_buttons {
             button.render_with_active_state = match &button.action {
@@ -1039,6 +1245,8 @@ impl LeftPanelView {
                 LeftPanelAction::ConversationListView => {
                     self.active_view.get() == ToolPanelView::ConversationListView
                 }
+                LeftPanelAction::SwitchPaneFleetProject { .. } => false,
+                LeftPanelAction::ClosePaneFleetProject { .. } => false,
                 LeftPanelAction::SignIn => false,
             };
         }
@@ -1185,6 +1393,12 @@ impl LeftPanelView {
                     send_telemetry_from_ctx!(TelemetryEvent::ConversationListViewOpened, ctx);
                 }
             }
+            LeftPanelAction::SwitchPaneFleetProject { path } => {
+                ctx.emit(LeftPanelEvent::SwitchPaneFleetProject { path: path.clone() });
+            }
+            LeftPanelAction::ClosePaneFleetProject { path } => {
+                ctx.emit(LeftPanelEvent::ClosePaneFleetProject { path: path.clone() });
+            }
             LeftPanelAction::SignIn => {
                 ctx.emit(LeftPanelEvent::SignInRequested);
             }
@@ -1297,6 +1511,7 @@ impl View for LeftPanelView {
 
     fn render(&self, app: &AppContext) -> Box<dyn Element> {
         let appearance = Appearance::as_ref(app);
+        let panefleet_enabled = FeatureFlag::PaneFleetWorkbench.is_enabled();
 
         let mouse_state_handles = vec![
             self.mouse_state_handles.project_explorer_button.clone(),
@@ -1309,7 +1524,7 @@ impl View for LeftPanelView {
 
         // If there is only one button in the toolbelt row,
         // there is no need to show it as it's a bit redundant.
-        let toolbelt_button_row = if self.toolbelt_buttons.len() > 1 {
+        let toolbelt_button_row = if !panefleet_enabled && self.toolbelt_buttons.len() > 1 {
             Some(
                 Flex::row()
                     .with_cross_axis_alignment(CrossAxisAlignment::Center)
@@ -1371,11 +1586,49 @@ impl View for LeftPanelView {
                 }
             }
         };
+        let content_area = if panefleet_enabled {
+            Shrinkable::new(1.0, self.render_panefleet_project_sidebar(appearance, app)).finish()
+        } else {
+            content_area
+        };
 
         let panel_content = Container::new({
             let column = Flex::column();
 
-            let header_left = if let Some(row) = toolbelt_button_row {
+            let header_left = if panefleet_enabled {
+                let title = Text::new_inline(
+                    "Workspaces",
+                    appearance.ui_font_family(),
+                    appearance.ui_font_size(),
+                )
+                .with_style(warpui::fonts::Properties::default().weight(Weight::Semibold))
+                .with_color(
+                    appearance
+                        .theme()
+                        .main_text_color(appearance.theme().background())
+                        .into(),
+                )
+                .finish();
+                let add_project = icon_button(
+                    appearance,
+                    icons::Icon::Plus,
+                    false,
+                    self.panefleet_mouse_state_handles.add_project.clone(),
+                )
+                .build()
+                .on_click(|ctx, _, _| {
+                    ctx.dispatch_typed_action(WorkspaceAction::OpenRepository { path: None });
+                })
+                .with_cursor(Cursor::PointingHand)
+                .finish();
+                Flex::row()
+                    .with_main_axis_size(MainAxisSize::Max)
+                    .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
+                    .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                    .with_child(title)
+                    .with_child(add_project)
+                    .finish()
+            } else if let Some(row) = toolbelt_button_row {
                 row
             } else {
                 Flex::row().finish()

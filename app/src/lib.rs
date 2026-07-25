@@ -1351,10 +1351,13 @@ pub(crate) fn initialize_app(
     let data_domain = ChannelState::data_domain();
     let secure_storage_service_name = launch_mode.secure_storage_service_name(&data_domain);
 
-    // Daemon auth arrives through the client handshake, so avoid platform keychains that may
-    // require an interactive unlock prompt. Other headless modes still use secure storage for
-    // persisted login and BYO provider credentials.
-    if matches!(launch_mode, LaunchMode::RemoteServerDaemon { .. }) {
+    // PaneFleet is currently a local-first development prototype. Its frequently rebuilt,
+    // ad-hoc-signed binary would trigger a macOS Keychain approval prompt after every build, so
+    // keep its Warp-owned secure storage ephemeral. CLI agents retain their own credentials.
+    // Daemon auth arrives through the client handshake and likewise avoids platform keychains.
+    if FeatureFlag::PaneFleetWorkbench.is_enabled() {
+        warpui_extras::secure_storage::register_noop(&secure_storage_service_name, ctx);
+    } else if matches!(launch_mode, LaunchMode::RemoteServerDaemon { .. }) {
         warpui_extras::secure_storage::register_unavailable(ctx);
     } else {
         // Register an implementation of the secure storage service.

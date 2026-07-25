@@ -63,6 +63,7 @@ use repo_metadata::RemoteRepositoryIdentifier;
 use repo_metadata::repositories::DetectedRepositories;
 #[cfg(all(target_os = "macos", feature = "crash_reporting"))]
 use sentry::protocol::{Attachment, AttachmentType};
+use serde::{Deserialize, Serialize};
 use serde_json;
 use session_sharing_protocol::common::SessionId as SharedSessionId;
 #[cfg(target_family = "wasm")]
@@ -95,7 +96,7 @@ use warpui::elements::{
     CornerRadius, CrossAxisAlignment, Dismiss, DispatchEventResult, DragAxis, Draggable,
     DraggableState, DropTarget, Element, Empty, EventHandler, Expanded, Fill as ElementFill, Flex,
     Highlight, Hoverable, Icon as WarpUiIcon, Image, MainAxisAlignment, MainAxisSize,
-    MouseInBehavior, MouseStateHandle, OffsetPositioning, ParentAnchor, ParentElement,
+    MouseInBehavior, MouseStateHandle, OffsetPositioning, Padding, ParentAnchor, ParentElement,
     ParentOffsetBounds, PositionedElementAnchor, PositionedElementOffsetBounds, Radius, Rect,
     SavePosition, Shrinkable, SizeConstraintCondition, SizeConstraintSwitch, Stack, Text,
 };
@@ -297,7 +298,7 @@ use crate::pane_group::{
     self, AIFactPane, AnyPaneContent, ChildAgentOrigin, CodeDiffPane, CodePane, CodeReviewPanelArg,
     CustomRouterEditorPane, Direction as PaneGroupDirection, Direction, EnvironmentManagementPane,
     ExecutionProfileEditorPane, NetworkLogPane, NewTerminalOptions, PaneGroup, PaneId, PanesLayout,
-    TabBarHoverIndex, TerminalPaneId,
+    TabBarHoverIndex, TerminalPaneId, WorkingDirectoriesModel,
 };
 use crate::persistence::ModelEvent;
 use crate::projects::ProjectManagementModel;
@@ -955,6 +956,32 @@ struct ModalWithTab<V> {
 struct PendingSessionConfigReplacement {
     old_pane_group_id: EntityId,
 }
+
+struct PaneFleetProjectTabState {
+    tabs: Vec<TabData>,
+    active_tab_index: usize,
+    tab_mru_order: Vec<EntityId>,
+    tab_groups: HashMap<TabGroupId, TabGroup>,
+}
+
+#[derive(Debug, Default, Deserialize, Serialize)]
+struct PaneFleetPersistedState {
+    active_project: Option<PathBuf>,
+    workspaces: Vec<PaneFleetPersistedWorkspace>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct PaneFleetPersistedWorkspace {
+    path: PathBuf,
+    active_tab_index: usize,
+    tabs: Vec<PaneFleetPersistedTab>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct PaneFleetPersistedTab {
+    title: Option<String>,
+}
+
 enum PendingSessionConfigTabConfigChipTutorial {
     WhenBootstrapped {
         has_project: bool,
@@ -1023,6 +1050,9 @@ pub struct Workspace {
     pub(crate) tab_groups: HashMap<TabGroupId, TabGroup>,
     /// Per-group hover state for the horizontal tab bar.
     horizontal_tab_group_mouse_states: RefCell<HashMap<TabGroupId, HorizontalTabGroupMouseStates>>,
+    panefleet_active_project: Option<PathBuf>,
+    panefleet_project_tabs: HashMap<PathBuf, PaneFleetProjectTabState>,
+    panefleet_restoring_state: bool,
     tab_rename_editor: ViewHandle<EditorView>,
     pane_rename_editor: ViewHandle<EditorView>,
     tab_group_rename_editor: ViewHandle<EditorView>,
@@ -2387,6 +2417,15 @@ impl Workspace {
         // even if the user quits mid-flow.
         mark_hoa_onboarding_completed(ctx);
 
+        if FeatureFlag::PaneFleetWorkbench.is_enabled() {
+            TabSettings::handle(ctx).update(ctx, |settings, ctx| {
+                let _ = settings.use_vertical_tabs.set_value(false, ctx);
+            });
+            self.vertical_tabs_panel_open = false;
+            self.open_left_panel(ctx);
+            return;
+        }
+
         // Enable vertical tabs and open the panel so Step 2 has something to anchor to.
         TabSettings::handle(ctx).update(ctx, |settings, ctx| {
             let _ = settings.use_vertical_tabs.set_value(true, ctx);
@@ -2835,6 +2874,14 @@ impl Workspace {
         workspace_setting: NewWorkspaceSource,
         ctx: &mut ViewContext<Self>,
     ) -> Self {
+        if FeatureFlag::PaneFleetWorkbench.is_enabled()
+            && *TabSettings::as_ref(ctx).use_vertical_tabs
+        {
+            TabSettings::handle(ctx).update(ctx, |settings, ctx| {
+                let _ = settings.use_vertical_tabs.set_value(false, ctx);
+            });
+        }
+
         let GlobalResourceHandles {
             model_event_sender,
             tips_completed,
@@ -3380,6 +3427,9 @@ impl Workspace {
             traffic_light_mouse_states: Default::default(),
             tab_groups: HashMap::new(),
             horizontal_tab_group_mouse_states: RefCell::default(),
+            panefleet_active_project: None,
+            panefleet_project_tabs: HashMap::new(),
+            panefleet_restoring_state: false,
             tab_rename_editor: Self::tab_rename_editor(ctx),
             pane_rename_editor: Self::pane_rename_editor(ctx),
             tab_group_rename_editor: Self::tab_group_rename_editor(ctx),
@@ -3763,7 +3813,8 @@ impl Workspace {
                 ctx.notify();
             }
             TabSettingsChangedEvent::UseVerticalTabs { .. } => {
-                let vertical_tabs_enabled = *TabSettings::as_ref(ctx).use_vertical_tabs;
+                let vertical_tabs_enabled = !FeatureFlag::PaneFleetWorkbench.is_enabled()
+                    && *TabSettings::as_ref(ctx).use_vertical_tabs;
                 // During HOA onboarding, keep the vertical tabs panel open
                 // regardless of the setting so the callout stays anchored.
                 if self.hoa_onboarding_flow.is_none() {
@@ -3893,6 +3944,8 @@ impl Workspace {
         workspace_setting: NewWorkspaceSource,
         ctx: &mut ViewContext<Self>,
     ) {
+        let restore_panefleet_state = FeatureFlag::PaneFleetWorkbench.is_enabled()
+            && matches!(&workspace_setting, NewWorkspaceSource::Restored { .. });
         self.vertical_tabs_panel_open =
             Self::initial_vertical_tabs_panel_open(&workspace_setting, ctx);
         match workspace_setting {
@@ -4106,6 +4159,10 @@ impl Workspace {
             }
         };
 
+        if restore_panefleet_state {
+            self.restore_panefleet_state(ctx);
+        }
+
         debug_assert!(
             self.tab_count() > 0,
             "Workspace should have at least one tab upon configuration"
@@ -4118,8 +4175,20 @@ impl Workspace {
         let active_pane_group = self.active_tab_pane_group().clone();
         let working_directories_model = self.working_directories_model.clone();
         self.left_panel_view.update(ctx, |left_panel, ctx| {
+            if FeatureFlag::PaneFleetWorkbench.is_enabled() {
+                left_panel.handle_action_with_force_open(
+                    &LeftPanelAction::ProjectExplorer,
+                    false,
+                    ctx,
+                );
+            }
             left_panel.set_active_pane_group(active_pane_group, &working_directories_model, ctx);
         });
+        if FeatureFlag::PaneFleetWorkbench.is_enabled() {
+            self.vertical_tabs_panel_open = false;
+            self.ensure_panefleet_panels_open(ctx);
+            self.persist_panefleet_state(ctx);
+        }
     }
 
     fn initial_vertical_tabs_panel_open(
@@ -6409,6 +6478,12 @@ impl Workspace {
             LeftPanelEvent::NewConversationInNewTab => {
                 self.add_terminal_tab_with_new_agent_view(ctx);
             }
+            LeftPanelEvent::SwitchPaneFleetProject { path } => {
+                self.switch_panefleet_project(path.clone(), true, ctx);
+            }
+            LeftPanelEvent::ClosePaneFleetProject { path } => {
+                self.close_panefleet_project(path, ctx);
+            }
             LeftPanelEvent::ShowDeleteConfirmationDialog {
                 conversation_id,
                 conversation_title,
@@ -7358,6 +7433,7 @@ impl Workspace {
         }
 
         ctx.dispatch_global_action("workspace:save_app", ());
+        self.persist_panefleet_state(ctx);
         ctx.notify();
     }
 
@@ -8574,6 +8650,393 @@ impl Workspace {
             None,
             ctx,
         );
+    }
+
+    fn current_panefleet_project_path(&self, ctx: &AppContext) -> Option<PathBuf> {
+        self.panefleet_active_project.clone().or_else(|| {
+            self.active_tab_pane_group()
+                .as_ref(ctx)
+                .active_session_view(ctx)
+                .and_then(|terminal| terminal.as_ref(ctx).pwd())
+                .map(PathBuf::from)
+        })
+    }
+
+    fn panefleet_state_path() -> PathBuf {
+        warp_core::paths::state_dir().join("panefleet-workspaces.json")
+    }
+
+    fn panefleet_persisted_workspace(
+        path: PathBuf,
+        state: &PaneFleetProjectTabState,
+        app: &AppContext,
+    ) -> PaneFleetPersistedWorkspace {
+        PaneFleetPersistedWorkspace {
+            path,
+            active_tab_index: state.active_tab_index,
+            tabs: state
+                .tabs
+                .iter()
+                .map(|tab| PaneFleetPersistedTab {
+                    title: tab.pane_group.as_ref(app).custom_title(app),
+                })
+                .collect(),
+        }
+    }
+
+    fn persist_panefleet_state(&self, app: &AppContext) {
+        if !FeatureFlag::PaneFleetWorkbench.is_enabled() || self.panefleet_restoring_state {
+            return;
+        }
+
+        let mut workspaces = self
+            .panefleet_project_tabs
+            .iter()
+            .map(|(path, state)| Self::panefleet_persisted_workspace(path.clone(), state, app))
+            .collect::<Vec<_>>();
+        if let Some(path) = self.current_panefleet_project_path(app) {
+            workspaces.push(Self::panefleet_persisted_workspace(
+                path,
+                &PaneFleetProjectTabState {
+                    tabs: self.tabs.clone(),
+                    active_tab_index: self.active_tab_index,
+                    tab_mru_order: self.tab_mru_order.clone(),
+                    tab_groups: self.tab_groups.clone(),
+                },
+                app,
+            ));
+        }
+        workspaces.sort_by(|left, right| left.path.cmp(&right.path));
+
+        let persisted = PaneFleetPersistedState {
+            active_project: self.current_panefleet_project_path(app),
+            workspaces,
+        };
+        let path = Self::panefleet_state_path();
+        if let Some(parent) = path.parent()
+            && let Err(err) = std::fs::create_dir_all(parent)
+        {
+            log::warn!("Failed to create PaneFleet state directory: {err}");
+            return;
+        }
+        match serde_json::to_vec_pretty(&persisted) {
+            Ok(contents) => {
+                if let Err(err) = std::fs::write(path, contents) {
+                    log::warn!("Failed to persist PaneFleet workspaces: {err}");
+                }
+            }
+            Err(err) => log::warn!("Failed to serialize PaneFleet workspaces: {err}"),
+        }
+    }
+
+    fn restore_panefleet_state(&mut self, ctx: &mut ViewContext<Self>) {
+        if !FeatureFlag::PaneFleetWorkbench.is_enabled() {
+            return;
+        }
+        let Ok(contents) = std::fs::read(Self::panefleet_state_path()) else {
+            return;
+        };
+        let Ok(persisted) = serde_json::from_slice::<PaneFleetPersistedState>(&contents) else {
+            return;
+        };
+        let Some(active_project) = persisted.active_project else {
+            return;
+        };
+
+        let active_state = PaneFleetProjectTabState {
+            tabs: std::mem::take(&mut self.tabs),
+            active_tab_index: self.active_tab_index,
+            tab_mru_order: std::mem::take(&mut self.tab_mru_order),
+            tab_groups: std::mem::take(&mut self.tab_groups),
+        };
+        self.panefleet_restoring_state = true;
+        self.panefleet_project_tabs.clear();
+
+        for workspace in persisted
+            .workspaces
+            .into_iter()
+            .filter(|workspace| workspace.path != active_project)
+        {
+            self.tabs.clear();
+            self.active_tab_index = 0;
+            self.tab_mru_order.clear();
+            self.tab_groups.clear();
+            self.panefleet_active_project = Some(workspace.path.clone());
+
+            let tabs = if workspace.tabs.is_empty() {
+                vec![PaneFleetPersistedTab { title: None }]
+            } else {
+                workspace.tabs
+            };
+            for tab in tabs {
+                self.add_tab_with_pane_layout(
+                    PanesLayout::SingleTerminal(Box::new(NewTerminalOptions {
+                        initial_directory: Some(workspace.path.clone()),
+                        hide_homepage: true,
+                        ..Default::default()
+                    })),
+                    Arc::new(HashMap::new()),
+                    tab.title,
+                    ctx,
+                );
+            }
+            let active_tab_index = workspace
+                .active_tab_index
+                .min(self.tabs.len().saturating_sub(1));
+            self.activate_tab_internal(active_tab_index, ctx);
+            self.panefleet_project_tabs.insert(
+                workspace.path,
+                PaneFleetProjectTabState {
+                    tabs: std::mem::take(&mut self.tabs),
+                    active_tab_index,
+                    tab_mru_order: std::mem::take(&mut self.tab_mru_order),
+                    tab_groups: std::mem::take(&mut self.tab_groups),
+                },
+            );
+        }
+
+        self.tabs = active_state.tabs;
+        self.tab_mru_order = active_state.tab_mru_order;
+        self.tab_groups = active_state.tab_groups;
+        self.active_tab_index = active_state
+            .active_tab_index
+            .min(self.tabs.len().saturating_sub(1));
+        self.panefleet_active_project = Some(active_project.clone());
+        self.panefleet_restoring_state = false;
+        if !self.tabs.is_empty() {
+            self.activate_tab_internal(self.active_tab_index, ctx);
+        }
+        self.left_panel_view.update(ctx, |left_panel, ctx| {
+            left_panel.set_panefleet_active_project(Some(active_project), ctx);
+        });
+        self.ensure_panefleet_panels_open(ctx);
+    }
+
+    fn ensure_panefleet_panels_open(&mut self, ctx: &mut ViewContext<Self>) {
+        if !FeatureFlag::PaneFleetWorkbench.is_enabled() || self.tabs.is_empty() {
+            return;
+        }
+
+        self.open_left_panel(ctx);
+
+        let pane_group = self.active_tab_pane_group().clone();
+        if !pane_group.as_ref(ctx).right_panel_open {
+            self.update_right_panel_open_state(
+                RightPanelUpdateParams {
+                    pane_group: &pane_group,
+                    target_open_state: true,
+                    entrypoint: Some(CodeReviewPaneEntrypoint::RightPanel),
+                    cli_agent: None,
+                    review_pane_context: None,
+                },
+                ctx,
+            );
+        }
+    }
+
+    fn switch_panefleet_project(
+        &mut self,
+        path: PathBuf,
+        create_initial_terminal: bool,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        if !FeatureFlag::PaneFleetWorkbench.is_enabled() {
+            return;
+        }
+
+        let current_path = self.current_panefleet_project_path(ctx);
+        if current_path.as_ref() == Some(&path) {
+            self.panefleet_active_project = Some(path.clone());
+            self.left_panel_view.update(ctx, |left_panel, ctx| {
+                left_panel.set_panefleet_active_project(Some(path.clone()), ctx);
+            });
+            ProjectManagementModel::handle(ctx).update(ctx, |projects, ctx| {
+                projects.upsert_project(path, ctx);
+            });
+            self.ensure_panefleet_panels_open(ctx);
+            ctx.notify();
+            return;
+        }
+
+        if !self.tabs.is_empty() {
+            let parking_path = current_path
+                .or_else(dirs::home_dir)
+                .unwrap_or_else(|| PathBuf::from("/"));
+            self.panefleet_project_tabs.insert(
+                parking_path,
+                PaneFleetProjectTabState {
+                    tabs: std::mem::take(&mut self.tabs),
+                    active_tab_index: self.active_tab_index,
+                    tab_mru_order: std::mem::take(&mut self.tab_mru_order),
+                    tab_groups: std::mem::take(&mut self.tab_groups),
+                },
+            );
+        }
+
+        self.panefleet_active_project = Some(path.clone());
+        self.left_panel_view.update(ctx, |left_panel, ctx| {
+            left_panel.set_panefleet_active_project(Some(path.clone()), ctx);
+        });
+        self.active_tab_index = 0;
+        self.hovered_tab_index = None;
+
+        if let Some(project_state) = self.panefleet_project_tabs.remove(&path) {
+            self.tabs = project_state.tabs;
+            self.tab_mru_order = project_state.tab_mru_order;
+            self.tab_groups = project_state.tab_groups;
+            let active_index = project_state
+                .active_tab_index
+                .min(self.tabs.len().saturating_sub(1));
+            self.activate_tab_internal(active_index, ctx);
+        } else if create_initial_terminal {
+            self.add_tab_with_pane_layout(
+                PanesLayout::SingleTerminal(Box::new(NewTerminalOptions {
+                    initial_directory: Some(path.clone()),
+                    hide_homepage: true,
+                    ..Default::default()
+                })),
+                Arc::new(HashMap::new()),
+                Some(
+                    path.file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or("Project")
+                        .to_string(),
+                ),
+                ctx,
+            );
+        }
+
+        ProjectManagementModel::handle(ctx).update(ctx, |projects, ctx| {
+            projects.upsert_project(path, ctx);
+        });
+        self.ensure_panefleet_panels_open(ctx);
+        self.persist_panefleet_state(ctx);
+        ctx.notify();
+    }
+
+    fn dispose_panefleet_project_state(
+        state: PaneFleetProjectTabState,
+        working_directories_model: &ModelHandle<WorkingDirectoriesModel>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        for tab in state.tabs {
+            tab.pane_group.update(ctx, |pane_group, ctx| {
+                pane_group.for_all_terminal_panes(
+                    |terminal_view, ctx| {
+                        if terminal_view
+                            .model
+                            .lock()
+                            .block_list()
+                            .active_block()
+                            .is_active_and_long_running()
+                        {
+                            terminal_view.shutdown_pty(ctx);
+                        }
+                    },
+                    ctx,
+                );
+                pane_group.detach_panes_for_close(working_directories_model, ctx);
+            });
+        }
+    }
+
+    fn close_panefleet_project(&mut self, path: &PathBuf, ctx: &mut ViewContext<Self>) {
+        if !FeatureFlag::PaneFleetWorkbench.is_enabled() {
+            return;
+        }
+
+        let is_active = self.current_panefleet_project_path(ctx).as_ref() == Some(path);
+        if is_active {
+            let replacement = self
+                .panefleet_project_tabs
+                .keys()
+                .find(|candidate| *candidate != path)
+                .cloned()
+                .or_else(|| {
+                    ProjectManagementModel::as_ref(ctx)
+                        .all_projects()
+                        .map(|project| PathBuf::from(&project.path))
+                        .find(|candidate| candidate != path)
+                });
+
+            if let Some(replacement) = replacement {
+                self.switch_panefleet_project(replacement, true, ctx);
+            } else {
+                let state = PaneFleetProjectTabState {
+                    tabs: std::mem::take(&mut self.tabs),
+                    active_tab_index: self.active_tab_index,
+                    tab_mru_order: std::mem::take(&mut self.tab_mru_order),
+                    tab_groups: std::mem::take(&mut self.tab_groups),
+                };
+                self.active_tab_index = 0;
+                self.hovered_tab_index = None;
+                self.panefleet_active_project = None;
+                self.left_panel_view.update(ctx, |left_panel, ctx| {
+                    left_panel.set_panefleet_active_project(None, ctx);
+                });
+                let working_directories_model = self.working_directories_model.clone();
+                Self::dispose_panefleet_project_state(state, &working_directories_model, ctx);
+                self.add_tab_with_pane_layout(
+                    PanesLayout::SingleTerminal(Box::new(NewTerminalOptions {
+                        hide_homepage: true,
+                        ..Default::default()
+                    })),
+                    Arc::new(HashMap::new()),
+                    None,
+                    ctx,
+                );
+            }
+        }
+
+        if let Some(state) = self.panefleet_project_tabs.remove(path) {
+            let working_directories_model = self.working_directories_model.clone();
+            Self::dispose_panefleet_project_state(state, &working_directories_model, ctx);
+        }
+        ProjectManagementModel::handle(ctx).update(ctx, |projects, ctx| {
+            projects.remove_project(path, ctx);
+        });
+        self.ensure_panefleet_panels_open(ctx);
+        self.persist_panefleet_state(ctx);
+        ctx.notify();
+    }
+
+    fn open_project_session(
+        &mut self,
+        path: PathBuf,
+        command: Option<&str>,
+        session_name: &str,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        self.switch_panefleet_project(path.clone(), false, ctx);
+
+        ProjectManagementModel::handle(ctx).update(ctx, |projects, ctx| {
+            projects.upsert_project(path.clone(), ctx);
+        });
+
+        let project_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("Project");
+        let title = format!("{project_name} · {session_name}");
+        self.add_tab_with_pane_layout(
+            PanesLayout::SingleTerminal(Box::new(NewTerminalOptions {
+                initial_directory: Some(path),
+                hide_homepage: true,
+                ..Default::default()
+            })),
+            Arc::new(HashMap::new()),
+            Some(title),
+            ctx,
+        );
+
+        if let Some(command) = command
+            && let Some(terminal) = self.active_session_view(ctx)
+        {
+            terminal.update(ctx, |terminal, ctx| {
+                terminal.execute_command_or_set_pending(command, ctx);
+            });
+        }
+        self.persist_panefleet_state(ctx);
     }
 
     #[cfg(feature = "local_fs")]
@@ -11975,6 +12438,7 @@ impl Workspace {
         }
 
         ctx.dispatch_global_action("workspace:save_app", ());
+        self.persist_panefleet_state(ctx);
         ctx.notify();
     }
 
@@ -12724,6 +13188,11 @@ impl Workspace {
                 pg.set_left_panel_open(true, ctx);
             });
         }
+
+        if FeatureFlag::PaneFleetWorkbench.is_enabled() && !is_restoration {
+            self.ensure_panefleet_panels_open(ctx);
+            self.persist_panefleet_state(ctx);
+        }
     }
 
     pub fn add_tab_from_existing_pane(
@@ -12991,6 +13460,7 @@ impl Workspace {
 
     fn handle_open_repository(&mut self, path: &str, ctx: &mut ViewContext<Self>) {
         let path_buf = PathBuf::from(path);
+        self.switch_panefleet_project(path_buf.clone(), false, ctx);
         ProjectManagementModel::handle(ctx).update(ctx, |projects, ctx| {
             projects.upsert_project(path_buf.clone(), ctx);
         });
@@ -13011,6 +13481,7 @@ impl Workspace {
                 });
             }
         });
+        self.ensure_panefleet_panels_open(ctx);
     }
 
     /// Navigate to an existing AI conversation, focusing on its terminal view, if it's open anywhere.
@@ -14077,6 +14548,10 @@ impl Workspace {
 
     /// How to render the tab bar.
     fn tab_bar_mode(&self, app: &AppContext) -> ShowTabBar {
+        if FeatureFlag::PaneFleetWorkbench.is_enabled() {
+            return ShowTabBar::Stacked;
+        }
+
         // Drag-preview windows always show the tab bar inline; the user
         // is literally holding the tab they detached, so it must remain
         // visible regardless of the user's hover/fullscreen settings.
@@ -15966,6 +16441,13 @@ impl Workspace {
                 self.refresh_working_directories_for_pane_group(&pane_group, ctx);
                 self.update_resource_center_action_target(ctx);
                 self.update_active_session(ctx);
+                if FeatureFlag::PaneFleetWorkbench.is_enabled()
+                    && pane_group.id() == self.active_tab_pane_group().id()
+                {
+                    self.ensure_panefleet_panels_open(ctx);
+                    #[cfg(feature = "local_fs")]
+                    self.setup_code_review_panel(None, ctx);
+                }
 
                 if FeatureFlag::DirectoryTabColors.is_enabled()
                     && let Some(tab) = self
@@ -21974,6 +22456,120 @@ impl Workspace {
         }
     }
 
+    fn render_panefleet_launcher_button(
+        &self,
+        appearance: &Appearance,
+        label: &'static str,
+        icon: Icon,
+        command: Option<&'static str>,
+        path: PathBuf,
+        mouse_state: MouseStateHandle,
+    ) -> Box<dyn Element> {
+        let theme = appearance.theme();
+        let font_family = appearance.ui_font_family();
+        let text_color = theme.sub_text_color(theme.background());
+
+        Hoverable::new(mouse_state, move |state| {
+            let icon = ConstrainedBox::new(icon.to_warpui_icon(text_color).finish())
+                .with_width(14.)
+                .with_height(14.)
+                .finish();
+            let label = Text::new_inline(label, font_family, 12.)
+                .with_color(text_color.into())
+                .finish();
+            let content = Flex::row()
+                .with_main_axis_size(MainAxisSize::Min)
+                .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                .with_spacing(6.)
+                .with_child(icon)
+                .with_child(label)
+                .finish();
+            let mut button = Container::new(content)
+                .with_padding(Padding::uniform(6.).with_left(8.).with_right(8.))
+                .with_corner_radius(CornerRadius::with_all(Radius::Pixels(4.)));
+            if state.is_hovered() {
+                button = button.with_background(internal_colors::fg_overlay_1(theme));
+            }
+            button.finish()
+        })
+        .on_click(move |ctx, _, _| {
+            ctx.dispatch_typed_action(WorkspaceAction::OpenPaneFleetSession {
+                path: path.clone(),
+                command: command.map(str::to_owned),
+                session_name: label.to_string(),
+            });
+        })
+        .with_cursor(Cursor::PointingHand)
+        .finish()
+    }
+
+    fn render_panefleet_launcher_bar(
+        &self,
+        appearance: &Appearance,
+        app: &AppContext,
+    ) -> Box<dyn Element> {
+        let theme = appearance.theme();
+        let mut content = Flex::row()
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_spacing(2.);
+
+        let settings = self
+            .render_tab_bar_icon_button(
+                appearance,
+                icons::Icon::Gear,
+                &self.mouse_states.panefleet_launcher_settings,
+                WorkspaceAction::ShowSettings,
+                "Settings".to_string(),
+                self.cached_keybindings[SHOW_SETTINGS_KEYBINDING_NAME].clone(),
+                false,
+                false,
+            )
+            .finish();
+        content.add_child(settings);
+
+        if let Some(path) = self.current_panefleet_project_path(app) {
+            content.add_child(self.render_panefleet_launcher_button(
+                appearance,
+                "Terminal",
+                Icon::Terminal,
+                None,
+                path.clone(),
+                self.mouse_states.panefleet_launcher_terminal.clone(),
+            ));
+            content.add_child(self.render_panefleet_launcher_button(
+                appearance,
+                "Codex",
+                Icon::OpenAILogo,
+                Some("codex"),
+                path.clone(),
+                self.mouse_states.panefleet_launcher_codex.clone(),
+            ));
+            content.add_child(self.render_panefleet_launcher_button(
+                appearance,
+                "Claude",
+                Icon::ClaudeLogo,
+                Some("claude"),
+                path.clone(),
+                self.mouse_states.panefleet_launcher_claude.clone(),
+            ));
+            content.add_child(self.render_panefleet_launcher_button(
+                appearance,
+                "OpenCode",
+                Icon::OpenCodeLogo,
+                Some("opencode"),
+                path,
+                self.mouse_states.panefleet_launcher_opencode.clone(),
+            ));
+        }
+
+        Container::new(content.finish())
+            .with_padding(Padding::uniform(6.).with_left(10.).with_right(10.))
+            .with_background(theme.surface_overlay_1())
+            .with_border(Border::bottom(1.).with_border_fill(theme.outline()))
+            .finish()
+    }
+
     fn render_banner_and_active_tab(
         &self,
         app: &AppContext,
@@ -21996,9 +22592,19 @@ impl Workspace {
                 .finish(),
             None => active_content,
         };
+        let terminal_content = if FeatureFlag::PaneFleetWorkbench.is_enabled() {
+            Flex::column()
+                .with_main_axis_size(MainAxisSize::Max)
+                .with_child(self.render_panefleet_launcher_bar(appearance, app))
+                .with_child(Shrinkable::new(1., terminal_content).finish())
+                .finish()
+        } else {
+            terminal_content
+        };
 
-        let vertical_tabs_active =
-            FeatureFlag::VerticalTabs.is_enabled() && *TabSettings::as_ref(app).use_vertical_tabs;
+        let vertical_tabs_active = !FeatureFlag::PaneFleetWorkbench.is_enabled()
+            && FeatureFlag::VerticalTabs.is_enabled()
+            && *TabSettings::as_ref(app).use_vertical_tabs;
         let pane_group = self.active_tab_pane_group().as_ref(app);
         let is_right_open = pane_group.right_panel_open;
         let is_right_maximized = is_right_open && pane_group.is_right_panel_maximized;
@@ -22621,7 +23227,8 @@ impl Workspace {
         // Config-driven vertical-tabs-era panels (left side).
         // Hidden for simplified WASM views (notebooks, shared sessions, etc.)
         // where these panels are unnecessary.
-        let vertical_tabs_active = !hide_vertical_tabs
+        let vertical_tabs_active = !FeatureFlag::PaneFleetWorkbench.is_enabled()
+            && !hide_vertical_tabs
             && FeatureFlag::VerticalTabs.is_enabled()
             && *TabSettings::as_ref(app).use_vertical_tabs;
 
@@ -22773,7 +23380,7 @@ impl Workspace {
         }
         match item {
             HeaderToolbarItemKind::TabsPanel => {
-                if !self.vertical_tabs_panel_open {
+                if FeatureFlag::PaneFleetWorkbench.is_enabled() || !self.vertical_tabs_panel_open {
                     return None;
                 }
                 Some(
@@ -25431,6 +26038,13 @@ impl TypedActionView for Workspace {
             }
             OpenRepository { path } => {
                 self.open_repository(path.as_deref(), ctx);
+            }
+            OpenPaneFleetSession {
+                path,
+                command,
+                session_name,
+            } => {
+                self.open_project_session(path.clone(), command.as_deref(), session_name, ctx);
             }
             OpenTabConfigRepoPicker { param_index } => {
                 self.open_repo_picker_for_tab_config_modal(*param_index, ctx);
@@ -28105,6 +28719,7 @@ impl Workspace {
         });
         self.pending_pane_group_transfer = false;
         ctx.dispatch_global_action("workspace:save_app", ());
+        self.persist_panefleet_state(ctx);
         ctx.notify();
     }
 

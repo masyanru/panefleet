@@ -42,6 +42,11 @@ pub(super) struct WorkspaceMouseStates {
     pub(super) session_config_tab_config_chip_close: MouseStateHandle,
     pub(super) tools_panel_icon: MouseStateHandle,
     pub(super) title_bar_search_bar: MouseStateHandle,
+    pub(super) panefleet_launcher_settings: MouseStateHandle,
+    pub(super) panefleet_launcher_terminal: MouseStateHandle,
+    pub(super) panefleet_launcher_codex: MouseStateHandle,
+    pub(super) panefleet_launcher_claude: MouseStateHandle,
+    pub(super) panefleet_launcher_opencode: MouseStateHandle,
     #[cfg(target_family = "wasm")]
     pub(super) warp_logo: MouseStateHandle,
 }

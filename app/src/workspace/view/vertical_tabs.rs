@@ -31,6 +31,7 @@ use warpui::fonts::{Properties, Weight};
 use warpui::platform::Cursor;
 use warpui::prelude::Align;
 use warpui::text_layout::ClipConfig;
+use warpui::ui_components::button::ButtonVariant;
 use warpui::ui_components::components::{UiComponent, UiComponentStyles};
 use warpui::ui_components::text_input::TextInput;
 use warpui::{AppContext, EntityId, SingletonEntity, ViewHandle, WindowId};
@@ -54,6 +55,7 @@ use crate::pane_group::pane::IPaneType;
 use crate::pane_group::{
     CodePane, NotebookPane, PaneGroup, PaneId, TabBarHoverIndex, TerminalPane, WorkflowPane,
 };
+use crate::projects::ProjectManagementModel;
 use crate::safe_triangle::SafeTriangle;
 use crate::tab::{SelectedTabColor, TabData, tab_position_id};
 use crate::terminal::cli_agent_sessions::CLIAgentSessionsModel;
@@ -85,6 +87,7 @@ use crate::workspace::{
 use crate::{FeatureFlag, send_telemetry_from_app_ctx};
 
 const PANEL_WIDTH: f32 = 248.;
+const PANEFLEET_PROJECT_LIMIT: usize = 6;
 const MIN_PANEL_WIDTH: f32 = 200.;
 const MAX_PANEL_WIDTH_RATIO: f32 = 0.5;
 const DETAIL_SIDECAR_SECTION_PADDING: f32 = 12.;
@@ -303,6 +306,28 @@ struct TabGroupMouseStates {
     chevron: MouseStateHandle,
     kebab: MouseStateHandle,
     close: MouseStateHandle,
+}
+
+struct PaneFleetMouseStates {
+    add_project: MouseStateHandle,
+    terminal: MouseStateHandle,
+    codex: MouseStateHandle,
+    claude: MouseStateHandle,
+    project_rows: Vec<MouseStateHandle>,
+}
+
+impl Default for PaneFleetMouseStates {
+    fn default() -> Self {
+        Self {
+            add_project: Default::default(),
+            terminal: Default::default(),
+            codex: Default::default(),
+            claude: Default::default(),
+            project_rows: (0..PANEFLEET_PROJECT_LIMIT)
+                .map(|_| MouseStateHandle::default())
+                .collect(),
+        }
+    }
 }
 
 /// Describes how a pane row sits in its tab's row layout. Carried as state
@@ -728,6 +753,7 @@ pub(super) struct VerticalTabsPanelState {
     show_diff_stats_mouse_state: MouseStateHandle,
     show_details_on_hover_mouse_state: MouseStateHandle,
     panel_right_click_mouse_state: MouseStateHandle,
+    panefleet_mouse_states: PaneFleetMouseStates,
     pub(super) show_settings_popup: bool,
 }
 
@@ -766,6 +792,7 @@ impl Default for VerticalTabsPanelState {
             show_diff_stats_mouse_state: Default::default(),
             show_details_on_hover_mouse_state: Default::default(),
             panel_right_click_mouse_state: Default::default(),
+            panefleet_mouse_states: Default::default(),
             show_settings_popup: false,
         }
     }
@@ -1668,17 +1695,20 @@ fn render_vertical_tabs_panel(
     .with_overlayed_scrollbar()
     .finish();
 
-    let panel_content = Flex::column()
+    let mut panel_content = Flex::column()
         .with_main_axis_size(MainAxisSize::Max)
-        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
-        .with_child(render_control_bar(
-            state,
-            workspace,
-            &workspace.vertical_tabs_search_input,
-            app,
-        ))
-        .with_child(Shrinkable::new(1., scrollable_groups).finish())
-        .finish();
+        .with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+    if FeatureFlag::PaneFleetWorkbench.is_enabled() {
+        panel_content.add_child(render_panefleet_workbench(state, workspace, app));
+    }
+    panel_content.add_child(render_control_bar(
+        state,
+        workspace,
+        &workspace.vertical_tabs_search_input,
+        app,
+    ));
+    panel_content.add_child(Shrinkable::new(1., scrollable_groups).finish());
+    let panel_content = panel_content.finish();
 
     // Catch-all drop target so a pane dragged into any gap not covered by a
     // row, group-header, or member target (between groups, below the last tab)
@@ -1740,6 +1770,172 @@ fn render_vertical_tabs_panel(
             let max_width = window_size.x() * MAX_PANEL_WIDTH_RATIO;
             (MIN_PANEL_WIDTH, max_width.max(MIN_PANEL_WIDTH))
         }))
+        .finish()
+}
+
+fn render_panefleet_session_button(
+    label: &'static str,
+    command: Option<&'static str>,
+    mouse_state: MouseStateHandle,
+    path: &Path,
+    appearance: &Appearance,
+) -> Box<dyn Element> {
+    let path = path.to_path_buf();
+    appearance
+        .ui_builder()
+        .button(ButtonVariant::Text, mouse_state)
+        .with_text_label(label.to_string())
+        .build()
+        .on_click(move |ctx, _, _| {
+            ctx.dispatch_typed_action(WorkspaceAction::OpenPaneFleetSession {
+                path: path.clone(),
+                command: command.map(str::to_owned),
+                session_name: label.to_string(),
+            });
+        })
+        .with_cursor(Cursor::PointingHand)
+        .finish()
+}
+
+fn render_panefleet_workbench(
+    state: &VerticalTabsPanelState,
+    workspace: &Workspace,
+    app: &AppContext,
+) -> Box<dyn Element> {
+    let appearance = Appearance::as_ref(app);
+    let theme = appearance.theme();
+    let font_family = appearance.ui_font_family();
+    let main_text_color = theme.main_text_color(theme.background());
+    let sub_text_color = theme.sub_text_color(theme.background());
+    let active_path = workspace
+        .active_tab_pane_group()
+        .as_ref(app)
+        .active_session_view(app)
+        .and_then(|terminal| terminal.as_ref(app).pwd())
+        .map(PathBuf::from);
+    let active_project_name = active_path
+        .as_ref()
+        .and_then(|path| path.file_name())
+        .and_then(|name| name.to_str())
+        .map(str::to_owned)
+        .unwrap_or_else(|| "No active project".to_string());
+
+    let mut content = Flex::column()
+        .with_main_axis_size(MainAxisSize::Min)
+        .with_spacing(6.)
+        .with_child(
+            Text::new_inline(
+                "PaneFleet",
+                font_family.clone(),
+                appearance.ui_font_size() + 2.,
+            )
+            .with_color(main_text_color.into())
+            .finish(),
+        )
+        .with_child(
+            Text::new_inline(
+                active_project_name,
+                font_family.clone(),
+                appearance.ui_font_size() - 1.,
+            )
+            .with_color(sub_text_color.into())
+            .finish(),
+        );
+
+    if let Some(path) = active_path {
+        content = content.with_child(
+            Flex::row()
+                .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                .with_spacing(4.)
+                .with_child(render_panefleet_session_button(
+                    "Terminal",
+                    None,
+                    state.panefleet_mouse_states.terminal.clone(),
+                    &path,
+                    appearance,
+                ))
+                .with_child(render_panefleet_session_button(
+                    "Codex",
+                    Some("codex"),
+                    state.panefleet_mouse_states.codex.clone(),
+                    &path,
+                    appearance,
+                ))
+                .with_child(render_panefleet_session_button(
+                    "Claude",
+                    Some("claude"),
+                    state.panefleet_mouse_states.claude.clone(),
+                    &path,
+                    appearance,
+                ))
+                .finish(),
+        );
+    }
+
+    content = content.with_child(
+        Container::new(
+            Text::new_inline("WORKSPACES", font_family, appearance.ui_font_size() - 2.)
+                .with_color(sub_text_color.into())
+                .finish(),
+        )
+        .with_margin_top(8.)
+        .finish(),
+    );
+
+    let add_project = appearance
+        .ui_builder()
+        .button(
+            ButtonVariant::Text,
+            state.panefleet_mouse_states.add_project.clone(),
+        )
+        .with_text_label("+ Add project".to_string())
+        .build()
+        .on_click(|ctx, _, _| {
+            ctx.dispatch_typed_action(WorkspaceAction::OpenRepository { path: None });
+        })
+        .with_cursor(Cursor::PointingHand)
+        .finish();
+    content = content.with_child(add_project);
+
+    let mut projects = ProjectManagementModel::as_ref(app)
+        .all_projects()
+        .map(|project| (project.path.clone(), project.added_ts))
+        .collect::<Vec<_>>();
+    projects.sort_by(|left, right| left.1.cmp(&right.1));
+
+    for ((project_path, _), mouse_state) in projects
+        .into_iter()
+        .take(PANEFLEET_PROJECT_LIMIT)
+        .zip(&state.panefleet_mouse_states.project_rows)
+    {
+        let path = PathBuf::from(&project_path);
+        let label = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or(&project_path)
+            .to_string();
+        let path_for_click = path.clone();
+        let row = appearance
+            .ui_builder()
+            .button(ButtonVariant::Text, mouse_state.clone())
+            .with_text_label(label)
+            .build()
+            .on_click(move |ctx, _, _| {
+                ctx.dispatch_typed_action(WorkspaceAction::OpenPaneFleetSession {
+                    path: path_for_click.clone(),
+                    command: None,
+                    session_name: "Terminal".to_string(),
+                });
+            })
+            .with_cursor(Cursor::PointingHand)
+            .finish();
+        content = content.with_child(row);
+    }
+
+    Container::new(content.finish())
+        .with_uniform_padding(10.)
+        .with_background(theme.surface_overlay_1())
+        .with_border(Border::bottom(1.).with_border_fill(theme.outline()))
         .finish()
 }
 

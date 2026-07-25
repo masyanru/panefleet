@@ -700,6 +700,12 @@ pub enum WorkspaceAction {
     OpenRepository {
         path: Option<String>,
     },
+    /// Open a PaneFleet project in a new named terminal tab and optionally start a CLI agent.
+    OpenPaneFleetSession {
+        path: PathBuf,
+        command: Option<String>,
+        session_name: String,
+    },
     /// Open the native folder picker for a repo param in the tab-config modal after the
     /// current interaction cycle finishes.
     OpenTabConfigRepoPicker {
@@ -995,6 +1001,7 @@ impl WorkspaceAction {
             | ForkAIConversation { .. }
             | SummarizeAIConversation { .. }
             | OpenRepository { .. }
+            | OpenPaneFleetSession { .. }
             | SelectTabConfig(_)
             | ToggleVerticalTabsPanel
             | OpenVerticalTabsPanel => true, // actions that actually change a state of the state of user's

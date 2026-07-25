@@ -149,7 +149,8 @@ use super::native_modal::{NativeModal, NativeModalEvent};
 use super::one_time_modal_model::OneTimeModalEvent;
 use super::panefleet_state::{
     PANEFLEET_STATE_VERSION, PaneFleetPersistedAgentSession, PaneFleetPersistedState,
-    PaneFleetPersistedTab, PaneFleetPersistedWorkspace, write_panefleet_state_atomic,
+    PaneFleetPersistedTab, PaneFleetPersistedWorkspace, panefleet_agent_launch_command,
+    write_panefleet_state_atomic,
 };
 use super::rewind_confirmation_dialog::{
     RewindConfirmationDialog, RewindConfirmationEvent, RewindDialogSource,
@@ -9276,7 +9277,7 @@ impl Workspace {
                 )
             }
             Some(agent) => (
-                Some(agent.command_prefix().to_string()),
+                Some(panefleet_agent_launch_command(agent)),
                 Some(PaneFleetPersistedAgentSession::new(agent, None)),
             ),
             None => (None, None),

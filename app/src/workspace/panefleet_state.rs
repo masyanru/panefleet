@@ -8,6 +8,7 @@ use uuid::Uuid;
 use crate::terminal::CLIAgent;
 
 pub const PANEFLEET_STATE_VERSION: u32 = 2;
+const CODEX_STANDALONE_COMMAND: &str = "env -u CODEX_THREAD_ID -u CODEX_CI codex";
 
 fn legacy_state_version() -> u32 {
     1
@@ -115,7 +116,7 @@ impl PaneFleetPersistedAgentSession {
 
         match self.agent {
             CLIAgent::Claude => Ok(format!("claude --resume {session_id}")),
-            CLIAgent::Codex => Ok(format!("codex resume {session_id}")),
+            CLIAgent::Codex => Ok(format!("{CODEX_STANDALONE_COMMAND} resume {session_id}")),
             CLIAgent::Gemini
             | CLIAgent::Amp
             | CLIAgent::Droid
@@ -131,6 +132,17 @@ impl PaneFleetPersistedAgentSession {
             | CLIAgent::Antigravity
             | CLIAgent::Unknown => Err(PaneFleetResumeError::UnsupportedAgent(self.agent)),
         }
+    }
+}
+
+pub(super) fn panefleet_agent_launch_command(agent: CLIAgent) -> String {
+    match agent {
+        // PaneFleet itself is commonly launched from Codex CLI while developing. A child shell
+        // inherits CODEX_THREAD_ID and CODEX_CI from that parent unless we remove them, causing a
+        // new `codex` process to attach to the parent's conversation instead of creating a
+        // workspace-owned session.
+        CLIAgent::Codex => CODEX_STANDALONE_COMMAND.to_string(),
+        _ => agent.command_prefix().to_string(),
     }
 }
 

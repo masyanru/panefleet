@@ -4,7 +4,7 @@ use uuid::Uuid;
 
 use super::{
     PANEFLEET_STATE_VERSION, PaneFleetPersistedAgentSession, PaneFleetPersistedState,
-    PaneFleetResumeError,
+    PaneFleetResumeError, panefleet_agent_launch_command,
 };
 use crate::terminal::CLIAgent;
 
@@ -46,7 +46,17 @@ fn builds_codex_resume_command_from_provider_session_id() {
 
     assert_eq!(
         session.resume_command(),
-        Ok(format!("codex resume {session_id}"))
+        Ok(format!(
+            "env -u CODEX_THREAD_ID -u CODEX_CI codex resume {session_id}"
+        ))
+    );
+}
+
+#[test]
+fn isolates_new_codex_session_from_parent_codex_runtime() {
+    assert_eq!(
+        panefleet_agent_launch_command(CLIAgent::Codex),
+        "env -u CODEX_THREAD_ID -u CODEX_CI codex"
     );
 }
 

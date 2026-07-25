@@ -248,7 +248,10 @@ validate_resume_state(provider_session_id, cwd)
 - **Claude**: новая сессия получает заранее созданный UUID через
   `--session-id`; восстановление использует `claude --resume <uuid>`.
 - **Codex**: ID получается после старта из событий; восстановление использует
-  `codex resume <session_id>`.
+  `codex resume <session_id>`. При запуске из процесса, который сам работает
+  внутри Codex, adapter удаляет у дочернего процесса родительские
+  `CODEX_THREAD_ID` и `CODEX_CI`, чтобы новая вкладка получила независимую
+  conversation identity.
 - **OpenCode**: adapter реализуется после проверки стабильного CLI-контракта
   текущей версии; до этого UI обязан честно показывать `Resume unsupported`.
 - **Terminal**: восстанавливается обычным snapshot-механизмом Warp без Agent

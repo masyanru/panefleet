@@ -1,5 +1,6 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::time::Duration;
 
 use warp_core::features::FeatureFlag;
 use warp_core::send_telemetry_from_ctx;
@@ -7,6 +8,7 @@ use warp_core::ui::Icon;
 use warp_core::ui::theme::color::internal_colors;
 use warp_errors::report_error;
 use warp_util::path::LineAndColumnArg;
+use warpui::r#async::Timer;
 use warpui::elements::{
     Align, Border, ChildView, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment,
     DragBarSide, Element, Empty, Fill as ElementFill, Flex, Hoverable, MainAxisAlignment,
@@ -88,6 +90,7 @@ const PANEFLEET_PROJECT_LIMIT: usize = 6;
 struct PaneFleetWorkspaceRowMouseStates {
     row: MouseStateHandle,
     close: MouseStateHandle,
+    activity: MouseStateHandle,
 }
 
 struct PaneFleetMouseStateHandles {
@@ -103,6 +106,24 @@ impl Default for PaneFleetMouseStateHandles {
                 .map(|_| PaneFleetWorkspaceRowMouseStates::default())
                 .collect(),
         }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum PaneFleetWorkspaceActivity {
+    Working { agent_names: Vec<String> },
+    Blocked { agent_names: Vec<String> },
+    Failed { agent_names: Vec<String> },
+}
+
+impl PaneFleetWorkspaceActivity {
+    fn tooltip(&self) -> String {
+        let (verb, agent_names) = match self {
+            Self::Working { agent_names } => ("working", agent_names),
+            Self::Blocked { agent_names } => ("waiting for input", agent_names),
+            Self::Failed { agent_names } => ("failed", agent_names),
+        };
+        format!("{}: {verb}", agent_names.join(", "))
     }
 }
 
@@ -257,6 +278,8 @@ pub struct LeftPanelView {
     toolbelt_buttons: Vec<ToolbeltButtonConfig>,
     active_pane_group: Option<WeakViewHandle<PaneGroup>>,
     panefleet_active_project: Option<PathBuf>,
+    panefleet_workspace_activities: HashMap<PathBuf, PaneFleetWorkspaceActivity>,
+    panefleet_activity_frame: usize,
     #[cfg_attr(not(feature = "local_fs"), allow(dead_code))]
     working_directories_model: ModelHandle<WorkingDirectoriesModel>,
     is_agent_management_view_open: bool,
@@ -516,13 +539,35 @@ impl LeftPanelView {
             toolbelt_buttons,
             active_pane_group: None,
             panefleet_active_project: None,
+            panefleet_workspace_activities: HashMap::new(),
+            panefleet_activity_frame: 0,
             working_directories_model,
             is_agent_management_view_open: false,
             panel_position: super::PanelPosition::Left,
         };
         view.update_button_active_states();
+        if FeatureFlag::PaneFleetWorkbench.is_enabled() {
+            view.tick_panefleet_activity(ctx);
+        }
 
         view
+    }
+
+    fn tick_panefleet_activity(&self, ctx: &mut ViewContext<Self>) {
+        ctx.spawn(
+            async move { Timer::after(Duration::from_millis(360)).await },
+            |view, _, ctx| {
+                view.panefleet_activity_frame = (view.panefleet_activity_frame + 1) % 3;
+                if view
+                    .panefleet_workspace_activities
+                    .values()
+                    .any(|activity| matches!(activity, PaneFleetWorkspaceActivity::Working { .. }))
+                {
+                    ctx.notify();
+                }
+                view.tick_panefleet_activity(ctx);
+            },
+        );
     }
 
     pub fn set_agent_management_view_open(&mut self, is_open: bool, ctx: &mut ViewContext<Self>) {
@@ -1092,6 +1137,83 @@ impl LeftPanelView {
         ctx.notify();
     }
 
+    pub(super) fn set_panefleet_workspace_activities(
+        &mut self,
+        activities: HashMap<PathBuf, PaneFleetWorkspaceActivity>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        if self.panefleet_workspace_activities != activities {
+            self.panefleet_workspace_activities = activities;
+            ctx.notify();
+        }
+    }
+
+    fn render_panefleet_activity_indicator(
+        &self,
+        activity: PaneFleetWorkspaceActivity,
+        mouse_state: MouseStateHandle,
+        appearance: &Appearance,
+    ) -> Box<dyn Element> {
+        let theme = appearance.theme();
+        let tooltip = appearance
+            .ui_builder()
+            .tool_tip(activity.tooltip())
+            .build()
+            .finish();
+        let dot = |fill, size| {
+            ConstrainedBox::new(
+                Container::new(Empty::new().finish())
+                    .with_background(fill)
+                    .with_corner_radius(CornerRadius::with_all(Radius::Percentage(50.)))
+                    .finish(),
+            )
+            .with_width(size)
+            .with_height(size)
+            .finish()
+        };
+
+        let indicator = match activity {
+            PaneFleetWorkspaceActivity::Working { .. } => {
+                let mut dots = Flex::row()
+                    .with_main_axis_size(MainAxisSize::Min)
+                    .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                    .with_spacing(3.);
+                for index in 0..3 {
+                    let fill = if index == self.panefleet_activity_frame {
+                        theme.accent()
+                    } else {
+                        internal_colors::fg_overlay_3(theme).into()
+                    };
+                    dots.add_child(dot(fill, 4.));
+                }
+                dots.finish()
+            }
+            PaneFleetWorkspaceActivity::Blocked { .. } => {
+                dot(warp_core::ui::theme::Fill::warn(), 6.)
+            }
+            PaneFleetWorkspaceActivity::Failed { .. } => {
+                dot(warp_core::ui::theme::Fill::error(), 6.)
+            }
+        };
+
+        appearance
+            .ui_builder()
+            .button(ButtonVariant::Text, mouse_state)
+            .with_custom_label(
+                ConstrainedBox::new(indicator)
+                    .with_width(20.)
+                    .with_height(14.)
+                    .finish(),
+            )
+            .with_style(UiComponentStyles {
+                padding: Some(Coords::uniform(0.)),
+                ..Default::default()
+            })
+            .with_tooltip(move || tooltip)
+            .build()
+            .finish()
+    }
+
     fn render_panefleet_workspace_row(
         &self,
         project_path: PathBuf,
@@ -1108,10 +1230,17 @@ impl LeftPanelView {
             .and_then(|name| name.to_str())
             .map(str::to_owned)
             .unwrap_or_else(|| project_path.to_string_lossy().into_owned());
-        let subtitle = project_path
-            .parent()
-            .map(|path| path.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "Local workspace".to_string());
+        let activity = self
+            .panefleet_workspace_activities
+            .get(&project_path)
+            .cloned();
+        let activity_indicator = activity.map(|activity| {
+            self.render_panefleet_activity_indicator(
+                activity,
+                mouse_states.activity.clone(),
+                appearance,
+            )
+        });
         let path_for_row = project_path.clone();
         let path_for_close = project_path;
         let close_mouse_state = mouse_states.close.clone();
@@ -1122,18 +1251,8 @@ impl LeftPanelView {
                 .with_height(24.)
                 .finish();
 
-            let labels = Flex::column()
-                .with_main_axis_size(MainAxisSize::Min)
-                .with_child(
-                    Text::new_inline(title.clone(), font_family, 12.)
-                        .with_color(main_text_color.into())
-                        .finish(),
-                )
-                .with_child(
-                    Text::new_inline(subtitle.clone(), font_family, 12.)
-                        .with_color(sub_text_color.into())
-                        .finish(),
-                )
+            let label = Text::new_inline(title.clone(), font_family, 12.)
+                .with_color(main_text_color.into())
                 .finish();
 
             let mut content = Flex::row()
@@ -1141,7 +1260,11 @@ impl LeftPanelView {
                 .with_cross_axis_alignment(CrossAxisAlignment::Center)
                 .with_spacing(8.)
                 .with_child(icon)
-                .with_child(Shrinkable::new(1., labels).finish());
+                .with_child(Shrinkable::new(1., label).finish());
+
+            if let Some(activity_indicator) = activity_indicator {
+                content.add_child(activity_indicator);
+            }
 
             if state.is_hovered() {
                 let close_button = Hoverable::new(close_mouse_state.clone(), move |button_state| {

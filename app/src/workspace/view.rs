@@ -389,7 +389,9 @@ use crate::terminal::available_shells::AvailableShells;
 use crate::terminal::block_list_viewport::InputMode;
 #[cfg(not(target_family = "wasm"))]
 use crate::terminal::cli_agent_sessions::plugin_manager::{PluginModalKind, plugin_manager_for};
-use crate::terminal::cli_agent_sessions::{CLIAgentSessionsModel, CLIAgentSessionsModelEvent};
+use crate::terminal::cli_agent_sessions::{
+    CLIAgentSessionStatus, CLIAgentSessionsModel, CLIAgentSessionsModelEvent,
+};
 use crate::terminal::enable_auto_reload_modal::{
     EnableAutoReloadModal, EnableAutoReloadModalEvent,
 };
@@ -527,7 +529,7 @@ use crate::workspace::view::free_ai_removal_modal::{
 use crate::workspace::view::global_search::view::GlobalSearchEntryFocus;
 use crate::workspace::view::launch_modal::{LaunchModal, LaunchModalEvent, OzLaunchSlide};
 use crate::workspace::view::left_panel::{
-    LeftPanelAction, LeftPanelEvent, LeftPanelView, ToolPanelView,
+    LeftPanelAction, LeftPanelEvent, LeftPanelView, PaneFleetWorkspaceActivity, ToolPanelView,
 };
 use crate::workspace::view::openwarp_launch_modal::{
     OpenWarpLaunchModal, OpenWarpLaunchModalEvent,
@@ -3749,6 +3751,82 @@ impl Workspace {
             .is_some()
     }
 
+    fn panefleet_workspace_activity_for_tabs(
+        tabs: &[TabData],
+        ctx: &AppContext,
+    ) -> Option<PaneFleetWorkspaceActivity> {
+        let sessions = CLIAgentSessionsModel::as_ref(ctx);
+        let mut working = HashSet::new();
+        let mut blocked = HashSet::new();
+        let mut failed = HashSet::new();
+
+        for tab in tabs {
+            let pane_group = tab.pane_group.as_ref(ctx);
+            for pane_id in pane_group.terminal_pane_ids() {
+                let Some(terminal) = pane_group.terminal_view_from_pane_id(pane_id, ctx) else {
+                    continue;
+                };
+                let Some(session) = sessions.session(terminal.id()) else {
+                    continue;
+                };
+                let name = session.agent.display_name().to_string();
+                match &session.status {
+                    CLIAgentSessionStatus::InProgress => {
+                        working.insert(name);
+                    }
+                    CLIAgentSessionStatus::Blocked { .. } => {
+                        blocked.insert(name);
+                    }
+                    CLIAgentSessionStatus::Failed { .. } => {
+                        failed.insert(name);
+                    }
+                    CLIAgentSessionStatus::Success => {}
+                }
+            }
+        }
+
+        let sorted_names = |names: HashSet<String>| names.into_iter().sorted().collect::<Vec<_>>();
+        if !working.is_empty() {
+            Some(PaneFleetWorkspaceActivity::Working {
+                agent_names: sorted_names(working),
+            })
+        } else if !blocked.is_empty() {
+            Some(PaneFleetWorkspaceActivity::Blocked {
+                agent_names: sorted_names(blocked),
+            })
+        } else if !failed.is_empty() {
+            Some(PaneFleetWorkspaceActivity::Failed {
+                agent_names: sorted_names(failed),
+            })
+        } else {
+            None
+        }
+    }
+
+    fn sync_panefleet_workspace_activities(&self, ctx: &mut ViewContext<Self>) {
+        if !FeatureFlag::PaneFleetWorkbench.is_enabled() {
+            return;
+        }
+
+        let mut activities = self
+            .panefleet_project_tabs
+            .iter()
+            .filter_map(|(path, state)| {
+                Self::panefleet_workspace_activity_for_tabs(&state.tabs, ctx)
+                    .map(|activity| (path.clone(), activity))
+            })
+            .collect::<HashMap<_, _>>();
+        if let Some(path) = self.current_panefleet_project_path(ctx)
+            && let Some(activity) = Self::panefleet_workspace_activity_for_tabs(&self.tabs, ctx)
+        {
+            activities.insert(path, activity);
+        }
+
+        self.left_panel_view.update(ctx, |left_panel, ctx| {
+            left_panel.set_panefleet_workspace_activities(activities, ctx);
+        });
+    }
+
     fn agent_conversation_event_affects_vertical_tabs(
         &self,
         event: &BlocklistAIHistoryEvent,
@@ -3841,6 +3919,7 @@ impl Workspace {
             self.persist_panefleet_state(ctx);
         }
 
+        self.sync_panefleet_workspace_activities(ctx);
         if affects_workspace {
             ctx.notify();
         }
@@ -8972,6 +9051,7 @@ impl Workspace {
             left_panel.set_panefleet_active_project(Some(active_project), ctx);
         });
         self.ensure_panefleet_panels_open(ctx);
+        self.sync_panefleet_workspace_activities(ctx);
         self.persist_panefleet_state(ctx);
     }
 
@@ -9017,6 +9097,7 @@ impl Workspace {
                 projects.upsert_project(path, ctx);
             });
             self.ensure_panefleet_panels_open(ctx);
+            self.sync_panefleet_workspace_activities(ctx);
             ctx.notify();
             return;
         }
@@ -9073,6 +9154,7 @@ impl Workspace {
             projects.upsert_project(path, ctx);
         });
         self.ensure_panefleet_panels_open(ctx);
+        self.sync_panefleet_workspace_activities(ctx);
         self.persist_panefleet_state(ctx);
         ctx.notify();
     }
@@ -9159,6 +9241,7 @@ impl Workspace {
             projects.remove_project(path, ctx);
         });
         self.ensure_panefleet_panels_open(ctx);
+        self.sync_panefleet_workspace_activities(ctx);
         self.persist_panefleet_state(ctx);
         ctx.notify();
     }

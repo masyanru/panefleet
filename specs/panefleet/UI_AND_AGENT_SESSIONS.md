@@ -337,11 +337,12 @@ Restoring  → InProgress → Blocked → InProgress → Success
 
 ### P2 — workspace activity UI
 
-- [ ] Убрать путь из обычного состояния Workspace Row.
-- [ ] Связать терминальные view с workspace.
-- [ ] Агрегировать статусы через `CLIAgentSessionsModel`.
-- [ ] Добавить трёхточечную анимацию и Reduce Motion fallback.
-- [ ] Добавить Blocked/Failed состояния и tooltips.
+- [x] Убрать путь из обычного состояния Workspace Row.
+- [x] Связать терминальные view с workspace.
+- [x] Агрегировать статусы через `CLIAgentSessionsModel`.
+- [x] Добавить трёхточечную анимацию.
+- [ ] Добавить Reduce Motion fallback.
+- [x] Добавить Blocked/Failed состояния и tooltips.
 
 ## 10. Acceptance checklist
 

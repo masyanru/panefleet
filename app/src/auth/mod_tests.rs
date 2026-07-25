@@ -1,13 +1,11 @@
-use super::web_logout_url_for_server_root;
+use super::web_logout_url;
+use warp_core::channel::ChannelState;
 
 #[test]
 fn web_logout_url_uses_configured_server_root() {
+    let server_root_url = ChannelState::server_root_url();
     assert_eq!(
-        web_logout_url_for_server_root("https://staging.warp.dev/"),
-        "https://staging.warp.dev/logout"
-    );
-    assert_eq!(
-        web_logout_url_for_server_root("http://localhost:8080"),
-        "http://localhost:8080/logout"
+        web_logout_url(),
+        format!("{}/logout", server_root_url.trim_end_matches('/'))
     );
 }

@@ -68,11 +68,10 @@ pub fn init(app: &mut AppContext) {
 /// Keep this derived from the channel's server root so local and non-production
 /// builds log out of the same web session they use for authentication.
 pub fn web_logout_url() -> String {
-    web_logout_url_for_server_root(ChannelState::server_root_url().as_ref())
-}
-
-fn web_logout_url_for_server_root(server_root_url: &str) -> String {
-    format!("{}/logout", server_root_url.trim_end_matches('/'))
+    format!(
+        "{}/logout",
+        ChannelState::server_root_url().trim_end_matches('/')
+    )
 }
 
 /// If the app has running processes or dirty objects, we'll show a confirmation modal before logging out.

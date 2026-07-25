@@ -22,12 +22,12 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           lfs: true
 
       - name: Cache Cargo data
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/git
@@ -39,6 +39,9 @@ jobs:
         run: |
           rustc --version
           cargo --version
+
+      - name: Install protobuf compiler
+        run: HOMEBREW_NO_AUTO_UPDATE=1 brew install protobuf
 
       - name: Check formatting
         run: cargo fmt --all -- --check

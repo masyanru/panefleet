@@ -318,12 +318,12 @@ Restoring  → InProgress → Blocked → InProgress → Success
 
 ### P0 — корректность сессий
 
-- [ ] Версионировать persisted schema.
-- [ ] Сохранять Agent Definition и session ID на уровне вкладки.
-- [ ] Реализовать общий resume adapter.
-- [ ] Подключить Claude resume.
-- [ ] Подключить Codex resume.
-- [ ] Показывать явное состояние ошибки вместо пустого терминала.
+- [x] Версионировать persisted schema.
+- [x] Сохранять agent kind и provider session ID на уровне вкладки.
+- [x] Реализовать общий resume adapter.
+- [x] Подключить Claude resume.
+- [x] Подключить Codex resume.
+- [x] Показывать явное состояние ошибки вместо пустого терминала.
 - [ ] Добавить тест: несколько workspace и несколько агентов переживают полный
       перезапуск приложения.
 

@@ -1775,7 +1775,7 @@ fn render_vertical_tabs_panel(
 
 fn render_panefleet_session_button(
     label: &'static str,
-    command: Option<&'static str>,
+    agent: Option<crate::terminal::CLIAgent>,
     mouse_state: MouseStateHandle,
     path: &Path,
     appearance: &Appearance,
@@ -1789,7 +1789,7 @@ fn render_panefleet_session_button(
         .on_click(move |ctx, _, _| {
             ctx.dispatch_typed_action(WorkspaceAction::OpenPaneFleetSession {
                 path: path.clone(),
-                command: command.map(str::to_owned),
+                agent,
                 session_name: label.to_string(),
             });
         })
@@ -1856,14 +1856,14 @@ fn render_panefleet_workbench(
                 ))
                 .with_child(render_panefleet_session_button(
                     "Codex",
-                    Some("codex"),
+                    Some(crate::terminal::CLIAgent::Codex),
                     state.panefleet_mouse_states.codex.clone(),
                     &path,
                     appearance,
                 ))
                 .with_child(render_panefleet_session_button(
                     "Claude",
-                    Some("claude"),
+                    Some(crate::terminal::CLIAgent::Claude),
                     state.panefleet_mouse_states.claude.clone(),
                     &path,
                     appearance,
@@ -1923,7 +1923,7 @@ fn render_panefleet_workbench(
             .on_click(move |ctx, _, _| {
                 ctx.dispatch_typed_action(WorkspaceAction::OpenPaneFleetSession {
                     path: path_for_click.clone(),
-                    command: None,
+                    agent: None,
                     session_name: "Terminal".to_string(),
                 });
             })

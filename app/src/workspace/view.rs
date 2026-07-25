@@ -63,11 +63,11 @@ use repo_metadata::RemoteRepositoryIdentifier;
 use repo_metadata::repositories::DetectedRepositories;
 #[cfg(all(target_os = "macos", feature = "crash_reporting"))]
 use sentry::protocol::{Attachment, AttachmentType};
-use serde::{Deserialize, Serialize};
 use serde_json;
 use session_sharing_protocol::common::SessionId as SharedSessionId;
 #[cfg(target_family = "wasm")]
 use url::Url;
+use uuid::Uuid;
 use warp_cli::agent::Harness;
 use warp_core::context_flag::ContextFlag;
 use warp_core::execution_mode::AppExecutionMode;
@@ -147,6 +147,10 @@ use super::hoa_onboarding::{
 use super::lightbox_view::{LightboxParams, LightboxView, LightboxViewEvent};
 use super::native_modal::{NativeModal, NativeModalEvent};
 use super::one_time_modal_model::OneTimeModalEvent;
+use super::panefleet_state::{
+    PANEFLEET_STATE_VERSION, PaneFleetPersistedAgentSession, PaneFleetPersistedState,
+    PaneFleetPersistedTab, PaneFleetPersistedWorkspace, write_panefleet_state_atomic,
+};
 use super::rewind_confirmation_dialog::{
     RewindConfirmationDialog, RewindConfirmationEvent, RewindDialogSource,
 };
@@ -964,22 +968,14 @@ struct PaneFleetProjectTabState {
     tab_groups: HashMap<TabGroupId, TabGroup>,
 }
 
-#[derive(Debug, Default, Deserialize, Serialize)]
-struct PaneFleetPersistedState {
-    active_project: Option<PathBuf>,
-    workspaces: Vec<PaneFleetPersistedWorkspace>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-struct PaneFleetPersistedWorkspace {
-    path: PathBuf,
-    active_tab_index: usize,
-    tabs: Vec<PaneFleetPersistedTab>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-struct PaneFleetPersistedTab {
-    title: Option<String>,
+enum PaneFleetAgentRestoreState {
+    Restoring {
+        agent: crate::terminal::CLIAgent,
+    },
+    Failed {
+        agent: crate::terminal::CLIAgent,
+        message: String,
+    },
 }
 
 enum PendingSessionConfigTabConfigChipTutorial {
@@ -1052,6 +1048,8 @@ pub struct Workspace {
     horizontal_tab_group_mouse_states: RefCell<HashMap<TabGroupId, HorizontalTabGroupMouseStates>>,
     panefleet_active_project: Option<PathBuf>,
     panefleet_project_tabs: HashMap<PathBuf, PaneFleetProjectTabState>,
+    panefleet_tab_sessions: HashMap<EntityId, PaneFleetPersistedAgentSession>,
+    panefleet_agent_restore_states: HashMap<EntityId, PaneFleetAgentRestoreState>,
     panefleet_restoring_state: bool,
     tab_rename_editor: ViewHandle<EditorView>,
     pane_rename_editor: ViewHandle<EditorView>,
@@ -3429,6 +3427,8 @@ impl Workspace {
             horizontal_tab_group_mouse_states: RefCell::default(),
             panefleet_active_project: None,
             panefleet_project_tabs: HashMap::new(),
+            panefleet_tab_sessions: HashMap::new(),
+            panefleet_agent_restore_states: HashMap::new(),
             panefleet_restoring_state: false,
             tab_rename_editor: Self::tab_rename_editor(ctx),
             pane_rename_editor: Self::pane_rename_editor(ctx),
@@ -3720,16 +3720,33 @@ impl Workspace {
         }
     }
 
+    fn panefleet_pane_group_id_for_terminal_view(
+        &self,
+        terminal_view_id: EntityId,
+        ctx: &AppContext,
+    ) -> Option<EntityId> {
+        self.tabs
+            .iter()
+            .chain(
+                self.panefleet_project_tabs
+                    .values()
+                    .flat_map(|state| state.tabs.iter()),
+            )
+            .find_map(|tab| {
+                tab.pane_group
+                    .as_ref(ctx)
+                    .contains_terminal_view(terminal_view_id, ctx)
+                    .then_some(tab.pane_group.id())
+            })
+    }
+
     fn workspace_contains_terminal_view(
         &self,
         terminal_view_id: EntityId,
         ctx: &AppContext,
     ) -> bool {
-        self.tabs.iter().any(|tab| {
-            tab.pane_group
-                .as_ref(ctx)
-                .contains_terminal_view(terminal_view_id, ctx)
-        })
+        self.panefleet_pane_group_id_for_terminal_view(terminal_view_id, ctx)
+            .is_some()
     }
 
     fn agent_conversation_event_affects_vertical_tabs(
@@ -3759,14 +3776,72 @@ impl Workspace {
         event: &CLIAgentSessionsModelEvent,
         ctx: &mut ViewContext<Self>,
     ) {
-        if matches!(
+        let affects_workspace = matches!(
             event,
             CLIAgentSessionsModelEvent::Started { .. }
                 | CLIAgentSessionsModelEvent::StatusChanged { .. }
                 | CLIAgentSessionsModelEvent::Ended { .. }
                 | CLIAgentSessionsModelEvent::SessionUpdated { .. }
-        ) && self.workspace_contains_terminal_view(event.terminal_view_id(), ctx)
+        ) && self
+            .workspace_contains_terminal_view(event.terminal_view_id(), ctx);
+
+        if !affects_workspace {
+            return;
+        }
+
+        if FeatureFlag::PaneFleetWorkbench.is_enabled()
+            && let Some(pane_group_id) =
+                self.panefleet_pane_group_id_for_terminal_view(event.terminal_view_id(), ctx)
         {
+            let observed_session = CLIAgentSessionsModel::as_ref(ctx)
+                .session(event.terminal_view_id())
+                .map(|session| (session.agent, session.session_context.session_id.clone()));
+
+            if let Some((agent, observed_session_id)) = observed_session {
+                let saved_session = self
+                    .panefleet_tab_sessions
+                    .entry(pane_group_id)
+                    .or_insert_with(|| PaneFleetPersistedAgentSession::new(agent, None));
+                let expected_session_id = saved_session.provider_session_id.clone();
+                saved_session.agent = agent;
+                if observed_session_id.is_some() {
+                    saved_session.provider_session_id = observed_session_id.clone();
+                }
+
+                if let Some(PaneFleetAgentRestoreState::Restoring { .. }) =
+                    self.panefleet_agent_restore_states.get(&pane_group_id)
+                    && let Some(observed_session_id) = observed_session_id
+                {
+                    if expected_session_id.as_deref() == Some(observed_session_id.as_str()) {
+                        self.panefleet_agent_restore_states.remove(&pane_group_id);
+                    } else {
+                        self.panefleet_agent_restore_states.insert(
+                            pane_group_id,
+                            PaneFleetAgentRestoreState::Failed {
+                                agent,
+                                message: "The CLI resumed a different session than requested"
+                                    .to_string(),
+                            },
+                        );
+                    }
+                }
+            } else if matches!(event, CLIAgentSessionsModelEvent::Ended { .. })
+                && let Some(PaneFleetAgentRestoreState::Restoring { agent }) =
+                    self.panefleet_agent_restore_states.remove(&pane_group_id)
+            {
+                self.panefleet_agent_restore_states.insert(
+                    pane_group_id,
+                    PaneFleetAgentRestoreState::Failed {
+                        agent,
+                        message: "The agent process ended before resume was confirmed".to_string(),
+                    },
+                );
+            }
+
+            self.persist_panefleet_state(ctx);
+        }
+
+        if affects_workspace {
             ctx.notify();
         }
     }
@@ -8669,6 +8744,7 @@ impl Workspace {
     fn panefleet_persisted_workspace(
         path: PathBuf,
         state: &PaneFleetProjectTabState,
+        tab_sessions: &HashMap<EntityId, PaneFleetPersistedAgentSession>,
         app: &AppContext,
     ) -> PaneFleetPersistedWorkspace {
         PaneFleetPersistedWorkspace {
@@ -8679,6 +8755,7 @@ impl Workspace {
                 .iter()
                 .map(|tab| PaneFleetPersistedTab {
                     title: tab.pane_group.as_ref(app).custom_title(app),
+                    agent_session: tab_sessions.get(&tab.pane_group.id()).cloned(),
                 })
                 .collect(),
         }
@@ -8692,7 +8769,14 @@ impl Workspace {
         let mut workspaces = self
             .panefleet_project_tabs
             .iter()
-            .map(|(path, state)| Self::panefleet_persisted_workspace(path.clone(), state, app))
+            .map(|(path, state)| {
+                Self::panefleet_persisted_workspace(
+                    path.clone(),
+                    state,
+                    &self.panefleet_tab_sessions,
+                    app,
+                )
+            })
             .collect::<Vec<_>>();
         if let Some(path) = self.current_panefleet_project_path(app) {
             workspaces.push(Self::panefleet_persisted_workspace(
@@ -8703,29 +8787,64 @@ impl Workspace {
                     tab_mru_order: self.tab_mru_order.clone(),
                     tab_groups: self.tab_groups.clone(),
                 },
+                &self.panefleet_tab_sessions,
                 app,
             ));
         }
         workspaces.sort_by(|left, right| left.path.cmp(&right.path));
 
-        let persisted = PaneFleetPersistedState {
-            active_project: self.current_panefleet_project_path(app),
-            workspaces,
-        };
+        let persisted =
+            PaneFleetPersistedState::new(self.current_panefleet_project_path(app), workspaces);
         let path = Self::panefleet_state_path();
-        if let Some(parent) = path.parent()
-            && let Err(err) = std::fs::create_dir_all(parent)
-        {
-            log::warn!("Failed to create PaneFleet state directory: {err}");
-            return;
+        if let Err(err) = write_panefleet_state_atomic(&path, &persisted) {
+            log::warn!("Failed to persist PaneFleet workspaces: {err}");
         }
-        match serde_json::to_vec_pretty(&persisted) {
-            Ok(contents) => {
-                if let Err(err) = std::fs::write(path, contents) {
-                    log::warn!("Failed to persist PaneFleet workspaces: {err}");
-                }
+    }
+
+    fn restore_panefleet_agent_at_tab_index(
+        &mut self,
+        tab_index: usize,
+        agent_session: PaneFleetPersistedAgentSession,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let Some(tab) = self.tabs.get(tab_index) else {
+            return;
+        };
+        let pane_group_id = tab.pane_group.id();
+        let terminal = tab.pane_group.as_ref(ctx).active_session_view(ctx);
+        let agent = agent_session.agent;
+        let resume_command = agent_session.resume_command();
+        self.panefleet_tab_sessions
+            .insert(pane_group_id, agent_session);
+
+        match (terminal, resume_command) {
+            (Some(terminal), Ok(command)) => {
+                self.panefleet_agent_restore_states.insert(
+                    pane_group_id,
+                    PaneFleetAgentRestoreState::Restoring { agent },
+                );
+                terminal.update(ctx, |terminal, ctx| {
+                    terminal.execute_command_or_set_pending(&command, ctx);
+                });
             }
-            Err(err) => log::warn!("Failed to serialize PaneFleet workspaces: {err}"),
+            (_, Err(error)) => {
+                self.panefleet_agent_restore_states.insert(
+                    pane_group_id,
+                    PaneFleetAgentRestoreState::Failed {
+                        agent,
+                        message: error.message(),
+                    },
+                );
+            }
+            (None, Ok(_)) => {
+                self.panefleet_agent_restore_states.insert(
+                    pane_group_id,
+                    PaneFleetAgentRestoreState::Failed {
+                        agent,
+                        message: "The restored tab does not contain a terminal".to_string(),
+                    },
+                );
+            }
         }
     }
 
@@ -8736,9 +8855,17 @@ impl Workspace {
         let Ok(contents) = std::fs::read(Self::panefleet_state_path()) else {
             return;
         };
-        let Ok(persisted) = serde_json::from_slice::<PaneFleetPersistedState>(&contents) else {
+        let Ok(persisted) = PaneFleetPersistedState::decode(&contents) else {
             return;
         };
+        if persisted.version > PANEFLEET_STATE_VERSION {
+            log::warn!(
+                "PaneFleet state version {} is newer than supported version {}",
+                persisted.version,
+                PANEFLEET_STATE_VERSION
+            );
+            return;
+        }
         let Some(active_project) = persisted.active_project else {
             return;
         };
@@ -8751,12 +8878,15 @@ impl Workspace {
         };
         self.panefleet_restoring_state = true;
         self.panefleet_project_tabs.clear();
+        self.panefleet_tab_sessions.clear();
+        self.panefleet_agent_restore_states.clear();
 
-        for workspace in persisted
-            .workspaces
-            .into_iter()
-            .filter(|workspace| workspace.path != active_project)
-        {
+        let mut active_workspace = None;
+        for workspace in persisted.workspaces {
+            if workspace.path == active_project {
+                active_workspace = Some(workspace);
+                continue;
+            }
             self.tabs.clear();
             self.active_tab_index = 0;
             self.tab_mru_order.clear();
@@ -8764,11 +8894,12 @@ impl Workspace {
             self.panefleet_active_project = Some(workspace.path.clone());
 
             let tabs = if workspace.tabs.is_empty() {
-                vec![PaneFleetPersistedTab { title: None }]
+                vec![PaneFleetPersistedTab::terminal(None)]
             } else {
                 workspace.tabs
             };
             for tab in tabs {
+                let agent_session = tab.agent_session.clone();
                 self.add_tab_with_pane_layout(
                     PanesLayout::SingleTerminal(Box::new(NewTerminalOptions {
                         initial_directory: Some(workspace.path.clone()),
@@ -8779,6 +8910,13 @@ impl Workspace {
                     tab.title,
                     ctx,
                 );
+                if let Some(agent_session) = agent_session {
+                    self.restore_panefleet_agent_at_tab_index(
+                        self.tabs.len().saturating_sub(1),
+                        agent_session,
+                        ctx,
+                    );
+                }
             }
             let active_tab_index = workspace
                 .active_tab_index
@@ -8801,6 +8939,30 @@ impl Workspace {
         self.active_tab_index = active_state
             .active_tab_index
             .min(self.tabs.len().saturating_sub(1));
+
+        if let Some(active_workspace) = active_workspace {
+            let restored_active_tab_index = active_workspace.active_tab_index;
+            for (tab_index, persisted_tab) in active_workspace.tabs.into_iter().enumerate() {
+                if tab_index >= self.tabs.len() {
+                    self.add_tab_with_pane_layout(
+                        PanesLayout::SingleTerminal(Box::new(NewTerminalOptions {
+                            initial_directory: Some(active_project.clone()),
+                            hide_homepage: true,
+                            ..Default::default()
+                        })),
+                        Arc::new(HashMap::new()),
+                        persisted_tab.title.clone(),
+                        ctx,
+                    );
+                }
+                if let Some(agent_session) = persisted_tab.agent_session {
+                    self.restore_panefleet_agent_at_tab_index(tab_index, agent_session, ctx);
+                }
+            }
+            self.active_tab_index =
+                restored_active_tab_index.min(self.tabs.len().saturating_sub(1));
+        }
+
         self.panefleet_active_project = Some(active_project.clone());
         self.panefleet_restoring_state = false;
         if !self.tabs.is_empty() {
@@ -8810,6 +8972,7 @@ impl Workspace {
             left_panel.set_panefleet_active_project(Some(active_project), ctx);
         });
         self.ensure_panefleet_panels_open(ctx);
+        self.persist_panefleet_state(ctx);
     }
 
     fn ensure_panefleet_panels_open(&mut self, ctx: &mut ViewContext<Self>) {
@@ -9003,7 +9166,7 @@ impl Workspace {
     fn open_project_session(
         &mut self,
         path: PathBuf,
-        command: Option<&str>,
+        agent: Option<crate::terminal::CLIAgent>,
         session_name: &str,
         ctx: &mut ViewContext<Self>,
     ) {
@@ -9018,6 +9181,23 @@ impl Workspace {
             .and_then(|name| name.to_str())
             .unwrap_or("Project");
         let title = format!("{project_name} · {session_name}");
+        let (command, agent_session) = match agent {
+            Some(crate::terminal::CLIAgent::Claude) => {
+                let session_id = Uuid::new_v4().to_string();
+                (
+                    Some(format!("claude --session-id {session_id}")),
+                    Some(PaneFleetPersistedAgentSession::new(
+                        crate::terminal::CLIAgent::Claude,
+                        Some(session_id),
+                    )),
+                )
+            }
+            Some(agent) => (
+                Some(agent.command_prefix().to_string()),
+                Some(PaneFleetPersistedAgentSession::new(agent, None)),
+            ),
+            None => (None, None),
+        };
         self.add_tab_with_pane_layout(
             PanesLayout::SingleTerminal(Box::new(NewTerminalOptions {
                 initial_directory: Some(path),
@@ -9029,7 +9209,12 @@ impl Workspace {
             ctx,
         );
 
-        if let Some(command) = command
+        if let Some(agent_session) = agent_session {
+            self.panefleet_tab_sessions
+                .insert(self.active_tab_pane_group().id(), agent_session);
+        }
+
+        if let Some(command) = command.as_deref()
             && let Some(terminal) = self.active_session_view(ctx)
         {
             terminal.update(ctx, |terminal, ctx| {
@@ -22461,7 +22646,7 @@ impl Workspace {
         appearance: &Appearance,
         label: &'static str,
         icon: Icon,
-        command: Option<&'static str>,
+        agent: Option<crate::terminal::CLIAgent>,
         path: PathBuf,
         mouse_state: MouseStateHandle,
     ) -> Box<dyn Element> {
@@ -22495,7 +22680,7 @@ impl Workspace {
         .on_click(move |ctx, _, _| {
             ctx.dispatch_typed_action(WorkspaceAction::OpenPaneFleetSession {
                 path: path.clone(),
-                command: command.map(str::to_owned),
+                agent,
                 session_name: label.to_string(),
             });
         })
@@ -22541,7 +22726,7 @@ impl Workspace {
                 appearance,
                 "Codex",
                 Icon::OpenAILogo,
-                Some("codex"),
+                Some(crate::terminal::CLIAgent::Codex),
                 path.clone(),
                 self.mouse_states.panefleet_launcher_codex.clone(),
             ));
@@ -22549,7 +22734,7 @@ impl Workspace {
                 appearance,
                 "Claude",
                 Icon::ClaudeLogo,
-                Some("claude"),
+                Some(crate::terminal::CLIAgent::Claude),
                 path.clone(),
                 self.mouse_states.panefleet_launcher_claude.clone(),
             ));
@@ -22557,7 +22742,7 @@ impl Workspace {
                 appearance,
                 "OpenCode",
                 Icon::OpenCodeLogo,
-                Some("opencode"),
+                Some(crate::terminal::CLIAgent::OpenCode),
                 path,
                 self.mouse_states.panefleet_launcher_opencode.clone(),
             ));
@@ -22568,6 +22753,53 @@ impl Workspace {
             .with_background(theme.surface_overlay_1())
             .with_border(Border::bottom(1.).with_border_fill(theme.outline()))
             .finish()
+    }
+
+    fn render_panefleet_agent_restore_banner(
+        &self,
+        appearance: &Appearance,
+    ) -> Option<Box<dyn Element>> {
+        let pane_group_id = self.active_tab_pane_group().id();
+        let restore_state = self.panefleet_agent_restore_states.get(&pane_group_id)?;
+        let theme = appearance.theme();
+        let font_family = appearance.ui_font_family();
+        let (icon, color, text) = match restore_state {
+            PaneFleetAgentRestoreState::Restoring { agent } => (
+                Icon::RefreshCcw,
+                Fill::warn(),
+                format!("Restoring {} session…", agent.display_name()),
+            ),
+            PaneFleetAgentRestoreState::Failed { agent, message } => (
+                Icon::Warning,
+                Fill::error(),
+                format!("Could not restore {}: {message}", agent.display_name()),
+            ),
+        };
+
+        let content = Flex::row()
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_spacing(8.)
+            .with_child(
+                ConstrainedBox::new(icon.to_warpui_icon(color).finish())
+                    .with_width(14.)
+                    .with_height(14.)
+                    .finish(),
+            )
+            .with_child(
+                Text::new_inline(text, font_family, 12.)
+                    .with_color(theme.main_text_color(theme.background()).into())
+                    .finish(),
+            )
+            .finish();
+
+        Some(
+            Container::new(content)
+                .with_padding(Padding::uniform(8.).with_left(12.).with_right(12.))
+                .with_background(theme.surface_overlay_1())
+                .with_border(Border::bottom(1.).with_border_fill(color))
+                .finish(),
+        )
     }
 
     fn render_banner_and_active_tab(
@@ -22593,9 +22825,13 @@ impl Workspace {
             None => active_content,
         };
         let terminal_content = if FeatureFlag::PaneFleetWorkbench.is_enabled() {
-            Flex::column()
+            let mut content = Flex::column()
                 .with_main_axis_size(MainAxisSize::Max)
-                .with_child(self.render_panefleet_launcher_bar(appearance, app))
+                .with_child(self.render_panefleet_launcher_bar(appearance, app));
+            if let Some(restore_banner) = self.render_panefleet_agent_restore_banner(appearance) {
+                content.add_child(restore_banner);
+            }
+            content
                 .with_child(Shrinkable::new(1., terminal_content).finish())
                 .finish()
         } else {
@@ -26041,10 +26277,10 @@ impl TypedActionView for Workspace {
             }
             OpenPaneFleetSession {
                 path,
-                command,
+                agent,
                 session_name,
             } => {
-                self.open_project_session(path.clone(), command.as_deref(), session_name, ctx);
+                self.open_project_session(path.clone(), *agent, session_name, ctx);
             }
             OpenTabConfigRepoPicker { param_index } => {
                 self.open_repo_picker_for_tab_config_modal(*param_index, ctx);

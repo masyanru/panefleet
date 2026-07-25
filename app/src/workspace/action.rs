@@ -703,7 +703,7 @@ pub enum WorkspaceAction {
     /// Open a PaneFleet project in a new named terminal tab and optionally start a CLI agent.
     OpenPaneFleetSession {
         path: PathBuf,
-        command: Option<String>,
+        agent: Option<crate::terminal::CLIAgent>,
         session_name: String,
     },
     /// Open the native folder picker for a repo param in the tab-config modal after the

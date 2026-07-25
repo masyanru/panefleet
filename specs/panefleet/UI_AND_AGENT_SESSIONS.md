@@ -53,14 +53,19 @@ Application Window
 Состав строки:
 
 ```text
-[project/terminal icon]  Project name       [activity] [close]
+[project/terminal icon]  Project name                 [activity] [close]
+                         workspace path  [git branch]
 ```
 
 Требования:
 
-- показывать только название проекта;
-- путь к проекту в обычном состоянии не показывать;
-- полный путь оставить в tooltip и при необходимости в контекстном меню;
+- название проекта показывается всегда;
+- иконка определяется локально: GitHub для remote на `github.com`, Git для
+  остальных Git-репозиториев и мини-иконка PaneFleet для обычной папки;
+- показ полного пути и текущей Git-ветки независимо настраивается в
+  `Settings → Workspace`;
+- при выключенном пути полный путь остаётся доступен в tooltip и контекстном
+  меню;
 - порядок строк стабилен и не меняется при выборе workspace;
 - активная строка использует нативное selected-состояние Warp;
 - hover использует нативное hover-состояние Warp;
@@ -90,6 +95,7 @@ Application Window
 - `Failed` показывается неподвижной красной точкой до просмотра пользователем;
 - `Success` и отсутствие сессии не занимают место в строке;
 - индикатор не должен менять ширину строки при смене кадров;
+- индикатор можно полностью выключить в `Settings → Workspace`;
 - при системном `Reduce Motion` вместо анимации используется неподвижная
   accent-точка;
 - tooltip: `2 agents working`, `Claude is waiting for input` и аналогичные
@@ -211,6 +217,19 @@ Enabled in launcher, Add agent, Delete, Restore default и Save. Пользов�
 иконка, Environment, Permission mode и произвольный resume template остаются
 следующим расширением; built-in resume поведение пока выбирается через adapter.
 
+## 5.3 Settings → Workspace
+
+Отдельная страница управляет плотностью Workspace Row:
+
+- **Show workspace path** — полный корень проекта под названием;
+- **Show Git branch** — текущая ветка или короткий hash detached HEAD;
+- **Show agent activity** — анимированные и статические индикаторы агентов.
+
+Из навигации Settings в режиме PaneFleet скрыты продуктовые разделы Warp,
+которые не относятся к локальному workbench: Warp Agent, Profiles, Knowledge,
+Billing and usage, Cloud platform, Teams, Warpify, Referrals и Shared blocks.
+Account пока сохраняется, а судьба Warp Drive будет определена отдельно.
+
 ## 6. Точное восстановление Agent Session
 
 ### 6.1 Критерий готовности
@@ -272,8 +291,8 @@ validate_resume_state(provider_session_id, cwd)
   внутри Codex, adapter удаляет у дочернего процесса родительские
   `CODEX_THREAD_ID` и `CODEX_CI`, чтобы новая вкладка получила независимую
   conversation identity.
-- **OpenCode**: adapter реализуется после проверки стабильного CLI-контракта
-  текущей версии; до этого UI обязан честно показывать `Resume unsupported`.
+- **OpenCode**: provider session ID является непрозрачной строкой вида
+  `ses_…`; восстановление использует `opencode -s <provider_session_id>`.
 - **Terminal**: восстанавливается обычным snapshot-механизмом Warp без Agent
   Definition.
 
@@ -324,7 +343,8 @@ Restoring  → InProgress → Blocked → InProgress → Success
 ```text
 ~/Library/Application Support/dev.panefleet.PaneFleet/
 ├── panefleet-workspaces.json
-└── panefleet-agent-definitions.json
+├── panefleet-agent-definitions.json
+└── panefleet-workspace-preferences.json
 ```
 
 Перед реализацией точного resume формат нужно версионировать:
@@ -354,6 +374,7 @@ Restoring  → InProgress → Blocked → InProgress → Success
 - [x] Реализовать общий resume adapter.
 - [x] Подключить Claude resume.
 - [x] Подключить Codex resume.
+- [x] Подключить OpenCode resume через `opencode -s <session_id>`.
 - [x] Показывать явное состояние ошибки вместо пустого терминала.
 - [ ] Добавить тест: несколько workspace и несколько агентов переживают полный
       перезапуск приложения.
@@ -370,7 +391,7 @@ Restoring  → InProgress → Blocked → InProgress → Success
 
 ### P2 — workspace activity UI
 
-- [x] Убрать путь из обычного состояния Workspace Row.
+- [x] Сделать путь и Git-ветку опциональными элементами Workspace Row.
 - [x] Связать терминальные view с workspace.
 - [x] Агрегировать статусы через `CLIAgentSessionsModel`.
 - [x] Добавить трёхточечную анимацию.
@@ -380,7 +401,8 @@ Restoring  → InProgress → Blocked → InProgress → Success
 ## 10. Acceptance checklist
 
 - Выбор workspace не меняет порядок строк слева.
-- В Project Sidebar нет постоянно отображаемых путей.
+- Путь, Git-ветка и agent activity в Project Sidebar подчиняются настройкам
+  Workspace.
 - У каждого workspace свой tab strip.
 - Работающий агент заметен в строке workspace, даже если выбран другой проект.
 - Launcher запускает CLI по пользовательской конфигурации.

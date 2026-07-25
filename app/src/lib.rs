@@ -1177,7 +1177,11 @@ fn run_internal(mut launch_mode: LaunchMode) -> Result<()> {
             || std::env::var("WARPUI_USE_REAL_DISPLAY_IN_INTEGRATION_TESTS").is_ok();
         app_builder.set_activate_on_launch(activate_on_launch);
 
-        let dev_icon = ASSETS.get("bundled/png/local.png")?;
+        let dev_icon = if FeatureFlag::PaneFleetWorkbench.is_enabled() {
+            ASSETS.get("bundled/png/panefleet.png")?
+        } else {
+            ASSETS.get("bundled/png/local.png")?
+        };
         app_builder.set_dev_icon(dev_icon);
 
         let show_dock_icon = crate::settings::app_icon::ShowDockIconState::read_from_preferences(

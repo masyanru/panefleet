@@ -10441,6 +10441,7 @@ impl Workspace {
 
     fn user_menu_items(&self, app: &AppContext) -> Vec<MenuItem<WorkspaceAction>> {
         let mut items = Vec::new();
+        let panefleet_enabled = FeatureFlag::PaneFleetWorkbench.is_enabled();
         if !self.auth_state.is_anonymous_or_logged_out() {
             let name = self.auth_state.username_for_display().unwrap_or_default();
             items.push(MenuItemFields::new(name).with_disabled(true).into_item())
@@ -10449,7 +10450,8 @@ impl Workspace {
         let appearance = Appearance::as_ref(app);
 
         // Render the subtle autoupdate UI if autoupdate is ready and there is no incoming prominent update version.
-        if FeatureFlag::Autoupdate.is_enabled()
+        if !panefleet_enabled
+            && FeatureFlag::Autoupdate.is_enabled()
             && FeatureFlag::AutoupdateUIRevamp.is_enabled()
             && ChannelState::show_autoupdate_menu_items()
         {
@@ -10494,24 +10496,36 @@ impl Workspace {
             }
         }
 
-        items.extend([
-            MenuItemFields::new("What's new")
-                .with_on_select_action(WorkspaceAction::ViewLatestChangelog)
-                .into_item(),
-            MenuItemFields::new("Settings")
-                .with_on_select_action(WorkspaceAction::ShowSettings)
-                .into_item(),
-            MenuItemFields::new("Keyboard shortcuts")
-                .with_on_select_action(WorkspaceAction::ToggleKeybindingsPage)
-                .into_item(),
-            MenuItem::Separator,
-            MenuItemFields::new("Documentation")
-                .with_on_select_action(WorkspaceAction::ViewUserDocs)
-                .into_item(),
-            MenuItemFields::new("Feedback")
-                .with_on_select_action(WorkspaceAction::SendFeedback)
-                .into_item(),
-        ]);
+        if panefleet_enabled {
+            items.extend([
+                MenuItemFields::new("Settings")
+                    .with_on_select_action(WorkspaceAction::ShowSettings)
+                    .into_item(),
+                MenuItemFields::new("Keyboard shortcuts")
+                    .with_on_select_action(WorkspaceAction::ToggleKeybindingsPage)
+                    .into_item(),
+                MenuItem::Separator,
+            ]);
+        } else {
+            items.extend([
+                MenuItemFields::new("What's new")
+                    .with_on_select_action(WorkspaceAction::ViewLatestChangelog)
+                    .into_item(),
+                MenuItemFields::new("Settings")
+                    .with_on_select_action(WorkspaceAction::ShowSettings)
+                    .into_item(),
+                MenuItemFields::new("Keyboard shortcuts")
+                    .with_on_select_action(WorkspaceAction::ToggleKeybindingsPage)
+                    .into_item(),
+                MenuItem::Separator,
+                MenuItemFields::new("Documentation")
+                    .with_on_select_action(WorkspaceAction::ViewUserDocs)
+                    .into_item(),
+                MenuItemFields::new("Feedback")
+                    .with_on_select_action(WorkspaceAction::SendFeedback)
+                    .into_item(),
+            ]);
+        }
 
         #[cfg(not(target_family = "wasm"))]
         items.push(
@@ -10520,12 +10534,14 @@ impl Workspace {
                 .into_item(),
         );
 
-        items.extend([
-            MenuItemFields::new("Join our Slack community")
-                .with_on_select_action(WorkspaceAction::JoinSlack)
-                .into_item(),
-            MenuItem::Separator,
-        ]);
+        if !panefleet_enabled {
+            items.extend([
+                MenuItemFields::new("Join our Slack community")
+                    .with_on_select_action(WorkspaceAction::JoinSlack)
+                    .into_item(),
+                MenuItem::Separator,
+            ]);
+        }
 
         if self.auth_state.is_anonymous_or_logged_out() {
             items.push(
@@ -10536,32 +10552,34 @@ impl Workspace {
         }
 
         // Check if the user is on any paid plan to determine whether to show "Billing and Usage" or "Upgrade"
-        let is_on_paid_plan = UserWorkspaces::as_ref(app)
-            .current_workspace()
-            .map(|workspace| workspace.billing_metadata.is_user_on_paid_plan())
-            .unwrap_or(false);
+        if !panefleet_enabled {
+            let is_on_paid_plan = UserWorkspaces::as_ref(app)
+                .current_workspace()
+                .map(|workspace| workspace.billing_metadata.is_user_on_paid_plan())
+                .unwrap_or(false);
 
-        if is_on_paid_plan {
+            if is_on_paid_plan {
+                items.push(
+                    MenuItemFields::new("Billing and usage")
+                        .with_on_select_action(WorkspaceAction::ShowSettingsPage(
+                            SettingsSection::BillingAndUsage,
+                        ))
+                        .into_item(),
+                );
+            } else {
+                items.push(
+                    MenuItemFields::new("Upgrade")
+                        .with_on_select_action(WorkspaceAction::ShowUpgrade)
+                        .into_item(),
+                );
+            }
+
             items.push(
-                MenuItemFields::new("Billing and usage")
-                    .with_on_select_action(WorkspaceAction::ShowSettingsPage(
-                        SettingsSection::BillingAndUsage,
-                    ))
-                    .into_item(),
-            );
-        } else {
-            items.push(
-                MenuItemFields::new("Upgrade")
-                    .with_on_select_action(WorkspaceAction::ShowUpgrade)
+                MenuItemFields::new("Invite a friend")
+                    .with_on_select_action(WorkspaceAction::ShowReferralSettingsPage)
                     .into_item(),
             );
         }
-
-        items.push(
-            MenuItemFields::new("Invite a friend")
-                .with_on_select_action(WorkspaceAction::ShowReferralSettingsPage)
-                .into_item(),
-        );
 
         if !self.auth_state.is_anonymous_or_logged_out() {
             items.push(
@@ -15873,6 +15891,12 @@ impl Workspace {
                 self.panefleet_agent_definitions = PaneFleetAgentDefinitions::load_or_default(
                     &Self::panefleet_agent_definitions_path(),
                 );
+                ctx.notify();
+            }
+            SettingsViewEvent::PaneFleetWorkspacePreferencesChanged => {
+                self.left_panel_view.update(ctx, |left_panel, ctx| {
+                    left_panel.reload_panefleet_preferences(ctx);
+                });
                 ctx.notify();
             }
         }

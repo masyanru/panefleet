@@ -16,6 +16,7 @@ mod lightbox_view;
 mod native_modal;
 mod one_time_modal_model;
 pub(crate) mod panefleet_agents;
+pub(crate) mod panefleet_preferences;
 mod panefleet_state;
 mod registry;
 pub mod rewind_confirmation_dialog;

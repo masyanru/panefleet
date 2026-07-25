@@ -7,7 +7,7 @@ mod macos_app_icon {
     pub use objc2::rc::autoreleasepool;
     pub use objc2::{AnyThread, MainThreadMarker};
     pub use objc2_app_kit::{NSApplication, NSImage, NSWorkspace, NSWorkspaceIconCreationOptions};
-    pub use objc2_foundation::{NSBundle, NSString, ns_string};
+    pub use objc2_foundation::{NSBundle, NSData, NSString, ns_string};
     pub use warp_core::channel::{Channel, ChannelState};
 
     pub use crate::settings::app_icon::{AppIcon, AppIconSettings, AppIconSettingsChangedEvent};
@@ -194,6 +194,21 @@ impl AppearanceManager {
             let bundle = NSBundle::mainBundle();
             let bundle_path = bundle.bundlePath();
             let workspace = NSWorkspace::sharedWorkspace();
+
+            if warp_core::features::FeatureFlag::PaneFleetWorkbench.is_enabled() {
+                let Ok(icon_bytes) = ASSETS.get("bundled/png/panefleet.png") else {
+                    log::warn!("Failed to load PaneFleet app icon");
+                    return;
+                };
+                let data = NSData::with_bytes(&icon_bytes);
+                let Some(image) = NSImage::initWithData(NSImage::alloc(), &data) else {
+                    log::warn!("Failed to decode PaneFleet app icon");
+                    return;
+                };
+                // SAFETY: `setApplicationIconImage:` retains the provided image.
+                unsafe { ns_app.setApplicationIconImage(Some(&image)) };
+                return;
+            }
 
             // If the user has selected the default icon, reset to the icon that is statically
             // bundled in the app bundle. The bundled icon gets automatically "filtered" according

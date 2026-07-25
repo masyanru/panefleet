@@ -136,6 +136,7 @@ fn ai_subpages_list_contains_all_ai_subpage_variants() {
     assert!(subpages.contains(&SettingsSection::AgentProfiles));
     assert!(subpages.contains(&SettingsSection::AgentMCPServers));
     assert!(subpages.contains(&SettingsSection::Knowledge));
+    assert!(subpages.contains(&SettingsSection::PaneFleetAgents));
     assert!(subpages.contains(&SettingsSection::ThirdPartyCLIAgents));
 }
 
@@ -719,7 +720,7 @@ fn expanded_umbrella_produces_section_stop_per_subpage() {
     let stops = build_nav_stops(&nav_items, |_| true);
 
     // Expect: Account, WarpAgent, AgentProfiles, AgentMCPServers, Knowledge,
-    // ThirdPartyCLIAgents, BillingAndUsage, <Code umbrella>,
+    // PaneFleetAgents, ThirdPartyCLIAgents, BillingAndUsage, <Code umbrella>,
     // <Cloud platform umbrella>, Teams.
     let sections: Vec<_> = stops
         .iter()
@@ -736,6 +737,7 @@ fn expanded_umbrella_produces_section_stop_per_subpage() {
             "AgentProfiles",
             "AgentMCPServers",
             "Knowledge",
+            "PaneFleetAgents",
             "ThirdPartyCLIAgents",
             "BillingAndUsage",
             "Umbrella@3",
@@ -953,12 +955,14 @@ fn arrow_up_from_billing_and_usage_with_collapsed_agents_lands_on_last_subpage()
 #[test]
 fn arrow_up_into_collapsed_umbrella_respects_search_filter_for_last_subpage() {
     let nav_items = realistic_nav_items();
-    // Hide the last two AI subpages; the last *visible* subpage of the
+    // Hide the last three AI subpages; the last *visible* subpage of the
     // still-collapsed Agents umbrella should be AgentMCPServers.
     let is_visible = |section: SettingsSection| {
         !matches!(
             section,
-            SettingsSection::Knowledge | SettingsSection::ThirdPartyCLIAgents
+            SettingsSection::Knowledge
+                | SettingsSection::PaneFleetAgents
+                | SettingsSection::ThirdPartyCLIAgents
         )
     };
     let stops = build_nav_stops(&nav_items, is_visible);

@@ -448,6 +448,21 @@ impl ResourceCenterView {
 
     fn render_footer(&self, appearance: &Appearance) -> Box<dyn Element> {
         let docs_button = self.render_footer_button(ResourceCenterFooterItem::Docs, appearance);
+        if FeatureFlag::PaneFleetWorkbench.is_enabled() {
+            return Container::new(
+                Flex::row()
+                    .with_child(docs_button)
+                    .with_main_axis_size(MainAxisSize::Max)
+                    .with_main_axis_alignment(MainAxisAlignment::Center)
+                    .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                    .finish(),
+            )
+            .with_padding_top(SECTION_SPACING)
+            .with_padding_bottom(SECTION_SPACING)
+            .with_border(Border::top(1.).with_border_fill(appearance.theme().surface_2()))
+            .finish();
+        }
+
         let slack_button = self.render_footer_button(ResourceCenterFooterItem::Slack, appearance);
         let feedback_button =
             self.render_footer_button(ResourceCenterFooterItem::Feedback, appearance);

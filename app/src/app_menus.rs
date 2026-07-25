@@ -63,18 +63,23 @@ const MAX_RECENT_REPOS_IN_MENU: usize = 10;
 
 /// Creates the root app menu bar
 pub fn menu_bar(ctx: &mut AppContext) -> MenuBar {
-    MenuBar::new(vec![
+    let mut menus = vec![
         make_new_app_menu(ctx),
         make_new_file_menu(ctx),
         make_new_edit_menu(ctx),
         make_new_view_menu(ctx),
         make_new_tab_menu(ctx),
         make_new_blocks_menu(ctx),
-        make_new_ai_menu(ctx),
+    ];
+    if !FeatureFlag::PaneFleetWorkbench.is_enabled() {
+        menus.push(make_new_ai_menu(ctx));
+    }
+    menus.extend([
         make_new_drive_menu(ctx),
         make_new_window_menu(),
         make_new_help_menu(),
-    ])
+    ]);
+    MenuBar::new(menus)
 }
 
 // Creates the app dock menu
@@ -139,23 +144,37 @@ fn updateable_custom_item_without_checkmark(action: CustomAction, ctx: &AppConte
 }
 
 fn make_new_app_menu(ctx: &AppContext) -> Menu {
-    let mut menu_items = vec![updateable_custom_item_without_checkmark(
-        CustomAction::ShowAboutWarp,
-        ctx,
-    )];
+    let panefleet_enabled = FeatureFlag::PaneFleetWorkbench.is_enabled();
+    let mut menu_items = if panefleet_enabled {
+        vec![MenuItem::Custom(CustomMenuItem::new(
+            "About PaneFleet",
+            |ctx| ctx.dispatch_global_action("workspace:show_settings_about_page", &()),
+            no_updates,
+            None,
+        ))]
+    } else {
+        vec![updateable_custom_item_without_checkmark(
+            CustomAction::ShowAboutWarp,
+            ctx,
+        )]
+    };
 
-    if !FeatureFlag::AvatarInTabBar.is_enabled() {
+    if !panefleet_enabled && !FeatureFlag::AvatarInTabBar.is_enabled() {
         menu_items.push(updateable_custom_item_without_checkmark(
             CustomAction::ToggleResourceCenter,
             ctx,
         ))
     }
 
-    menu_items.extend([
-        MenuItem::Separator,
-        updateable_custom_item_without_checkmark(CustomAction::ReferAFriend, ctx),
-        MenuItem::Separator,
-    ]);
+    if panefleet_enabled {
+        menu_items.push(MenuItem::Separator);
+    } else {
+        menu_items.extend([
+            MenuItem::Separator,
+            updateable_custom_item_without_checkmark(CustomAction::ReferAFriend, ctx),
+            MenuItem::Separator,
+        ]);
+    }
 
     let preferences_menu_items = vec![
         updateable_custom_item_without_checkmark(CustomAction::ShowSettings, ctx),
@@ -175,7 +194,7 @@ fn make_new_app_menu(ctx: &AppContext) -> Menu {
         preferences_menu_items,
     )));
 
-    if FeatureFlag::Changelog.is_enabled() {
+    if !panefleet_enabled && FeatureFlag::Changelog.is_enabled() {
         menu_items.push(updateable_custom_item_without_checkmark(
             CustomAction::ViewChangelog,
             ctx,
@@ -187,11 +206,13 @@ fn make_new_app_menu(ctx: &AppContext) -> Menu {
         menu_items.push(MenuItem::Services);
     }
 
-    menu_items.push(MenuItem::Separator);
-    menu_items.push(link_menu_item(
-        "Privacy Policy...",
-        links::PRIVACY_POLICY_URL.into(),
-    ));
+    if !panefleet_enabled {
+        menu_items.push(MenuItem::Separator);
+        menu_items.push(link_menu_item(
+            "Privacy Policy...",
+            links::PRIVACY_POLICY_URL.into(),
+        ));
+    }
 
     let debug_menu_items = debug_menu_items();
     if !debug_menu_items.is_empty() {
@@ -208,26 +229,28 @@ fn make_new_app_menu(ctx: &AppContext) -> Menu {
     menu_items.push(MenuItem::Standard(StandardAction::Hide));
     menu_items.push(MenuItem::Standard(StandardAction::HideOtherApps));
     menu_items.push(MenuItem::Standard(StandardAction::ShowAllApps));
-    menu_items.push(MenuItem::Separator);
-    menu_items.push(MenuItem::Custom(CustomMenuItem::new(
-        "Set Warp as Default Terminal",
-        move |ctx| {
-            DefaultTerminal::handle(ctx).update(ctx, |default_terminal, ctx| {
-                default_terminal.make_warp_default(ctx)
-            });
-        },
-        move |_props, ctx| {
-            let default_terminal = DefaultTerminal::handle(ctx).as_ref(ctx);
-            MenuItemPropertyChanges {
-                disabled: Some(
-                    !DefaultTerminal::can_warp_become_default()
-                        || default_terminal.is_warp_default(),
-                ),
-                ..Default::default()
-            }
-        },
-        None,
-    )));
+    if !panefleet_enabled {
+        menu_items.push(MenuItem::Separator);
+        menu_items.push(MenuItem::Custom(CustomMenuItem::new(
+            "Set Warp as Default Terminal",
+            move |ctx| {
+                DefaultTerminal::handle(ctx).update(ctx, |default_terminal, ctx| {
+                    default_terminal.make_warp_default(ctx)
+                });
+            },
+            move |_props, ctx| {
+                let default_terminal = DefaultTerminal::handle(ctx).as_ref(ctx);
+                MenuItemPropertyChanges {
+                    disabled: Some(
+                        !DefaultTerminal::can_warp_become_default()
+                            || default_terminal.is_warp_default(),
+                    ),
+                    ..Default::default()
+                }
+            },
+            None,
+        )));
+    }
     menu_items.push(MenuItem::Separator);
     menu_items.push(MenuItem::Custom(CustomMenuItem::new(
         "Log out",
@@ -245,7 +268,14 @@ fn make_new_app_menu(ctx: &AppContext) -> Menu {
         None,
     )));
     menu_items.push(MenuItem::Standard(StandardAction::Quit));
-    Menu::new("Warp", menu_items)
+    Menu::new(
+        if panefleet_enabled {
+            "PaneFleet"
+        } else {
+            "Warp"
+        },
+        menu_items,
+    )
 }
 
 fn make_new_file_menu(ctx: &AppContext) -> Menu {
@@ -926,6 +956,16 @@ fn feedback_menu_item() -> MenuItem {
 }
 
 fn make_new_help_menu() -> Menu {
+    if FeatureFlag::PaneFleetWorkbench.is_enabled() {
+        return Menu::new(
+            "Help",
+            vec![link_menu_item(
+                "GitHub Issues...",
+                links::GITHUB_ISSUES_URL.into(),
+            )],
+        );
+    }
+
     Menu::new(
         "Help",
         vec![

@@ -16,6 +16,9 @@ use main_page::{MainPageAction, MainSettingsPageEvent, MainSettingsPageView};
 use mcp_servers_page::MCPServersSettingsPageView;
 use nav::{SettingsNavItem, SettingsUmbrella};
 use panefleet_agents_page::{PaneFleetAgentsSettingsPageEvent, PaneFleetAgentsSettingsPageView};
+use panefleet_workspace_page::{
+    PaneFleetWorkspaceSettingsPageEvent, PaneFleetWorkspaceSettingsPageView,
+};
 use pathfinder_geometry::vector::Vector2F;
 use privacy_page::{PrivacyPageView, PrivacyPageViewEvent};
 use referrals_page::{ReferralsPageEvent, ReferralsPageView};
@@ -99,6 +102,7 @@ pub mod mcp_servers_page;
 mod nav;
 pub mod pane_manager;
 mod panefleet_agents_page;
+mod panefleet_workspace_page;
 mod platform;
 mod platform_page;
 mod privacy;
@@ -242,6 +246,7 @@ pub enum SettingsViewEvent {
         rule_paths: Vec<PathBuf>,
     },
     PaneFleetAgentDefinitionsChanged,
+    PaneFleetWorkspacePreferencesChanged,
 }
 
 /// Different navigation sections within the settings view
@@ -273,6 +278,7 @@ pub enum SettingsSection {
     AgentMCPServers,
     Knowledge,
     PaneFleetAgents,
+    PaneFleetWorkspace,
     ThirdPartyCLIAgents,
     /// Internal backing-page identifier for CodeSettingsPageView. Multiple subpages
     /// (CodeIndexing, EditorAndCodeReview) share this single backing page,
@@ -305,6 +311,7 @@ impl Display for SettingsSection {
             SettingsSection::AgentMCPServers => write!(f, "MCP servers"),
             SettingsSection::Knowledge => write!(f, "Knowledge"),
             SettingsSection::PaneFleetAgents => write!(f, "CLI agents"),
+            SettingsSection::PaneFleetWorkspace => write!(f, "Workspace"),
             SettingsSection::ThirdPartyCLIAgents => write!(f, "Third party CLI agents"),
             SettingsSection::CodeIndexing => write!(f, "Indexing and projects"),
             SettingsSection::EditorAndCodeReview => write!(f, "Editor and Code Review"),
@@ -370,6 +377,7 @@ impl SettingsSection {
             Self::AgentMCPServers,
             Self::Knowledge,
             Self::PaneFleetAgents,
+            Self::ThirdPartyCLIAgents,
         ]
     }
 
@@ -411,6 +419,7 @@ impl FromStr for SettingsSection {
             "MCP servers" | "AgentMCPServers" => Ok(Self::AgentMCPServers),
             "Knowledge" => Ok(Self::Knowledge),
             "CLI agents" | "PaneFleetAgents" => Ok(Self::PaneFleetAgents),
+            "Workspace" | "PaneFleetWorkspace" => Ok(Self::PaneFleetWorkspace),
             "Third party CLI agents" | "ThirdPartyCLIAgents" => Ok(Self::ThirdPartyCLIAgents),
             "Indexing and projects" | "CodeIndexing" => Ok(Self::CodeIndexing),
             "Editor and Code Review" | "EditorAndCodeReview" => Ok(Self::EditorAndCodeReview),
@@ -1119,6 +1128,7 @@ macro_rules! update_page {
             SettingsPageViewHandle::MCPServers(handle) => $ctx.update_view(handle, $update),
             SettingsPageViewHandle::WarpDrive(handle) => $ctx.update_view(handle, $update),
             SettingsPageViewHandle::PaneFleetAgents(handle) => $ctx.update_view(handle, $update),
+            SettingsPageViewHandle::PaneFleetWorkspace(handle) => $ctx.update_view(handle, $update),
         }
     };
 }
@@ -1210,6 +1220,11 @@ impl SettingsView {
             ctx.add_typed_action_view(PaneFleetAgentsSettingsPageView::new);
         ctx.subscribe_to_view(&panefleet_agents_page_handle, |me, _, event, ctx| {
             me.handle_panefleet_agents_page_event(event, ctx);
+        });
+        let panefleet_workspace_page_handle =
+            ctx.add_typed_action_view(PaneFleetWorkspaceSettingsPageView::new);
+        ctx.subscribe_to_view(&panefleet_workspace_page_handle, |me, _, event, ctx| {
+            me.handle_panefleet_workspace_page_event(event, ctx);
         });
 
         // Environments page
@@ -1322,6 +1337,7 @@ impl SettingsView {
             SettingsPage::new(main_page_handle),
             SettingsPage::new(ai_page_handle),
             SettingsPage::new(panefleet_agents_page_handle),
+            SettingsPage::new(panefleet_workspace_page_handle),
             billing_and_usage_page,
             SettingsPage::new(code_page_handle),
             SettingsPage::new(teams_page_handle),
@@ -1348,40 +1364,69 @@ impl SettingsView {
 
         // Build sidebar nav items. AI page is presented as an "Agents" umbrella
         // with subpages; the actual AI SettingsPage is hidden from direct sidebar listing.
-        let mut nav_items = vec![
-            SettingsNavItem::Page(SettingsSection::Account),
-            SettingsNavItem::Umbrella(SettingsUmbrella::new(
-                "Agents",
-                SettingsSection::ai_subpages().to_vec(),
-            )),
-            SettingsNavItem::Page(SettingsSection::BillingAndUsage),
-            SettingsNavItem::Umbrella(SettingsUmbrella::new(
-                "Code",
-                vec![
-                    SettingsSection::CodeIndexing,
-                    SettingsSection::EditorAndCodeReview,
-                ],
-            )),
-            SettingsNavItem::Umbrella(SettingsUmbrella::new(
-                "Cloud platform",
-                vec![
-                    SettingsSection::CloudEnvironments,
-                    SettingsSection::OzCloudAPIKeys,
-                ],
-            )),
-            SettingsNavItem::Page(SettingsSection::Teams),
-            SettingsNavItem::Page(SettingsSection::Appearance),
-            SettingsNavItem::Page(SettingsSection::Features),
-            SettingsNavItem::Page(SettingsSection::Keybindings),
-            SettingsNavItem::Page(SettingsSection::Warpify),
-            SettingsNavItem::Page(SettingsSection::Referrals),
-            SettingsNavItem::Page(SettingsSection::SharedBlocks),
-            SettingsNavItem::Page(SettingsSection::WarpDrive),
-            SettingsNavItem::Page(SettingsSection::Privacy),
-            SettingsNavItem::Page(SettingsSection::About),
-        ];
+        let panefleet_enabled = FeatureFlag::PaneFleetWorkbench.is_enabled();
+        let mut nav_items = if panefleet_enabled {
+            vec![
+                SettingsNavItem::Page(SettingsSection::Account),
+                SettingsNavItem::Page(SettingsSection::PaneFleetWorkspace),
+                SettingsNavItem::Umbrella(SettingsUmbrella::new(
+                    "Agents",
+                    vec![
+                        SettingsSection::PaneFleetAgents,
+                        SettingsSection::AgentMCPServers,
+                    ],
+                )),
+                SettingsNavItem::Umbrella(SettingsUmbrella::new(
+                    "Code",
+                    vec![
+                        SettingsSection::CodeIndexing,
+                        SettingsSection::EditorAndCodeReview,
+                    ],
+                )),
+                SettingsNavItem::Page(SettingsSection::Appearance),
+                SettingsNavItem::Page(SettingsSection::Features),
+                SettingsNavItem::Page(SettingsSection::Keybindings),
+                // Keep Warp Drive visible until PaneFleet decides whether to replace or reuse it.
+                SettingsNavItem::Page(SettingsSection::WarpDrive),
+                SettingsNavItem::Page(SettingsSection::Privacy),
+                SettingsNavItem::Page(SettingsSection::About),
+            ]
+        } else {
+            vec![
+                SettingsNavItem::Page(SettingsSection::Account),
+                SettingsNavItem::Umbrella(SettingsUmbrella::new(
+                    "Agents",
+                    SettingsSection::ai_subpages().to_vec(),
+                )),
+                SettingsNavItem::Page(SettingsSection::BillingAndUsage),
+                SettingsNavItem::Umbrella(SettingsUmbrella::new(
+                    "Code",
+                    vec![
+                        SettingsSection::CodeIndexing,
+                        SettingsSection::EditorAndCodeReview,
+                    ],
+                )),
+                SettingsNavItem::Umbrella(SettingsUmbrella::new(
+                    "Cloud platform",
+                    vec![
+                        SettingsSection::CloudEnvironments,
+                        SettingsSection::OzCloudAPIKeys,
+                    ],
+                )),
+                SettingsNavItem::Page(SettingsSection::Teams),
+                SettingsNavItem::Page(SettingsSection::Appearance),
+                SettingsNavItem::Page(SettingsSection::Features),
+                SettingsNavItem::Page(SettingsSection::Keybindings),
+                SettingsNavItem::Page(SettingsSection::Warpify),
+                SettingsNavItem::Page(SettingsSection::Referrals),
+                SettingsNavItem::Page(SettingsSection::SharedBlocks),
+                SettingsNavItem::Page(SettingsSection::WarpDrive),
+                SettingsNavItem::Page(SettingsSection::Privacy),
+                SettingsNavItem::Page(SettingsSection::About),
+            ]
+        };
 
-        if FeatureFlag::WarpControlCli.is_enabled() {
+        if FeatureFlag::WarpControlCli.is_enabled() && !panefleet_enabled {
             let shared_blocks_index = nav_items
                 .iter()
                 .position(|item| {
@@ -2016,6 +2061,18 @@ impl SettingsView {
         }
     }
 
+    fn handle_panefleet_workspace_page_event(
+        &mut self,
+        event: &PaneFleetWorkspaceSettingsPageEvent,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        match event {
+            PaneFleetWorkspaceSettingsPageEvent::PreferencesChanged => {
+                ctx.emit(SettingsViewEvent::PaneFleetWorkspacePreferencesChanged);
+            }
+        }
+    }
+
     fn handle_code_page_event(
         &mut self,
         event: &CodeSettingsPageEvent,
@@ -2191,6 +2248,7 @@ impl SettingsView {
             SettingsPageViewHandle::Code(v) => v.as_ref(app).should_render(app),
             SettingsPageViewHandle::WarpDrive(v) => v.as_ref(app).should_render(app),
             SettingsPageViewHandle::PaneFleetAgents(v) => v.as_ref(app).should_render(app),
+            SettingsPageViewHandle::PaneFleetWorkspace(v) => v.as_ref(app).should_render(app),
         }
     }
 

@@ -8,11 +8,12 @@ use warp_core::ui::Icon;
 use warp_core::ui::theme::color::internal_colors;
 use warp_errors::report_error;
 use warp_util::path::LineAndColumnArg;
+use warpui::assets::asset_cache::AssetSource;
 use warpui::r#async::Timer;
 use warpui::elements::{
-    Align, Border, ChildView, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment,
-    DragBarSide, Element, Empty, Fill as ElementFill, Flex, Hoverable, MainAxisAlignment,
-    MainAxisSize, MouseStateHandle, Padding, ParentElement, Radius, Resizable,
+    Align, Border, CacheOption, ChildView, ConstrainedBox, Container, CornerRadius,
+    CrossAxisAlignment, DragBarSide, Element, Empty, Fill as ElementFill, Flex, Hoverable, Image,
+    MainAxisAlignment, MainAxisSize, MouseStateHandle, Padding, ParentElement, Radius, Resizable,
     ResizableStateHandle, Shrinkable, Text, resizable_state_handle,
 };
 use warpui::fonts::Weight;
@@ -62,6 +63,10 @@ use crate::util::openable_file_type::{
     EditorLayout, is_markdown_file, resolve_file_target_with_editor_choice,
 };
 use crate::workspace::WorkspaceAction;
+use crate::workspace::panefleet_preferences::{
+    PaneFleetWorkspaceIcon, PaneFleetWorkspacePreferences, git_branch_for_workspace,
+    workspace_icon_for_path,
+};
 use crate::workspace::view::conversation_list::view::{
     ConversationListView, Event as ConversationListViewEvent,
 };
@@ -85,6 +90,7 @@ struct MouseStateHandles {
 }
 
 const PANEFLEET_PROJECT_LIMIT: usize = 6;
+const PANEFLEET_MIN_SIDEBAR_WIDTH: f32 = 168.;
 
 #[derive(Default)]
 struct PaneFleetWorkspaceRowMouseStates {
@@ -287,6 +293,7 @@ pub struct LeftPanelView {
     active_pane_group: Option<WeakViewHandle<PaneGroup>>,
     panefleet_active_project: Option<PathBuf>,
     panefleet_workspace_activities: HashMap<PathBuf, PaneFleetWorkspaceActivity>,
+    panefleet_preferences: PaneFleetWorkspacePreferences,
     panefleet_activity_frame: usize,
     #[cfg_attr(not(feature = "local_fs"), allow(dead_code))]
     working_directories_model: ModelHandle<WorkingDirectoriesModel>,
@@ -548,6 +555,9 @@ impl LeftPanelView {
             active_pane_group: None,
             panefleet_active_project: None,
             panefleet_workspace_activities: HashMap::new(),
+            panefleet_preferences: PaneFleetWorkspacePreferences::load_or_default(
+                &PaneFleetWorkspacePreferences::path(),
+            ),
             panefleet_activity_frame: 0,
             working_directories_model,
             is_agent_management_view_open: false,
@@ -1156,6 +1166,12 @@ impl LeftPanelView {
         }
     }
 
+    pub(super) fn reload_panefleet_preferences(&mut self, ctx: &mut ViewContext<Self>) {
+        self.panefleet_preferences =
+            PaneFleetWorkspacePreferences::load_or_default(&PaneFleetWorkspacePreferences::path());
+        ctx.notify();
+    }
+
     fn render_panefleet_activity_indicator(
         &self,
         activity: PaneFleetWorkspaceActivity,
@@ -1250,9 +1266,14 @@ impl LeftPanelView {
             .map(str::to_owned)
             .unwrap_or_else(|| project_path.to_string_lossy().into_owned());
         let activity = self
-            .panefleet_workspace_activities
-            .get(&project_path)
-            .cloned();
+            .panefleet_preferences
+            .show_agent_activity
+            .then(|| {
+                self.panefleet_workspace_activities
+                    .get(&project_path)
+                    .cloned()
+            })
+            .flatten();
         let activity_indicator = activity.map(|activity| {
             self.render_panefleet_activity_indicator(
                 activity,
@@ -1260,26 +1281,92 @@ impl LeftPanelView {
                 appearance,
             )
         });
+        let workspace_path = self
+            .panefleet_preferences
+            .show_workspace_path
+            .then(|| project_path.to_string_lossy().into_owned());
+        let git_branch = self
+            .panefleet_preferences
+            .show_git_branch
+            .then(|| git_branch_for_workspace(&project_path))
+            .flatten();
+        let workspace_icon = workspace_icon_for_path(&project_path);
         let path_for_row = project_path.clone();
         let path_for_close = project_path;
         let close_mouse_state = mouse_states.close.clone();
 
         Hoverable::new(mouse_states.row.clone(), move |state| {
-            let icon = ConstrainedBox::new(Icon::Terminal.to_warpui_icon(sub_text_color).finish())
+            let icon: Box<dyn Element> = match workspace_icon {
+                PaneFleetWorkspaceIcon::Github => {
+                    Icon::Github.to_warpui_icon(sub_text_color).finish()
+                }
+                PaneFleetWorkspaceIcon::Git => {
+                    Icon::GitBranch.to_warpui_icon(sub_text_color).finish()
+                }
+                PaneFleetWorkspaceIcon::PaneFleet => Image::new(
+                    AssetSource::Bundled {
+                        path: "bundled/png/panefleet-64.png",
+                    },
+                    CacheOption::BySize,
+                )
+                .finish(),
+            };
+            let icon = ConstrainedBox::new(icon)
                 .with_width(24.)
                 .with_height(24.)
                 .finish();
 
-            let label = Text::new_inline(title.clone(), font_family, 12.)
-                .with_color(main_text_color.into())
-                .finish();
+            let mut labels = Flex::column()
+                .with_main_axis_size(MainAxisSize::Min)
+                .with_child(
+                    Text::new_inline(title.clone(), font_family, 12.)
+                        .with_color(main_text_color.into())
+                        .finish(),
+                );
+            if workspace_path.is_some() || git_branch.is_some() {
+                let mut metadata = Flex::row()
+                    .with_main_axis_size(MainAxisSize::Min)
+                    .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                    .with_spacing(4.);
+                if let Some(path) = workspace_path.clone() {
+                    metadata.add_child(
+                        Shrinkable::new(
+                            1.,
+                            Text::new_inline(path, font_family, 10.)
+                                .with_color(sub_text_color.into())
+                                .finish(),
+                        )
+                        .finish(),
+                    );
+                }
+                if let Some(branch) = git_branch.clone() {
+                    metadata.add_child(
+                        ConstrainedBox::new(
+                            Icon::GitBranch.to_warpui_icon(sub_text_color).finish(),
+                        )
+                        .with_width(10.)
+                        .with_height(10.)
+                        .finish(),
+                    );
+                    metadata.add_child(
+                        Shrinkable::new(
+                            1.,
+                            Text::new_inline(branch, font_family, 10.)
+                                .with_color(sub_text_color.into())
+                                .finish(),
+                        )
+                        .finish(),
+                    );
+                }
+                labels.add_child(metadata.finish());
+            }
 
             let mut content = Flex::row()
                 .with_main_axis_size(MainAxisSize::Max)
                 .with_cross_axis_alignment(CrossAxisAlignment::Center)
                 .with_spacing(8.)
                 .with_child(icon)
-                .with_child(Shrinkable::new(1., label).finish());
+                .with_child(Shrinkable::new(1., labels.finish()).finish());
 
             if let Some(activity_indicator) = activity_indicator {
                 content.add_child(activity_indicator);
@@ -1815,7 +1902,11 @@ impl View for LeftPanelView {
                 ctx.notify();
             })
             .with_bounds_callback(Box::new(|window_size| {
-                let min_width = MIN_SIDEBAR_WIDTH;
+                let min_width = if FeatureFlag::PaneFleetWorkbench.is_enabled() {
+                    PANEFLEET_MIN_SIDEBAR_WIDTH
+                } else {
+                    MIN_SIDEBAR_WIDTH
+                };
                 let max_width = window_size.x() * MAX_SIDEBAR_WIDTH_RATIO;
                 (min_width, max_width.max(min_width))
             }))

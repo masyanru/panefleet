@@ -110,17 +110,25 @@ impl PaneFleetPersistedAgentSession {
         let session_id = self
             .provider_session_id
             .as_deref()
+            .map(str::trim)
+            .filter(|session_id| !session_id.is_empty())
             .ok_or(PaneFleetResumeError::MissingSessionId)?;
-        let session_id =
-            Uuid::parse_str(session_id).map_err(|_| PaneFleetResumeError::InvalidSessionId)?;
 
         match self.agent {
-            CLIAgent::Claude => Ok(format!("claude --resume {session_id}")),
-            CLIAgent::Codex => Ok(format!("{CODEX_STANDALONE_COMMAND} resume {session_id}")),
+            CLIAgent::Claude => {
+                let session_id = Uuid::parse_str(session_id)
+                    .map_err(|_| PaneFleetResumeError::InvalidSessionId)?;
+                Ok(format!("claude --resume {session_id}"))
+            }
+            CLIAgent::Codex => {
+                let session_id = Uuid::parse_str(session_id)
+                    .map_err(|_| PaneFleetResumeError::InvalidSessionId)?;
+                Ok(format!("{CODEX_STANDALONE_COMMAND} resume {session_id}"))
+            }
+            CLIAgent::OpenCode => Ok(format!("opencode -s {}", shell_words::quote(session_id))),
             CLIAgent::Gemini
             | CLIAgent::Amp
             | CLIAgent::Droid
-            | CLIAgent::OpenCode
             | CLIAgent::Copilot
             | CLIAgent::Pi
             | CLIAgent::OhMyPi

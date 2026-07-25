@@ -71,12 +71,27 @@ fn refuses_to_start_fresh_session_when_resume_id_is_missing() {
 }
 
 #[test]
-fn reports_unsupported_agent_instead_of_starting_it_again() {
-    let session =
-        PaneFleetPersistedAgentSession::new(CLIAgent::OpenCode, Some(Uuid::new_v4().to_string()));
+fn builds_opencode_resume_command_from_opaque_session_id() {
+    let session = PaneFleetPersistedAgentSession::new(
+        CLIAgent::OpenCode,
+        Some("ses_06f58746affe9XsetR90cbxo7r".to_string()),
+    );
 
     assert_eq!(
         session.resume_command(),
-        Err(PaneFleetResumeError::UnsupportedAgent(CLIAgent::OpenCode))
+        Ok("opencode -s ses_06f58746affe9XsetR90cbxo7r".to_string())
+    );
+}
+
+#[test]
+fn quotes_opencode_session_id_before_building_shell_command() {
+    let session = PaneFleetPersistedAgentSession::new(
+        CLIAgent::OpenCode,
+        Some("session with spaces".to_string()),
+    );
+
+    assert_eq!(
+        session.resume_command(),
+        Ok("opencode -s 'session with spaces'".to_string())
     );
 }

@@ -1335,7 +1335,6 @@ impl SettingsView {
 
         let panefleet_enabled = FeatureFlag::PaneFleetWorkbench.is_enabled();
         let mut settings_pages = vec![
-            SettingsPage::new(main_page_handle),
             SettingsPage::new(ai_page_handle),
             SettingsPage::new(panefleet_agents_page_handle),
             SettingsPage::new(panefleet_workspace_page_handle),
@@ -1352,6 +1351,7 @@ impl SettingsView {
         ];
 
         if !panefleet_enabled {
+            settings_pages.insert(0, SettingsPage::new(main_page_handle));
             settings_pages.push(SettingsPage::new(warp_drive_page_handle));
         }
 
@@ -1375,7 +1375,6 @@ impl SettingsView {
         // with subpages; the actual AI SettingsPage is hidden from direct sidebar listing.
         let mut nav_items = if panefleet_enabled {
             vec![
-                SettingsNavItem::Page(SettingsSection::Account),
                 SettingsNavItem::Page(SettingsSection::PaneFleetWorkspace),
                 SettingsNavItem::Umbrella(SettingsUmbrella::new(
                     "Agents",
@@ -1445,6 +1444,9 @@ impl SettingsView {
 
         // Resolve the initial page: map internal backing-page sections to their default subpage.
         let initial_page = match page {
+            None | Some(SettingsSection::Account) if panefleet_enabled => {
+                SettingsSection::PaneFleetAgents
+            }
             Some(SettingsSection::AI) => SettingsSection::WarpAgent,
             Some(SettingsSection::Code) => SettingsSection::CodeIndexing,
             Some(SettingsSection::Scripting) if !FeatureFlag::WarpControlCli.is_enabled() => {

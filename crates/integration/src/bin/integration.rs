@@ -37,6 +37,7 @@ pub fn main() -> Result<()> {
                 },
             ),
             logfile_name: "warp_integration.log".into(),
+            cloud_services_enabled: true,
             server_config: WarpServerConfig {
                 firebase_auth_api_key: "".into(),
                 iap_config: None,

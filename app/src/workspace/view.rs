@@ -10549,7 +10549,7 @@ impl Workspace {
             ]);
         }
 
-        if self.auth_state.is_anonymous_or_logged_out() {
+        if ChannelState::cloud_services_enabled() && self.auth_state.is_anonymous_or_logged_out() {
             items.push(
                 MenuItemFields::new("Sign up")
                     .with_on_select_action(WorkspaceAction::SignupAnonymousUser)

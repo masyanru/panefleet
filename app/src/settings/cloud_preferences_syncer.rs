@@ -7,6 +7,7 @@ use cloud_object_models::JsonSerializer;
 use lazy_static::lazy_static;
 use settings::{Setting as _, SyncToCloud};
 use warp_core::r#async::debounce;
+use warp_core::channel::ChannelState;
 use warp_core::execution_mode::AppExecutionMode;
 use warp_core::settings::ChangeEventReason;
 use warp_core::user_preferences::GetUserPreferences;
@@ -99,7 +100,8 @@ pub fn initialize_cloud_preferences_syncer(
 
     // The settings surface decides whether this process participates in cloud
     // sync at all (e.g. the TUI keeps its config local).
-    let sync_enabled = settings::settings_mode().should_sync_to_cloud();
+    let sync_enabled =
+        ChannelState::cloud_services_enabled() && settings::settings_mode().should_sync_to_cloud();
     CloudPreferencesSyncer::new(
         force_local_wins_on_startup,
         toml_file_path,
@@ -137,12 +139,11 @@ pub struct CloudPreferencesSyncer {
     /// after every successful cloud sync reconciliation.
     toml_file_path: PathBuf,
 
-    /// Whether cloud sync is active for the current settings surface. Derived
-    /// from [`settings::SettingsMode::should_sync_to_cloud`]; when `false` (e.g.
-    /// the TUI surface) the syncer is inert — it never reads from or writes to
-    /// the cloud, so a surface with its own local settings file cannot clobber
-    /// shared cloud state. The singleton is still registered so callers that
-    /// reach for it (e.g. on login) don't panic.
+    /// Whether cloud sync is active for the current channel and settings
+    /// surface. When `false` (e.g. PaneFleet or the TUI surface) the syncer is
+    /// inert — it never reads from or writes to the cloud, so a surface with
+    /// its own local settings file cannot clobber shared cloud state. The
+    /// singleton is still registered so callers that reach for it don't panic.
     sync_enabled: bool,
 }
 

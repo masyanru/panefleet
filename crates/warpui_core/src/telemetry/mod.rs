@@ -1,6 +1,7 @@
 mod event_store;
 
 use std::borrow::Cow;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use chrono::{DateTime, Utc};
 use event_store::*;
@@ -11,6 +12,19 @@ use serde_json::Value;
 
 lazy_static! {
     static ref TELEMETRY: Mutex<EventStore> = Mutex::new(EventStore::new());
+}
+
+static RECORDING_ENABLED: AtomicBool = AtomicBool::new(true);
+
+/// Enables or disables in-process telemetry recording.
+///
+/// Disabling also clears events that may have been recorded before channel
+/// configuration was applied.
+pub fn set_recording_enabled(enabled: bool) {
+    RECORDING_ENABLED.store(enabled, Ordering::Relaxed);
+    if !enabled {
+        TELEMETRY.lock().events.clear();
+    }
 }
 
 #[macro_export]
@@ -80,6 +94,9 @@ pub fn record_event(
     contains_ugc: bool,
     timestamp: DateTime<Utc>,
 ) {
+    if !RECORDING_ENABLED.load(Ordering::Relaxed) {
+        return;
+    }
     let mut telemetry = TELEMETRY.lock();
     telemetry.record_event(
         user_id,
@@ -92,6 +109,9 @@ pub fn record_event(
 }
 
 pub fn record_identify_user_event(user_id: String, anonymous_id: String, timestamp: DateTime<Utc>) {
+    if !RECORDING_ENABLED.load(Ordering::Relaxed) {
+        return;
+    }
     let mut telemetry = TELEMETRY.lock();
     telemetry.record_identify_user_event(user_id, anonymous_id, timestamp);
 }
@@ -103,6 +123,9 @@ pub fn record_app_active_event(
     anonymous_id: String,
     timestamp: DateTime<Utc>,
 ) {
+    if !RECORDING_ENABLED.load(Ordering::Relaxed) {
+        return;
+    }
     let mut telemetry = TELEMETRY.lock();
     telemetry.record_app_active(user_id, anonymous_id, timestamp);
 }

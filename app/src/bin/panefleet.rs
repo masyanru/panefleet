@@ -13,8 +13,9 @@ fn main() -> Result<()> {
         ChannelConfig {
             app_id: AppId::new("dev", "panefleet", "PaneFleet"),
             logfile_name: "panefleet.log".into(),
-            server_config: WarpServerConfig::production(),
-            oz_config: OzConfig::production(),
+            cloud_services_enabled: false,
+            server_config: WarpServerConfig::local_only(),
+            oz_config: OzConfig::local_only(),
             telemetry_config: None,
             crash_reporting_config: None,
             autoupdate_config: None,

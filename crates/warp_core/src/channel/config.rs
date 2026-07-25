@@ -12,6 +12,13 @@ pub struct ChannelConfig {
     /// The name of the file to which logs should be written.
     pub logfile_name: Cow<'static, str>,
 
+    /// Whether this build may connect to the configured cloud services.
+    ///
+    /// Defaults to `true` for backwards compatibility with generated internal
+    /// channel configurations that predate this field.
+    #[serde(default = "cloud_services_enabled_by_default")]
+    pub cloud_services_enabled: bool,
+
     /// Configuration for talking to Warp's servers.
     pub server_config: WarpServerConfig,
     /// Configuration for Oz/ambient agents.
@@ -25,6 +32,10 @@ pub struct ChannelConfig {
     pub crash_reporting_config: Option<CrashReportingConfig>,
     /// Configuration for statically-bundled MCP OAuth credentials.
     pub mcp_static_config: Option<McpStaticConfig>,
+}
+
+fn cloud_services_enabled_by_default() -> bool {
+    true
 }
 
 /// Configuration for GCP Identity-Aware Proxy authentication, present only on staging builds.
@@ -63,6 +74,22 @@ impl WarpServerConfig {
             iap_config: None,
         }
     }
+
+    /// A hermetic configuration for local-only builds.
+    ///
+    /// The application still constructs server client models because many local
+    /// UI models depend on their interfaces, but any explicit cloud operation
+    /// fails against the local discard port instead of contacting an external
+    /// service.
+    pub fn local_only() -> Self {
+        Self {
+            server_root_url: "http://127.0.0.1:9".into(),
+            rtc_server_url: "ws://127.0.0.1:9/graphql/v2".into(),
+            session_sharing_server_url: None,
+            firebase_auth_api_key: "".into(),
+            iap_config: None,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -83,7 +110,19 @@ impl OzConfig {
             workload_audience_url: None,
         }
     }
+
+    /// A hermetic Oz configuration for local-only builds.
+    pub fn local_only() -> Self {
+        Self {
+            oz_root_url: "http://127.0.0.1:9".into(),
+            workload_audience_url: None,
+        }
+    }
 }
+
+#[cfg(test)]
+#[path = "config_tests.rs"]
+mod tests;
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct TelemetryConfig {

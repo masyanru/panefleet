@@ -1349,6 +1349,8 @@ pub(crate) fn initialize_app(
     ctx: &mut warpui::AppContext,
     _pre_sentry_errors: impl IntoIterator<Item = anyhow::Error>,
 ) -> Option<AppState> {
+    warpui::telemetry::set_recording_enabled(ChannelState::is_telemetry_available());
+
     // WARNING: Errors that happen here before crash_reporting::init will not be collected in
     // Sentry. Only the dependencies of crash_reporting should be initialized here. Avoid adding
     // any other stuff here, as failures will be silent. Push them to pre_sentry_errors instead.
@@ -1475,10 +1477,12 @@ pub(crate) fn initialize_app(
     #[cfg(not(target_family = "wasm"))]
     // Refresh starts only after the authenticated server client exists; tracing initialization
     // remains responsible for deciding whether this process opted in to cloud-agent export.
-    tracing::start_auth_refresh(
-        server_api_provider.as_ref(ctx).get_managed_secrets_client(),
-        ctx,
-    );
+    if ChannelState::cloud_services_enabled() {
+        tracing::start_auth_refresh(
+            server_api_provider.as_ref(ctx).get_managed_secrets_client(),
+            ctx,
+        );
+    }
 
     ctx.add_singleton_model(|_ctx| AuthStateProvider::new(auth_state.clone()));
 
@@ -2308,7 +2312,10 @@ pub(crate) fn initialize_app(
     // CLI commands establish IAP access and refresh auth in their dispatch path so they can
     // surface failures synchronously. Interactive clients wait for IAP here before refreshing
     // their persisted user, since the refresh itself calls the IAP-gated warp-server.
-    if user_is_logged_in && !matches!(launch_mode, LaunchMode::CommandLine { .. }) {
+    if ChannelState::cloud_services_enabled()
+        && user_is_logged_in
+        && !matches!(launch_mode, LaunchMode::CommandLine { .. })
+    {
         refresh_user_after_iap_access(ctx);
     }
 

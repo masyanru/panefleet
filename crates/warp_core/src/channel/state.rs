@@ -44,6 +44,7 @@ impl ChannelState {
             config: ChannelConfig {
                 app_id,
                 logfile_name: "".into(),
+                cloud_services_enabled: true,
                 server_config: WarpServerConfig::production(),
                 oz_config: OzConfig::production(),
                 telemetry_config: None,
@@ -176,6 +177,10 @@ impl ChannelState {
 
     pub fn logfile_name() -> Cow<'static, str> {
         CHANNEL_STATE.lock().config.logfile_name.clone()
+    }
+
+    pub fn cloud_services_enabled() -> bool {
+        CHANNEL_STATE.lock().config.cloud_services_enabled
     }
 
     pub fn telemetry_file_name() -> Cow<'static, str> {

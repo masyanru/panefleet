@@ -1,5 +1,6 @@
-use super::web_logout_url;
 use warp_core::channel::ChannelState;
+
+use super::web_logout_url;
 
 #[test]
 fn web_logout_url_uses_configured_server_root() {

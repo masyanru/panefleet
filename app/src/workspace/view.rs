@@ -147,6 +147,7 @@ use super::hoa_onboarding::{
 use super::lightbox_view::{LightboxParams, LightboxView, LightboxViewEvent};
 use super::native_modal::{NativeModal, NativeModalEvent};
 use super::one_time_modal_model::OneTimeModalEvent;
+use super::panefleet_agents::{PaneFleetAgentDefinition, PaneFleetAgentDefinitions};
 use super::panefleet_state::{
     PANEFLEET_STATE_VERSION, PaneFleetPersistedAgentSession, PaneFleetPersistedState,
     PaneFleetPersistedTab, PaneFleetPersistedWorkspace, panefleet_agent_launch_command,
@@ -1053,6 +1054,7 @@ pub struct Workspace {
     panefleet_project_tabs: HashMap<PathBuf, PaneFleetProjectTabState>,
     panefleet_tab_sessions: HashMap<EntityId, PaneFleetPersistedAgentSession>,
     panefleet_agent_restore_states: HashMap<EntityId, PaneFleetAgentRestoreState>,
+    panefleet_agent_definitions: PaneFleetAgentDefinitions,
     panefleet_restoring_state: bool,
     tab_rename_editor: ViewHandle<EditorView>,
     pane_rename_editor: ViewHandle<EditorView>,
@@ -3419,6 +3421,16 @@ impl Workspace {
             },
         );
 
+        let panefleet_agent_definitions_path = Self::panefleet_agent_definitions_path();
+        let panefleet_agent_definitions =
+            PaneFleetAgentDefinitions::load_or_default(&panefleet_agent_definitions_path);
+        if !panefleet_agent_definitions_path.exists()
+            && let Err(error) =
+                panefleet_agent_definitions.write_atomic(&panefleet_agent_definitions_path)
+        {
+            log::warn!("Failed to write PaneFleet agent definitions: {error}");
+        }
+
         let mut ws = Self {
             tabs: Vec::new(),
             active_tab_index: 0,
@@ -3432,6 +3444,7 @@ impl Workspace {
             panefleet_project_tabs: HashMap::new(),
             panefleet_tab_sessions: HashMap::new(),
             panefleet_agent_restore_states: HashMap::new(),
+            panefleet_agent_definitions,
             panefleet_restoring_state: false,
             tab_rename_editor: Self::tab_rename_editor(ctx),
             pane_rename_editor: Self::pane_rename_editor(ctx),
@@ -8821,6 +8834,10 @@ impl Workspace {
         warp_core::paths::state_dir().join("panefleet-workspaces.json")
     }
 
+    fn panefleet_agent_definitions_path() -> PathBuf {
+        warp_core::paths::state_dir().join("panefleet-agent-definitions.json")
+    }
+
     fn panefleet_persisted_workspace(
         path: PathBuf,
         state: &PaneFleetProjectTabState,
@@ -9268,18 +9285,32 @@ impl Workspace {
         let (command, agent_session) = match agent {
             Some(crate::terminal::CLIAgent::Claude) => {
                 let session_id = Uuid::new_v4().to_string();
+                let command = self
+                    .panefleet_agent_definitions
+                    .first_for_agent(crate::terminal::CLIAgent::Claude)
+                    .and_then(|definition| {
+                        definition.launch_command(["--session-id", session_id.as_str()])
+                    })
+                    .unwrap_or_else(|| format!("claude --session-id {session_id}"));
                 (
-                    Some(format!("claude --session-id {session_id}")),
+                    Some(command),
                     Some(PaneFleetPersistedAgentSession::new(
                         crate::terminal::CLIAgent::Claude,
                         Some(session_id),
                     )),
                 )
             }
-            Some(agent) => (
-                Some(panefleet_agent_launch_command(agent)),
-                Some(PaneFleetPersistedAgentSession::new(agent, None)),
-            ),
+            Some(agent) => {
+                let command = self
+                    .panefleet_agent_definitions
+                    .first_for_agent(agent)
+                    .and_then(|definition| definition.launch_command([]))
+                    .unwrap_or_else(|| panefleet_agent_launch_command(agent));
+                (
+                    Some(command),
+                    Some(PaneFleetPersistedAgentSession::new(agent, None)),
+                )
+            }
             None => (None, None),
         };
         self.add_tab_with_pane_layout(
@@ -22728,7 +22759,7 @@ impl Workspace {
     fn render_panefleet_launcher_button(
         &self,
         appearance: &Appearance,
-        label: &'static str,
+        label: String,
         icon: Icon,
         agent: Option<crate::terminal::CLIAgent>,
         path: PathBuf,
@@ -22737,13 +22768,14 @@ impl Workspace {
         let theme = appearance.theme();
         let font_family = appearance.ui_font_family();
         let text_color = theme.sub_text_color(theme.background());
+        let rendered_label = label.clone();
 
         Hoverable::new(mouse_state, move |state| {
             let icon = ConstrainedBox::new(icon.to_warpui_icon(text_color).finish())
                 .with_width(14.)
                 .with_height(14.)
                 .finish();
-            let label = Text::new_inline(label, font_family, 12.)
+            let label = Text::new_inline(rendered_label.clone(), font_family, 12.)
                 .with_color(text_color.into())
                 .finish();
             let content = Flex::row()
@@ -22765,7 +22797,7 @@ impl Workspace {
             ctx.dispatch_typed_action(WorkspaceAction::OpenPaneFleetSession {
                 path: path.clone(),
                 agent,
-                session_name: label.to_string(),
+                session_name: label.clone(),
             });
         })
         .with_cursor(Cursor::PointingHand)
@@ -22800,36 +22832,40 @@ impl Workspace {
         if let Some(path) = self.current_panefleet_project_path(app) {
             content.add_child(self.render_panefleet_launcher_button(
                 appearance,
-                "Terminal",
+                "Terminal".to_string(),
                 Icon::Terminal,
                 None,
                 path.clone(),
                 self.mouse_states.panefleet_launcher_terminal.clone(),
             ));
-            content.add_child(self.render_panefleet_launcher_button(
-                appearance,
-                "Codex",
-                Icon::OpenAILogo,
-                Some(crate::terminal::CLIAgent::Codex),
-                path.clone(),
-                self.mouse_states.panefleet_launcher_codex.clone(),
-            ));
-            content.add_child(self.render_panefleet_launcher_button(
-                appearance,
-                "Claude",
-                Icon::ClaudeLogo,
-                Some(crate::terminal::CLIAgent::Claude),
-                path.clone(),
-                self.mouse_states.panefleet_launcher_claude.clone(),
-            ));
-            content.add_child(self.render_panefleet_launcher_button(
-                appearance,
-                "OpenCode",
-                Icon::OpenCodeLogo,
-                Some(crate::terminal::CLIAgent::OpenCode),
-                path,
-                self.mouse_states.panefleet_launcher_opencode.clone(),
-            ));
+            let definitions = self
+                .panefleet_agent_definitions
+                .enabled_launchers()
+                .into_iter()
+                .cloned()
+                .collect::<Vec<PaneFleetAgentDefinition>>();
+            for definition in definitions {
+                let mouse_state = match definition.agent {
+                    crate::terminal::CLIAgent::Codex => {
+                        self.mouse_states.panefleet_launcher_codex.clone()
+                    }
+                    crate::terminal::CLIAgent::Claude => {
+                        self.mouse_states.panefleet_launcher_claude.clone()
+                    }
+                    crate::terminal::CLIAgent::OpenCode => {
+                        self.mouse_states.panefleet_launcher_opencode.clone()
+                    }
+                    _ => self.mouse_states.panefleet_launcher_terminal.clone(),
+                };
+                content.add_child(self.render_panefleet_launcher_button(
+                    appearance,
+                    definition.label,
+                    definition.agent.icon().unwrap_or(Icon::Terminal),
+                    Some(definition.agent),
+                    path.clone(),
+                    mouse_state,
+                ));
+            }
         }
 
         Container::new(content.finish())

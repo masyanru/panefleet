@@ -296,7 +296,8 @@ Restoring  → InProgress → Blocked → InProgress → Success
 
 ```text
 ~/Library/Application Support/dev.panefleet.PaneFleet/
-└── panefleet-workspaces.json
+├── panefleet-workspaces.json
+└── panefleet-agent-definitions.json
 ```
 
 Перед реализацией точного resume формат нужно версионировать:
@@ -332,10 +333,11 @@ Restoring  → InProgress → Blocked → InProgress → Success
 
 ### P1 — конфигурация CLI
 
-- [ ] Добавить модель Agent Definition.
+- [x] Добавить модель Agent Definition.
 - [ ] Сделать Settings → Agents.
-- [ ] Подключить launcher к сохранённым определениям.
-- [ ] Добавить bundled defaults и Restore default.
+- [x] Подключить launcher к сохранённым определениям.
+- [ ] Добавить bundled defaults и Restore default. Bundled defaults уже есть,
+      действие Restore default ещё не подключено к UI.
 - [ ] Добавить пользовательские определения и валидацию команд.
 
 ### P2 — workspace activity UI

@@ -12,13 +12,9 @@
   <strong>Experimental macOS prototype · Source builds only</strong>
 </p>
 
-<!--
-Screenshot slot:
-
 <p align="center">
   <img src="docs/images/panefleet-workbench.png" width="1200" alt="PaneFleet workbench" />
 </p>
--->
 
 ## Why PaneFleet
 

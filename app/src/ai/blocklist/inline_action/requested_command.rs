@@ -8,6 +8,7 @@ use lazy_static::lazy_static;
 use parking_lot::FairMutex;
 use pathfinder_geometry::vector::vec2f;
 use settings::Setting as _;
+use uuid::Uuid;
 use warp_core::features::FeatureFlag;
 use warp_core::ui::Icon;
 use warp_core::ui::appearance::Appearance;
@@ -54,6 +55,7 @@ use crate::ai::blocklist::{
     AIBlock, BlocklistAIActionEvent, BlocklistAIActionModel, BlocklistAIHistoryModel,
     ClientIdentifiers,
 };
+use crate::ai::mcp::TemplatableMCPServerManager;
 use crate::cmd_or_ctrl_shift;
 use crate::code::editor::view::{CodeEditorEvent, CodeEditorRenderOptions, CodeEditorView};
 use crate::editor::InteractionState;
@@ -364,6 +366,12 @@ pub struct RequestedCommandView {
     // The SavePosition anchor ID of the row that was last right-clicked, used
     // to position the context menu below the correct row.
     mcp_context_menu_anchor_id: Option<String>,
+    // The originating MCP server id for this tool call, captured when the
+    // action streams in so the header can surface the server name across
+    // every lifecycle state (blocked, queued, running, finished) — even after
+    // the action leaves the pending queue and is no longer retrievable. `None`
+    // for legacy/flat MCP calls with no server id.
+    mcp_server_id: Option<Uuid>,
 }
 
 impl RequestedCommandView {
@@ -618,6 +626,7 @@ impl RequestedCommandView {
             mcp_context_menu,
             mcp_context_menu_open: false,
             mcp_context_menu_anchor_id: None,
+            mcp_server_id: None,
         }
     }
 
@@ -1124,6 +1133,13 @@ impl RequestedCommandView {
         self.mcp_request = Some(McpRequest { args });
     }
 
+    /// Stores the originating MCP server id for this tool call, so the header
+    /// can surface the server name across lifecycle states. Captured once when
+    /// the action streams in; `None` for legacy/flat MCP calls with no server.
+    pub(crate) fn update_mcp_server_id(&mut self, server_id: Option<Uuid>) {
+        self.mcp_server_id = server_id;
+    }
+
     /// Extracts the tool name from MCP tool command text, removing parameters.
     /// For example, "tool_name(param1, param2)" becomes "tool_name".
     fn extract_mcp_tool_name(&self, command_text: &str) -> String {
@@ -1132,6 +1148,38 @@ impl RequestedCommandView {
         } else {
             command_text.trim().to_string()
         }
+    }
+
+    /// Returns the clean MCP tool name (without the "MCP Tool: " label or
+    /// argument list) for use in sentence-form titles like the blocked
+    /// confirmation card and the expanded detail header.
+    fn mcp_clean_tool_name(&self) -> String {
+        let parsed = self.extract_mcp_tool_name(self.command_text());
+        parsed
+            .strip_prefix("MCP Tool: ")
+            .map(str::to_owned)
+            .unwrap_or(parsed)
+    }
+
+    /// Resolves the user-facing name of the MCP tool's originating server.
+    /// Returns `None` when the server id is absent (legacy/flat MCP call) or
+    /// the server can't be named (e.g. not installed). Non-panicking.
+    fn mcp_server_name(&self, app: &AppContext) -> Option<String> {
+        self.mcp_server_id
+            .as_ref()
+            .and_then(|id| TemplatableMCPServerManager::get_mcp_name(id, app))
+    }
+
+    /// Builds the blocked/confirmation title for an MCP tool call, surfacing
+    /// both the tool name and its originating server when known:
+    /// `OK if I call MCP tool {tool} on server {server}`. Falls back to the
+    /// tool name alone when the server can't be named, and to the generic
+    /// waiting message when the tool name is also unavailable.
+    fn mcp_blocked_title(&self, app: &AppContext) -> String {
+        mcp_blocked_title_text(
+            &self.mcp_clean_tool_name(),
+            self.mcp_server_name(app).as_deref(),
+        )
     }
 
     fn render_header(
@@ -1159,7 +1207,7 @@ impl RequestedCommandView {
 
         match action_status {
             Some(AIActionStatus::Preprocessing) => {
-                title = self.get_header_title_text().into();
+                title = self.get_header_title_text(app).into();
                 font_override = Some(appearance.monospace_font_family());
                 if !self
                     .block_model
@@ -1172,7 +1220,7 @@ impl RequestedCommandView {
                 }
             }
             Some(AIActionStatus::Queued) => {
-                title = self.get_header_title_text().into();
+                title = self.get_header_title_text(app).into();
                 font_override = Some(appearance.monospace_font_family());
                 font_color_override = Some(blended_colors::text_disabled(
                     appearance.theme(),
@@ -1182,7 +1230,7 @@ impl RequestedCommandView {
             Some(AIActionStatus::Blocked) => {
                 title = match &self.action_type {
                     RequestedActionViewType::Command => COMMAND_WAITING_FOR_USER_MESSAGE.into(),
-                    RequestedActionViewType::McpTool => MCP_TOOL_WAITING_FOR_USER_MESSAGE.into(),
+                    RequestedActionViewType::McpTool => self.mcp_blocked_title(app).into(),
                 };
             }
             Some(AIActionStatus::RunningAsync) | Some(AIActionStatus::Finished(..))
@@ -1217,7 +1265,11 @@ impl RequestedCommandView {
                             VIEWING_COMMAND_DETAIL_MESSAGE.into()
                         }
                     }
-                    RequestedActionViewType::McpTool => VIEWING_MCP_TOOL_DETAIL_MESSAGE.into(),
+                    RequestedActionViewType::McpTool => mcp_viewing_detail_title_text(
+                        &self.mcp_clean_tool_name(),
+                        self.mcp_server_name(app).as_deref(),
+                    )
+                    .into(),
                 };
             }
             None => {
@@ -1236,12 +1288,12 @@ impl RequestedCommandView {
                 } else if requested_command_block.is_some_and(|block| block.finished()) {
                     // If a finished command block exists but there's no action status,
                     // treat the same as a finished command (normal text styling).
-                    title = self.get_header_title_text().into();
+                    title = self.get_header_title_text(app).into();
                     font_override = Some(appearance.monospace_font_family());
                 } else {
                     // If there is no action status and response is not streaming, it was cancelled
                     // mid-flight.
-                    let title_str = self.get_header_title_text();
+                    let title_str = self.get_header_title_text(app);
                     title = if title_str.trim().is_empty() {
                         LOADING_MESSAGE.into()
                     } else {
@@ -1257,7 +1309,7 @@ impl RequestedCommandView {
                 }
             }
             _ => {
-                title = self.get_header_title_text().into();
+                title = self.get_header_title_text(app).into();
 
                 // Show cancelled command loading message when the command was cancelled during generation,
                 // and then restored with an empty title as a result.
@@ -1427,10 +1479,16 @@ impl RequestedCommandView {
         config.render(app)
     }
 
-    fn get_header_title_text(&self) -> String {
+    fn get_header_title_text(&self, app: &AppContext) -> String {
         match &self.action_type {
             RequestedActionViewType::Command => format_command_text(self.command_text()),
-            RequestedActionViewType::McpTool => self.extract_mcp_tool_name(self.command_text()),
+            RequestedActionViewType::McpTool => {
+                let tool = self.extract_mcp_tool_name(self.command_text());
+                match self.mcp_server_name(app) {
+                    Some(server) if !tool.is_empty() => format!("{tool} on {server}"),
+                    _ => tool,
+                }
+            }
         }
     }
 
@@ -1481,6 +1539,35 @@ pub(crate) fn header_message_for_user_take_over_reason(
         UserTakeOverReason::TransferFromAgent { .. } => {
             AGENT_REQUESTED_USER_TAKE_CONTROL_COMMAND_MESSAGE
         }
+    }
+}
+
+/// Builds the blocked/confirmation title for an MCP tool call from the
+/// already-resolved tool and server names, so the formatting is unit-testable
+/// without a full app/view context. Surfaces both identities when the server
+/// is known: `OK if I call MCP tool {tool} on server {server}`; falls back to
+/// the tool name alone when the server can't be named, and to the generic
+/// waiting message when the tool name is also unavailable.
+fn mcp_blocked_title_text(tool_name: &str, server_name: Option<&str>) -> String {
+    if tool_name.is_empty() {
+        return MCP_TOOL_WAITING_FOR_USER_MESSAGE.to_owned();
+    }
+    match server_name {
+        Some(server) => format!("OK if I call MCP tool {tool_name} on server {server}"),
+        None => format!("OK if I call MCP tool {tool_name}"),
+    }
+}
+
+/// Builds the expanded-detail header title for an MCP tool call from the
+/// already-resolved tool and server names. Falls back to the generic
+/// "Viewing MCP tool call detail" message when the tool name is unavailable.
+fn mcp_viewing_detail_title_text(tool_name: &str, server_name: Option<&str>) -> String {
+    if tool_name.is_empty() {
+        return VIEWING_MCP_TOOL_DETAIL_MESSAGE.to_owned();
+    }
+    match server_name {
+        Some(server) => format!("Viewing MCP tool {tool_name} on {server}"),
+        None => format!("Viewing MCP tool {tool_name}"),
     }
 }
 

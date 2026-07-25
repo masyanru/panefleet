@@ -2139,6 +2139,7 @@ impl AIBlock {
                         action_id,
                         &command_text,
                         display_input,
+                        *server_id,
                         ctx,
                     );
                 }
@@ -3624,6 +3625,7 @@ impl AIBlock {
         action_id: &AIAgentActionId,
         command_text: &str,
         mcp_args: serde_json::Value,
+        server_id: Option<uuid::Uuid>,
         ctx: &mut ViewContext<Self>,
     ) {
         match self.requested_mcp_tools.get_mut(action_id) {
@@ -3631,6 +3633,7 @@ impl AIBlock {
                 requested_mcp_tool.view.update(ctx, |view, ctx| {
                     view.apply_streamed_update(command_text, ctx);
                     view.update_mcp_request(mcp_args);
+                    view.update_mcp_server_id(server_id);
                     ctx.notify();
                 });
             }
@@ -3652,6 +3655,7 @@ impl AIBlock {
                     );
                     view.apply_streamed_update(command_text, ctx);
                     view.update_mcp_request(mcp_args);
+                    view.update_mcp_server_id(server_id);
                     view
                 });
                 let action_id_clone = action_id.clone();

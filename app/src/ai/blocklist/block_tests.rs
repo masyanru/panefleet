@@ -10,7 +10,7 @@ use warp_util::path::LineAndColumnArg;
 use warpui::{App, SingletonEntity};
 
 #[cfg(feature = "local_fs")]
-use super::{AIBlockEvent, configured_editor_file_open_event};
+use super::{AIBlockEvent, open_code_action_event};
 use super::{
     CollapsibleElementState, CollapsibleExpansionState, UserAvatarInfo,
     default_collapsible_state_for_orchestration_action,
@@ -135,8 +135,8 @@ fn recording_artifact_view_url_requires_task_id() {
 
 #[cfg(feature = "local_fs")]
 #[test]
-fn linked_code_source_uses_configured_editor_and_preserves_location() {
-    let source = CodeSource::Link {
+fn open_code_action_routes_links_to_configured_editor_and_non_links_to_warp() {
+    let linked_source = CodeSource::Link {
         path: PathBuf::from("/workspace/project/src/main.rs"),
         range_start: Some(LineAndColumnArg {
             line_num: 42,
@@ -146,15 +146,39 @@ fn linked_code_source_uses_configured_editor_and_preserves_location() {
     };
 
     assert!(matches!(
-        configured_editor_file_open_event(&source),
-        Some(AIBlockEvent::OpenDetectedFilePath {
+        open_code_action_event(
+            &linked_source,
+            crate::util::file::external_editor::settings::EditorLayout::SplitPane,
+        ),
+        AIBlockEvent::OpenDetectedFilePath {
             absolute_path,
             line_and_column_num: Some(LineAndColumnArg {
                 line_num: 42,
                 column_num: Some(7),
             }),
             target_override: None,
-        }) if absolute_path.as_path() == std::path::Path::new("/workspace/project/src/main.rs")
+        } if absolute_path.as_path() == std::path::Path::new("/workspace/project/src/main.rs")
+    ));
+
+    let skill_source = CodeSource::Skill {
+        reference: SkillReference::Path(LocalOrRemotePath::Local(PathBuf::from(
+            "/workspace/project/.warp/skills/example/SKILL.md",
+        ))),
+        location: LocalOrRemotePath::Local(PathBuf::from(
+            "/workspace/project/.warp/skills/example/SKILL.md",
+        )),
+        origin: crate::ai::skills::SkillOpenOrigin::ReadSkill,
+    };
+
+    assert!(matches!(
+        open_code_action_event(
+            &skill_source,
+            crate::util::file::external_editor::settings::EditorLayout::NewTab,
+        ),
+        AIBlockEvent::OpenCodeInWarp {
+            source,
+            layout: crate::util::file::external_editor::settings::EditorLayout::NewTab,
+        } if source == skill_source
     ));
 }
 #[test]

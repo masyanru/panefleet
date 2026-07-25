@@ -18271,6 +18271,15 @@ impl TerminalView {
     }
 
     #[cfg(feature = "local_fs")]
+    fn open_code_in_warp(
+        &mut self,
+        source: CodeSource,
+        layout: EditorLayout,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        ctx.emit(Event::OpenCodeInWarp { source, layout });
+    }
+    #[cfg(feature = "local_fs")]
     fn open_file_path_with_target(
         &mut self,
         path: PathBuf,
@@ -26566,10 +26575,18 @@ impl TypedActionView for TerminalView {
             #[cfg(feature = "local_fs")]
             OpenCodeInWarp {
                 path,
-                layout: _,
+                layout,
                 line_col,
             } => {
-                self.open_file_path(path.clone(), *line_col, ctx);
+                self.open_code_in_warp(
+                    CodeSource::Link {
+                        path: path.clone(),
+                        range_start: *line_col,
+                        range_end: None,
+                    },
+                    *layout,
+                    ctx,
+                );
             }
             OpenWorkflowModal => self.open_workflow_modal(ctx),
             OpenWorkflowModalForAIWorkflow(workflow) => {

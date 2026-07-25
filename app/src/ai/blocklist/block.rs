@@ -6353,19 +6353,23 @@ pub enum AIBlockAction {
 }
 
 #[cfg(feature = "local_fs")]
-fn configured_editor_file_open_event(source: &CodeSource) -> Option<AIBlockEvent> {
-    let CodeSource::Link {
-        path, range_start, ..
-    } = source
-    else {
-        return None;
-    };
-
-    Some(AIBlockEvent::OpenDetectedFilePath {
-        absolute_path: path.clone(),
-        line_and_column_num: *range_start,
-        target_override: None,
-    })
+fn open_code_action_event(
+    source: &CodeSource,
+    layout: crate::util::file::external_editor::settings::EditorLayout,
+) -> AIBlockEvent {
+    match source {
+        CodeSource::Link {
+            path, range_start, ..
+        } => AIBlockEvent::OpenDetectedFilePath {
+            absolute_path: path.clone(),
+            line_and_column_num: *range_start,
+            target_override: None,
+        },
+        _ => AIBlockEvent::OpenCodeInWarp {
+            source: source.clone(),
+            layout,
+        },
+    }
 }
 
 impl TypedActionView for AIBlock {
@@ -6868,18 +6872,10 @@ impl TypedActionView for AIBlock {
 
                 #[cfg(feature = "local_fs")]
                 {
-                    if let Some(event) = configured_editor_file_open_event(source) {
-                        ctx.emit(event);
-                    } else {
-                        ctx.emit(AIBlockEvent::OpenCodeInWarp {
-                            source: source.clone(),
-                            layout: *crate::util::file::external_editor::EditorSettings::as_ref(
-                                ctx,
-                            )
-                            .open_file_layout
-                            .value(),
-                        });
-                    }
+                    let layout = *crate::util::file::external_editor::EditorSettings::as_ref(ctx)
+                        .open_file_layout
+                        .value();
+                    ctx.emit(open_code_action_event(source, layout));
                 }
             }
             AIBlockAction::ToggleTodoListExpanded(id) => {

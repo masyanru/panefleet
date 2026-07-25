@@ -160,7 +160,7 @@ currently needs.
 git clone https://github.com/masyanru/panefleet.git
 cd panefleet
 
-./script/bootstrap --skip-common-skills --skip-gcloud-auth
+./script/bootstrap --skip-gcloud-auth
 cargo run -p warp --bin panefleet
 ```
 

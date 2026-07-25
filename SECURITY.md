@@ -1,14 +1,24 @@
 # Security Policy
 
-We take security seriously at Warp and appreciate the efforts of security researchers who help keep our users safe.
+PaneFleet is an experimental alpha. Security fixes are applied to the latest release and the
+current `master` branch on a best-effort basis; older alpha builds are not maintained.
 
-## Reporting a Vulnerability
+## Reporting a vulnerability
 
-If you believe you've found a security vulnerability, please follow responsible disclosure practices and **do not** open a public GitHub issue or pull request, as this could expose the vulnerability before a fix is available.
+Please do not open a public issue or pull request for a suspected vulnerability.
 
-Instead, please report it through one of the following channels:
+Use [GitHub private vulnerability reporting](https://github.com/masyanru/panefleet/security/advisories/new)
+to send the report privately. Include:
 
-- **Email:** [security@warp.dev](mailto:security@warp.dev)
-- **GitHub Security Advisory:** [Open a private advisory](https://github.com/warpdotdev/Warp/security/advisories/new)
+- the PaneFleet release tag or commit;
+- macOS version and hardware architecture;
+- affected workspace, terminal, or agent workflow;
+- reproduction steps and expected impact;
+- logs or screenshots with tokens, paths, and personal data removed.
 
-We will acknowledge your report promptly and work with you to understand and resolve the issue as quickly as possible.
+You should receive an acknowledgement within seven days. There is no paid bug-bounty program
+at this stage.
+
+If the issue also exists unchanged in upstream Warp, you may additionally use
+[Warp's security policy](https://github.com/warpdotdev/warp/security/policy). PaneFleet does
+not automatically share private reports with upstream.

@@ -5,7 +5,8 @@ description: GUI desktop app only. Writes, runs, and debugs Warp integration tes
 
 # Warp Integration Tests
 
-**Scope — GUI desktop app only.** This skill applies to Warp's **GUI** desktop front-end (the `app/` crate on the WarpUI pixel/GPU framework). It does **not** apply to the headless **TUI** front-end (`crates/warp_tui`; cell-grid `TuiElement` library under `crates/warpui_core/src/elements/tui`), which has its own components, tests, and change-verification workflow. For TUI work, see the `tui-ui-guidelines`, `tui-testing`, and `tui-verify-change` skills instead.
+**Scope — GUI desktop app only.** This skill applies to PaneFleet's desktop front-end
+(the `app/` crate on the inherited WarpUI pixel/GPU framework).
 
 Use this skill for Rust integration tests in Warp's custom framework under `crates/integration/`.
 
@@ -345,7 +346,8 @@ WARPUI_PAUSE_INTEGRATION_TEST_AT_EVERY_STEP=1 cargo run -p integration --bin int
 
 ### Video and screenshots
 
-If the task is specifically about recording a test, collecting screenshots, or validating overlay/video artifacts, also use the `gui-integration-test-video` skill (located at `.warp/skills/gui-integration-test-video/SKILL.md`).
+For screenshots or recordings, use the same integration-test scenario and capture the
+PaneFleet window with the local macOS tooling available in the development environment.
 
 ### Environment variable gotcha
 

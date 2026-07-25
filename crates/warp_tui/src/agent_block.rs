@@ -45,7 +45,7 @@ use crate::agent_block_sections::{
 };
 use crate::agent_message::render_agent_message;
 use crate::orchestration_block::{TuiOrchestrationBlock, TuiOrchestrationBlockEvent};
-use crate::terminal_session_view::TuiBlockInputSource;
+use crate::terminal_session_view::BlockingInputSource;
 use crate::transcript_view::BLOCK_TOP_PADDING_ROWS;
 use crate::tui_builder::TuiUiBuilder;
 use crate::tui_cli_subagent_view::TuiCLISubagentView;
@@ -787,10 +787,10 @@ impl TuiAIBlock {
     /// by one of this block's child views, and that view is still awaiting
     /// confirmation. Deriving from the action queue (not transcript order)
     /// keeps semantics identical to the GUI's `focus_subview_if_necessary`.
-    pub(super) fn active_block_input_source(
+    pub(super) fn active_blocking_input_source(
         &self,
         ctx: &AppContext,
-    ) -> Option<TuiBlockInputSource> {
+    ) -> Option<BlockingInputSource> {
         let action_model = self.action_model.as_ref(ctx);
         let pending = action_model.get_pending_action(ctx)?;
         let action_id = pending.id.clone();
@@ -807,23 +807,23 @@ impl TuiAIBlock {
             TuiToolCallView::AskQuestion(view) => view
                 .as_ref(ctx)
                 .is_awaiting_answers(ctx)
-                .then(|| TuiBlockInputSource::AskQuestion(view.clone())),
+                .then(|| BlockingInputSource::AskQuestion(view.clone())),
             TuiToolCallView::OrchestrationBlock(view) => view
                 .as_ref(ctx)
                 .is_awaiting_confirmation(ctx)
-                .then(|| TuiBlockInputSource::Orchestration(view.clone())),
+                .then(|| BlockingInputSource::Orchestration(view.clone())),
             TuiToolCallView::Generic(view) => view
                 .as_ref(ctx)
                 .active_permission_prompt(ctx)
-                .map(TuiBlockInputSource::Permission),
+                .map(BlockingInputSource::Permission),
             TuiToolCallView::FileEdits(view) => view
                 .as_ref(ctx)
                 .active_permission_prompt(ctx)
-                .map(TuiBlockInputSource::Permission),
+                .map(BlockingInputSource::Permission),
             TuiToolCallView::ShellCommand(view) => view
                 .as_ref(ctx)
                 .active_permission_prompt(ctx)
-                .map(TuiBlockInputSource::Permission),
+                .map(BlockingInputSource::Permission),
             // Plan tool views render inline and never replace the input.
             TuiToolCallView::Plan(_) => None,
         }

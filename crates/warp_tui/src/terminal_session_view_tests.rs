@@ -31,13 +31,13 @@ use warpui_core::telemetry::{EventPayload, flush_events};
 use warpui_core::{App, AppContext, TuiView, TypedActionView as _, WindowInvalidation};
 
 use super::{
-    AUTO_APPROVE_FEEDBACK_DURATION, AUTO_APPROVE_TOGGLE_BINDING_NAME,
+    AUTO_APPROVE_FEEDBACK_DURATION, AUTO_APPROVE_TOGGLE_BINDING_NAME, BlockingInputSource,
     COST_CONVERSATION_IN_PROGRESS_HINT, COST_EMPTY_CONVERSATION_HINT,
     COST_NO_ACTIVE_CONVERSATION_HINT, CTRL_C_EXIT_HINT, ConversationRestoreState, FooterSegments,
     INLINE_MENU_TOP_PADDING_ROWS, LOADING_CONVERSATION_HINT, LOG_BUNDLE_FAILED_HINT,
-    SESSION_COMPOSER_OWNS_INPUT_FLAG, SHELL_MODE_HINT, TuiBlockInputSource,
-    TuiConversationRestoreOrigin, TuiTerminalSessionAction, TuiTerminalSessionEvent,
-    TuiTerminalSessionView, VOICE_INPUT_BINDING_NAME, VOICE_USAGE_HINT, attachment_focus_available,
+    SESSION_COMPOSER_OWNS_INPUT_FLAG, SHELL_MODE_HINT, TuiConversationRestoreOrigin,
+    TuiTerminalSessionAction, TuiTerminalSessionEvent, TuiTerminalSessionView,
+    VOICE_INPUT_BINDING_NAME, VOICE_USAGE_HINT, attachment_focus_available,
     cost_command_unavailable_hint, export_file_success_message, log_bundle_success_message,
     raw_prompt_if_not_blank, render_status_footer_row, voice_argument_is_empty,
     voice_command_argument,
@@ -1138,10 +1138,10 @@ fn long_running_command_keeps_input_hidden() {
             view.terminal_model
                 .lock()
                 .simulate_long_running_block("cat", "");
-            view.sync_block_input_source(ctx);
+            view.sync_blocking_input_source(ctx);
             assert!(matches!(
-                view.should_block_input.as_ref(),
-                Some(TuiBlockInputSource::LongRunningCommand)
+                view.blocking_input_source.as_ref(),
+                Some(BlockingInputSource::LongRunningCommand)
             ));
         });
 

@@ -24,7 +24,7 @@ use warpui_core::{
 
 use super::agent_block::{TuiAIBlock, TuiAIBlockEvent};
 use super::terminal_block::{block_content_rows, should_render_terminal_block};
-use super::terminal_session_view::TuiBlockInputSource;
+use super::terminal_session_view::BlockingInputSource;
 use super::tui_block_list_viewport_source::{
     AgentBlockRegistry, CLISubagentBlockRegistry, TuiBlockListViewportSource,
 };
@@ -608,14 +608,14 @@ impl TuiTranscriptView {
     /// The front-of-queue blocking interaction across this transcript's
     /// agent blocks, if any. A pure query over the shared action queue; the
     /// session surface derives input visibility and focus from it.
-    pub(super) fn active_block_input_source(
+    pub(super) fn active_blocking_input_source(
         &self,
         ctx: &AppContext,
-    ) -> Option<TuiBlockInputSource> {
+    ) -> Option<BlockingInputSource> {
         self.agent_blocks
             .borrow()
             .values()
-            .find_map(|block| block.as_ref(ctx).active_block_input_source(ctx))
+            .find_map(|block| block.as_ref(ctx).active_blocking_input_source(ctx))
     }
 
     /// Clears persistent selection owned by the transcript.

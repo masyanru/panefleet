@@ -203,17 +203,15 @@ async fn finalize_recording(
     // creation, so any error is logged and dropped.
     if let Ok(upload) = &upload_result
         && capture_thumbnail
-    {
-        if let Err(error) = upload_recording_thumbnail(
+        && let Err(error) = upload_recording_thumbnail(
             &thumbnail_source_path,
             &upload.artifact.artifact_uid,
             &uploader,
             server_conversation_token.clone(),
         )
         .await
-        {
-            log::warn!("PR video thumbnail capture failed; video upload unaffected: {error}");
-        }
+    {
+        log::warn!("PR video thumbnail capture failed; video upload unaffected: {error}");
     }
     // Local files are ephemeral regardless of upload outcome. Retrying failed
     // uploads or retaining their files requires a separate persistence policy.

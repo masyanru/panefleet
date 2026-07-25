@@ -1,7 +1,7 @@
 use std::sync::atomic::AtomicBool;
 
 use super::*;
-use crate::App;
+use crate::{App, EntityId};
 
 #[test]
 fn test_keystroke_parse() -> anyhow::Result<()> {
@@ -78,6 +78,41 @@ fn test_keystroke_parse() -> anyhow::Result<()> {
     );
 
     Ok(())
+}
+
+#[test]
+fn standalone_modifier_binding_uses_a_constructed_keystroke() {
+    #[derive(Debug)]
+    enum TypedAction {
+        StartVoice,
+    }
+
+    let standalone_control = Keystroke {
+        ctrl: true,
+        ..Default::default()
+    };
+    let binding = EditableBinding::new(
+        "tui:session:start_voice_input",
+        "Start voice input",
+        TypedAction::StartVoice,
+    )
+    .with_keystroke(standalone_control.clone());
+
+    let mut map = Keymap::default();
+    map.register_editable_bindings([binding]);
+    let binding = map
+        .get_binding_by_name("tui:session:start_voice_input")
+        .unwrap();
+    assert_eq!(
+        binding.trigger,
+        &Trigger::Keystrokes(vec![standalone_control.clone()])
+    );
+
+    let mut matcher = Matcher::new(map);
+    assert!(matches!(
+        matcher.push_keystroke(standalone_control, EntityId::new(), &Context::default()),
+        MatchResult::Action(_)
+    ));
 }
 
 #[test]

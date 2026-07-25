@@ -5,7 +5,10 @@ use std::time::Duration;
 use instant::Instant;
 use tempfile::TempDir;
 use warp::appearance::Appearance;
-use warp::settings::{AISettings, TuiUsageDisplayMode, TuiZeroStateObject};
+use warp::settings::{
+    AISettings, TuiUsageDisplayMode, TuiVoiceInputToggleKey, TuiVoiceSettings, TuiZeroStateObject,
+    VoiceInputToggleKey,
+};
 use warp::terminal::model::ansi::{Handler, InputBufferValue, Mode};
 use warp::tui_export::{
     AIAgentActionId, AIAgentExchangeId, AIConversationAutoexecuteMode, AIConversationId,
@@ -2104,6 +2107,41 @@ fn auto_approve_uses_ctrl_shift_i() {
 }
 
 #[test]
+fn voice_input_configured_key_is_an_additional_trigger() {
+    App::test((), |mut app| async move {
+        register_tui_session_view_test_singletons(&mut app);
+        app.update(|ctx| {
+            TuiVoiceSettings::handle(ctx).update(ctx, |settings, ctx| {
+                settings
+                    .voice_input_toggle_key
+                    .set_value(
+                        TuiVoiceInputToggleKey(VoiceInputToggleKey::ControlLeft),
+                        ctx,
+                    )
+                    .expect("voice key should update");
+            });
+        });
+        app.update(crate::keybindings::init);
+        app.read(|ctx| {
+            let bindings = ctx
+                .editable_bindings()
+                .filter(|binding| binding.name == VOICE_INPUT_BINDING_NAME)
+                .collect::<Vec<_>>();
+            assert_eq!(bindings.len(), 2);
+            assert!(bindings.iter().any(|binding| {
+                *binding.trigger == Trigger::Keystrokes(vec![Keystroke::parse("ctrl-s").unwrap()])
+            }));
+            assert!(bindings.iter().any(|binding| {
+                *binding.trigger
+                    == Trigger::Keystrokes(vec![
+                        VoiceInputToggleKey::ControlLeft.keystroke().unwrap(),
+                    ])
+            }));
+        });
+    });
+}
+
+#[test]
 fn blocked_terminal_use_action_acceptance_uses_ctrl_enter_without_rebinding_submit() {
     App::test((), |mut app| async move {
         app.update(crate::keybindings::init);
@@ -2138,18 +2176,18 @@ fn blocked_terminal_use_action_acceptance_uses_ctrl_enter_without_rebinding_subm
     });
 }
 #[test]
-fn voice_input_uses_ctrl_s_only_when_the_composer_owns_input() {
+fn voice_input_keeps_ctrl_s_as_the_default_keybinding() {
     App::test((), |mut app| async move {
         app.update(crate::keybindings::init);
         app.read(|ctx| {
             let binding = ctx
                 .editable_bindings()
-                .find(|binding| binding.name == VOICE_INPUT_BINDING_NAME)
-                .expect("voice-input binding");
-            assert_eq!(
-                *binding.trigger,
-                Trigger::Keystrokes(vec![Keystroke::parse("ctrl-s").unwrap()])
-            );
+                .filter(|binding| binding.name == VOICE_INPUT_BINDING_NAME)
+                .find(|binding| {
+                    *binding.trigger
+                        == Trigger::Keystrokes(vec![Keystroke::parse("ctrl-s").unwrap()])
+                })
+                .expect("hardcoded ctrl-s voice-input binding");
 
             let mut session_context = Context::default();
             session_context

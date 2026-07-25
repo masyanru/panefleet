@@ -725,6 +725,15 @@ impl EditableBinding {
         self
     }
 
+    /// Sets the binding to a pre-constructed keystroke.
+    ///
+    /// This is needed for standalone modifier keys, which cannot be represented
+    /// by [`Keystroke::parse`] because that parser requires a non-modifier key.
+    pub fn with_keystroke(mut self, keystroke: Keystroke) -> Self {
+        self.trigger = Trigger::Keystrokes(vec![keystroke]);
+        self
+    }
+
     pub fn with_standard_action(mut self, binding: StandardAction) -> Self {
         self.trigger = Trigger::Standard(binding);
         self

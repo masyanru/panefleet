@@ -2,8 +2,8 @@ use std::time::Duration;
 
 use instant::Instant;
 use ratatui::crossterm::event::{
-    Event as CrosstermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton,
-    MouseEvent, MouseEventKind,
+    Event as CrosstermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, ModifierKeyCode,
+    MouseButton, MouseEvent, MouseEventKind,
 };
 
 use super::{ClickTracker, crossterm_event_to_tui_event};
@@ -103,12 +103,49 @@ fn paste_preserves_the_complete_payload() {
 }
 
 #[test]
-fn pure_modifier_keys_have_no_tui_equivalent() {
-    let event = KeyEvent::new(
-        KeyCode::Modifier(ratatui::crossterm::event::ModifierKeyCode::LeftControl),
-        KeyModifiers::empty(),
-    );
-    assert!(crossterm_event_to_tui_event(CrosstermEvent::Key(event)).is_none());
+fn standalone_modifier_keys_map_to_modifier_only_keystrokes() {
+    let modifiers = [
+        (
+            ModifierKeyCode::LeftControl,
+            KeyModifiers::CONTROL,
+            "control",
+        ),
+        (
+            ModifierKeyCode::RightControl,
+            KeyModifiers::CONTROL,
+            "control",
+        ),
+        (ModifierKeyCode::LeftAlt, KeyModifiers::ALT, "alt"),
+        (ModifierKeyCode::RightAlt, KeyModifiers::ALT, "alt"),
+        (ModifierKeyCode::LeftShift, KeyModifiers::SHIFT, "shift"),
+        (ModifierKeyCode::RightShift, KeyModifiers::SHIFT, "shift"),
+        (ModifierKeyCode::LeftSuper, KeyModifiers::SUPER, "super"),
+        (ModifierKeyCode::RightSuper, KeyModifiers::SUPER, "super"),
+    ];
+
+    for (modifier, expected_flags, name) in modifiers {
+        let Some(TuiEvent::KeyDown { keystroke, .. }) =
+            key(KeyCode::Modifier(modifier), KeyModifiers::empty())
+        else {
+            panic!("expected standalone modifier KeyDown for {name}");
+        };
+        assert_eq!(keystroke.key, "");
+        assert_eq!(
+            (
+                keystroke.ctrl,
+                keystroke.alt,
+                keystroke.shift,
+                keystroke.cmd
+            ),
+            (
+                expected_flags.contains(KeyModifiers::CONTROL),
+                expected_flags.contains(KeyModifiers::ALT),
+                expected_flags.contains(KeyModifiers::SHIFT),
+                expected_flags.contains(KeyModifiers::SUPER),
+            ),
+            "unexpected flags for {name}",
+        );
+    }
 }
 
 #[test]

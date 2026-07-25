@@ -30,3 +30,35 @@ fn surface_annotation_matches_setting_schema_entry_metadata() {
         );
     }
 }
+
+#[test]
+fn duplicate_surface_entries_merge_their_surface_annotations() {
+    let mut properties = Map::new();
+    merge_setting_schema(
+        &mut properties,
+        "voice_input_toggle_key",
+        serde_json::json!({
+            "type": "string",
+            "x-warp-surfaces": ["gui"],
+        }),
+    );
+    merge_setting_schema(
+        &mut properties,
+        "voice_input_toggle_key",
+        serde_json::json!({
+            "type": "string",
+            "x-warp-surfaces": ["tui"],
+        }),
+    );
+
+    let surfaces = properties["voice_input_toggle_key"]["x-warp-surfaces"]
+        .as_array()
+        .expect("surface annotation");
+    assert_eq!(
+        surfaces,
+        &vec![
+            Value::String("gui".to_owned()),
+            Value::String("tui".to_owned())
+        ]
+    );
+}

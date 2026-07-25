@@ -5,8 +5,8 @@ use std::time::Duration;
 
 use instant::Instant;
 use ratatui::crossterm::event::{
-    Event as CrosstermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton,
-    MouseEvent, MouseEventKind,
+    Event as CrosstermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, ModifierKeyCode,
+    MouseButton, MouseEvent, MouseEventKind,
 };
 
 use crate::elements::tui::{TuiEvent, TuiPoint, TuiPointExt, TuiScrollDelta};
@@ -102,7 +102,8 @@ fn key_event_to_tui_event(event: KeyEvent) -> Option<TuiEvent> {
         return None;
     }
 
-    let key = key_name(event.code, event.modifiers)?;
+    let modifiers = key_modifiers(event.code, event.modifiers);
+    let key = key_name(event.code, modifiers)?;
     let chars = match event.code {
         KeyCode::Char(char) => char.to_string(),
         _ => String::new(),
@@ -110,11 +111,11 @@ fn key_event_to_tui_event(event: KeyEvent) -> Option<TuiEvent> {
 
     Some(TuiEvent::KeyDown {
         keystroke: Keystroke {
-            ctrl: event.modifiers.contains(KeyModifiers::CONTROL),
-            alt: event.modifiers.contains(KeyModifiers::ALT),
-            shift: event.modifiers.contains(KeyModifiers::SHIFT),
-            cmd: event.modifiers.contains(KeyModifiers::SUPER),
-            meta: event.modifiers.contains(KeyModifiers::META),
+            ctrl: modifiers.contains(KeyModifiers::CONTROL),
+            alt: modifiers.contains(KeyModifiers::ALT),
+            shift: modifiers.contains(KeyModifiers::SHIFT),
+            cmd: modifiers.contains(KeyModifiers::SUPER),
+            meta: modifiers.contains(KeyModifiers::META),
             key,
         },
         chars,
@@ -126,8 +127,32 @@ fn key_event_to_tui_event(event: KeyEvent) -> Option<TuiEvent> {
     })
 }
 
+fn key_modifiers(code: KeyCode, modifiers: KeyModifiers) -> KeyModifiers {
+    let modifier = match code {
+        KeyCode::Modifier(ModifierKeyCode::LeftControl | ModifierKeyCode::RightControl) => {
+            KeyModifiers::CONTROL
+        }
+        KeyCode::Modifier(ModifierKeyCode::LeftAlt | ModifierKeyCode::RightAlt) => {
+            KeyModifiers::ALT
+        }
+        KeyCode::Modifier(ModifierKeyCode::LeftShift | ModifierKeyCode::RightShift) => {
+            KeyModifiers::SHIFT
+        }
+        KeyCode::Modifier(ModifierKeyCode::LeftSuper | ModifierKeyCode::RightSuper) => {
+            KeyModifiers::SUPER
+        }
+        KeyCode::Modifier(ModifierKeyCode::LeftMeta | ModifierKeyCode::RightMeta) => {
+            KeyModifiers::META
+        }
+        _ => KeyModifiers::empty(),
+    };
+    modifiers | modifier
+}
+
 /// The TUI keystroke `key` name for a crossterm key code, or `None` for keys
-/// with no TUI equivalent (pure modifiers, lock keys, media keys, etc.).
+/// with no TUI equivalent (lock keys, media keys, etc.). Standalone modifier
+/// keys use an empty key name and carry their modifier in the surrounding
+/// [`Keystroke`], matching the GUI's modifier-only representation.
 fn key_name(code: KeyCode, modifiers: KeyModifiers) -> Option<String> {
     match code {
         KeyCode::Backspace => Some("backspace".to_owned()),
@@ -162,8 +187,8 @@ fn key_name(code: KeyCode, modifiers: KeyModifiers) -> Option<String> {
         | KeyCode::Menu
         | KeyCode::KeypadBegin
         | KeyCode::Media(_)
-        | KeyCode::Modifier(_)
         | KeyCode::F(_) => None,
+        KeyCode::Modifier(_) => Some(String::new()),
     }
 }
 

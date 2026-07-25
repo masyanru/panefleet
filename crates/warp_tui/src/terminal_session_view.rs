@@ -10,7 +10,7 @@ use async_channel::Sender;
 use instant::Instant;
 use parking_lot::FairMutex;
 use warp::editor::{CodeEditorModel, CodeEditorModelEvent};
-use warp::settings::{AISettings, AISettingsChangedEvent};
+use warp::settings::{AISettings, AISettingsChangedEvent, TuiVoiceSettings};
 use warp::tui_export::{
     AIAgentActionId, AIAgentActionResultType, AIAgentContext, AIAgentExchangeId,
     AIAgentPtyWriteMode, AIConversation, AIConversationId, AcceptSlashCommandOrSavedPrompt,
@@ -652,6 +652,43 @@ pub(crate) fn init(app: &mut AppContext) {
         )
         .with_group(TUI_BINDING_GROUP),
     ]);
+    // Keep ctrl-s as the backwards-compatible baseline. The setting-driven
+    // binding below is intentionally separate so configuring a modifier adds
+    // a trigger instead of removing the existing hotkey.
+    let voice_input_binding = EditableBinding::new(
+        VOICE_INPUT_BINDING_NAME,
+        "Start voice input",
+        TuiTerminalSessionAction::StartVoiceInput,
+    )
+    .with_context_predicate(
+        (id!(TuiInputView::ui_name()) | id!(TuiTerminalSessionView::ui_name()))
+            & id!(SESSION_COMPOSER_OWNS_INPUT_FLAG),
+    )
+    .with_group(TUI_BINDING_GROUP);
+    let mut configured_voice_input_binding = EditableBinding::new(
+        VOICE_INPUT_BINDING_NAME,
+        "Start voice input",
+        TuiTerminalSessionAction::StartVoiceInput,
+    )
+    .with_context_predicate(
+        (id!(TuiInputView::ui_name()) | id!(TuiTerminalSessionView::ui_name()))
+            & id!(SESSION_COMPOSER_OWNS_INPUT_FLAG),
+    )
+    .with_group(TUI_BINDING_GROUP);
+    let configured_voice_key = app
+        .has_singleton_model::<TuiVoiceSettings>()
+        .then(|| {
+            TuiVoiceSettings::as_ref(app)
+                .voice_input_toggle_key
+                .value()
+                .keystroke()
+        })
+        .flatten();
+    if let Some(keystroke) = configured_voice_key {
+        configured_voice_input_binding = configured_voice_input_binding.with_keystroke(keystroke);
+    }
+    let voice_input_binding = voice_input_binding.with_key_binding("ctrl-s");
+
     app.register_editable_bindings([
         EditableBinding::new(
             ACCEPT_BLOCKED_TERMINAL_USE_ACTION_BINDING_NAME,
@@ -727,17 +764,8 @@ pub(crate) fn init(app: &mut AppContext) {
         )
         .with_group(TUI_BINDING_GROUP)
         .with_key_binding("ctrl-shift-V"),
-        EditableBinding::new(
-            VOICE_INPUT_BINDING_NAME,
-            "Start voice input",
-            TuiTerminalSessionAction::StartVoiceInput,
-        )
-        .with_context_predicate(
-            (id!(TuiInputView::ui_name()) | id!(TuiTerminalSessionView::ui_name()))
-                & id!(SESSION_COMPOSER_OWNS_INPUT_FLAG),
-        )
-        .with_group(TUI_BINDING_GROUP)
-        .with_key_binding("ctrl-s"),
+        voice_input_binding,
+        configured_voice_input_binding,
         #[cfg(windows)]
         EditableBinding::new(
             PASTE_IMAGE_BINDING_NAME,

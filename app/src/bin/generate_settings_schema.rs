@@ -147,6 +147,56 @@ fn setting_surface_names(surfaces: SettingSurfaces) -> Vec<Value> {
         .map(|(_, name)| Value::String(name.to_owned()))
         .collect()
 }
+
+/// Inserts a setting schema while preserving metadata from registrations that
+/// share a TOML path across surfaces. Surface-specific settings intentionally
+/// use the same key so their values remain portable between the GUI and TUI
+/// files; a plain `Map::insert` would make the result depend on inventory/link
+/// order and silently drop one surface's annotation.
+fn merge_setting_schema(target: &mut Map<String, Value>, key: &str, schema: Value) {
+    let Some(existing) = target.get_mut(key) else {
+        target.insert(key.to_owned(), schema);
+        return;
+    };
+    let new_description = schema
+        .get("description")
+        .and_then(Value::as_str)
+        .filter(|description| !description.is_empty());
+
+    let Some(existing_object) = existing.as_object_mut() else {
+        return;
+    };
+    let Some(new_surfaces) = schema.get("x-warp-surfaces").and_then(Value::as_array) else {
+        return;
+    };
+    let Some(existing_surfaces) = existing_object
+        .get_mut("x-warp-surfaces")
+        .and_then(Value::as_array_mut)
+    else {
+        return;
+    };
+
+    for surface in new_surfaces {
+        if !existing_surfaces.contains(surface) {
+            existing_surfaces.push(surface.clone());
+        }
+    }
+
+    if let Some(new_description) = new_description {
+        let existing_description = existing_object
+            .get("description")
+            .and_then(Value::as_str)
+            .filter(|description| !description.is_empty());
+        if let Some(existing_description) = existing_description
+            && existing_description != new_description
+        {
+            existing_object.insert(
+                "description".to_owned(),
+                Value::String(format!("{existing_description} {new_description}")),
+            );
+        }
+    }
+}
 fn main() {
     ensure_settings_linked();
 
@@ -229,7 +279,7 @@ fn main() {
             &mut root_properties
         };
 
-        target.insert(entry.storage_key.to_string(), schema_value);
+        merge_setting_schema(target, entry.storage_key, schema_value);
         entry_count += 1;
     }
 

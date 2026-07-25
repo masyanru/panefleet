@@ -7,8 +7,8 @@ use warp::tui_export::{
 };
 use warpui::EntityIdMap;
 use warpui_core::elements::tui::{
-    TuiBuffer, TuiConstraint, TuiElement, TuiLayoutContext, TuiPaintContext, TuiPaintSurface,
-    TuiRect, TuiScreenPosition, TuiSize,
+    TuiBuffer, TuiBufferExt, TuiConstraint, TuiElement, TuiLayoutContext, TuiPaintContext,
+    TuiPaintSurface, TuiRect, TuiScreenPosition, TuiSize,
 };
 use warpui_core::{App, AppContext};
 

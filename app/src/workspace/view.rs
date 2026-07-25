@@ -10532,11 +10532,13 @@ impl Workspace {
         }
 
         #[cfg(not(target_family = "wasm"))]
-        items.push(
-            MenuItemFields::new("View Warp logs")
-                .with_on_select_action(WorkspaceAction::ViewLogs)
-                .into_item(),
-        );
+        if !panefleet_enabled {
+            items.push(
+                MenuItemFields::new("View Warp logs")
+                    .with_on_select_action(WorkspaceAction::ViewLogs)
+                    .into_item(),
+            );
+        }
 
         if !panefleet_enabled {
             items.extend([

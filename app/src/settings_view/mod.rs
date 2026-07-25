@@ -1333,6 +1333,7 @@ impl SettingsView {
             me.handle_menu_event(event, ctx);
         });
 
+        let panefleet_enabled = FeatureFlag::PaneFleetWorkbench.is_enabled();
         let mut settings_pages = vec![
             SettingsPage::new(main_page_handle),
             SettingsPage::new(ai_page_handle),
@@ -1348,8 +1349,11 @@ impl SettingsView {
             SettingsPage::new(warpify_page_handle),
             SettingsPage::new(referrals_page_handle),
             SettingsPage::new(show_blocks_view_handle),
-            SettingsPage::new(warp_drive_page_handle),
         ];
+
+        if !panefleet_enabled {
+            settings_pages.push(SettingsPage::new(warp_drive_page_handle));
+        }
 
         if let Some(scripting_page_handle) = scripting_page_handle {
             settings_pages.push(SettingsPage::new(scripting_page_handle));
@@ -1358,13 +1362,17 @@ impl SettingsView {
         settings_pages.extend(vec![
             SettingsPage::new(mcp_servers_page_handle),
             SettingsPage::new(environments_page_handle.clone()),
-            SettingsPage::new(privacy_page_handle),
-            SettingsPage::new(about_page_handle),
         ]);
+
+        if !panefleet_enabled {
+            settings_pages.extend([
+                SettingsPage::new(privacy_page_handle),
+                SettingsPage::new(about_page_handle),
+            ]);
+        }
 
         // Build sidebar nav items. AI page is presented as an "Agents" umbrella
         // with subpages; the actual AI SettingsPage is hidden from direct sidebar listing.
-        let panefleet_enabled = FeatureFlag::PaneFleetWorkbench.is_enabled();
         let mut nav_items = if panefleet_enabled {
             vec![
                 SettingsNavItem::Page(SettingsSection::Account),
@@ -1386,10 +1394,6 @@ impl SettingsView {
                 SettingsNavItem::Page(SettingsSection::Appearance),
                 SettingsNavItem::Page(SettingsSection::Features),
                 SettingsNavItem::Page(SettingsSection::Keybindings),
-                // Keep Warp Drive visible until PaneFleet decides whether to replace or reuse it.
-                SettingsNavItem::Page(SettingsSection::WarpDrive),
-                SettingsNavItem::Page(SettingsSection::Privacy),
-                SettingsNavItem::Page(SettingsSection::About),
             ]
         } else {
             vec![

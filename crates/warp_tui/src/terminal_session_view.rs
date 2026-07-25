@@ -74,7 +74,7 @@ use crate::input::view::TuiInputAction;
 use crate::input::{TuiInputView, TuiInputViewEvent};
 use crate::input_hints;
 use crate::input_mode_policy::{self, TuiInputModePolicy};
-use crate::input_suggestions_mode::TuiInputSuggestionsModeModel;
+use crate::input_suggestions_mode::{TuiInputSuggestionsMode, TuiInputSuggestionsModeModel};
 use crate::keybindings::{
     ATTACHMENTS_AVAILABLE_FLAG, CONTEXTUAL_PLAN_TOGGLE_BINDING_NAME,
     KEYBOARD_ENHANCEMENT_AVAILABLE_FLAG, PLAN_TOGGLE_AVAILABLE_FLAG, PLAN_TOGGLE_BINDING_NAME,
@@ -99,8 +99,7 @@ use crate::tab_bar::{TuiTabBarConfig, TuiTabBarEvent, TuiTabBarView};
 use crate::terminal_content_element::TuiTerminalContentElement;
 use crate::terminal_use::{
     TerminalUseInterruptAction, TuiInputTarget, hide_agent_requested_command_from_top_level,
-    inline_process_owns_input, terminal_use_conversation_to_resume, terminal_use_interrupt_action,
-    tui_input_target,
+    terminal_use_conversation_to_resume, terminal_use_interrupt_action, tui_input_target,
 };
 use crate::transcript_view::{TuiTranscriptView, TuiTranscriptViewEvent};
 use crate::transient_hint::{TransientHint, TransientHintTone};
@@ -116,9 +115,14 @@ use crate::zero_state_animation::{
 };
 mod completions;
 mod input_detection;
+mod shortcuts;
+pub(crate) mod state;
 
 use self::completions::CompletionRequestState;
 use self::input_detection::InputDetectionState;
+use self::state::{
+    TuiTerminalSessionState, TuiTerminalSessionStateModel, TuiTerminalSessionStateResolveError,
+};
 
 /// Width used before the first layout pass pushes the real terminal width into the editor.
 const INITIAL_INPUT_WIDTH: u16 = 80;
@@ -132,9 +136,13 @@ const CTRL_C_EXIT_HINT: &str = "ctrl-c again to exit";
 const STARTING_SHELL_HINT: &str = "Starting shell...";
 const SESSION_CAN_CANCEL_RESTORE_FLAG: &str = "TuiSessionCanCancelRestore";
 const SESSION_CAN_HAND_BACK_CONTROL_FLAG: &str = "TuiSessionCanHandBackControl";
+const SESSION_CAN_ACCEPT_BLOCKED_TERMINAL_USE_ACTION_FLAG: &str =
+    "TuiSessionCanAcceptBlockedTerminalUseAction";
 pub(crate) const SESSION_COMPOSER_OWNS_INPUT_FLAG: &str = "TuiSessionComposerOwnsInput";
 pub(crate) const PASTE_IMAGE_BINDING_NAME: &str = "tui:session:paste_image";
 pub(crate) const AUTO_APPROVE_TOGGLE_BINDING_NAME: &str = "tui:session:toggle_auto_approve";
+pub(crate) const ACCEPT_BLOCKED_TERMINAL_USE_ACTION_BINDING_NAME: &str =
+    "tui:session:accept_blocked_terminal_use_action";
 pub(crate) const VOICE_INPUT_BINDING_NAME: &str = "tui:session:start_voice_input";
 
 /// Events emitted by the TUI terminal session surface.
@@ -208,6 +216,8 @@ const ZERO_STATE_ASCII_INITIAL_LOAD_FAILED_HINT: &str =
 const ZERO_STATE_ASCII_RELOAD_FAILED_HINT: &str =
     "Could not reload custom ASCII art. Keeping the current object.";
 const VOICE_USAGE_HINT: &str = "Usage: /voice (no arguments)";
+const AUTO_APPROVE_ENABLED_HINT: &str = "Auto approve on";
+const AUTO_APPROVE_DISABLED_HINT: &str = "Auto approve off";
 const COST_NO_ACTIVE_CONVERSATION_HINT: &str =
     "Cannot show conversation cost: no active conversation";
 const COST_EMPTY_CONVERSATION_HINT: &str = "Cannot show conversation cost: conversation is empty";
@@ -266,7 +276,7 @@ fn log_bundle_success_message(path: &Path) -> String {
 /// Installed builds expose `warp`, `warp-dev`, `warp-preview`, etc. Local cargo
 /// builds don't ship a versioned `warp` binary on PATH, so they intentionally
 /// target `warp-dev` (the dogfood channel name).
-fn tui_cli_binary_name(channel: Channel) -> &'static str {
+pub(crate) fn tui_cli_binary_name(channel: Channel) -> &'static str {
     match channel {
         Channel::Stable => "warp",
         Channel::Dev | Channel::Local => "warp-dev",
@@ -274,6 +284,11 @@ fn tui_cli_binary_name(channel: Channel) -> &'static str {
         Channel::Oss => "warp-oss",
         Channel::Integration => "warp-integration",
     }
+}
+
+/// Shell command used by the exit hint to resume a server conversation.
+pub(crate) fn tui_resume_shell_command(channel: Channel, token: &str) -> String {
+    format!("{} --resume {token}", tui_cli_binary_name(channel))
 }
 
 /// Shell command used by `/version` to print the binary version as a normal
@@ -492,6 +507,10 @@ pub(crate) enum TuiTerminalSessionAction {
     CancelRestore,
     /// Return a user-controlled terminal-use command to the agent.
     HandBackTerminalUseControl,
+    /// Accept the active terminal-use agent's blocked action.
+    AcceptBlockedTerminalUseAction,
+    /// Reject the active terminal-use agent's blocked action.
+    RejectBlockedTerminalUseAction,
     /// Click on the footer's usage entry: flips the persisted credits⇄cost
     /// display-mode setting.
     ToggleUsageDisplay,
@@ -534,6 +553,8 @@ pub(crate) struct TuiTerminalSessionView {
     attachment_bar: ViewHandle<TuiAttachmentBar>,
     inline_menus: Vec<TuiInlineMenu>,
     suggestions_mode: ModelHandle<TuiInputSuggestionsModeModel>,
+    /// Session-owned live state model shared by this surface and its input view.
+    session_state: ModelHandle<TuiTerminalSessionStateModel>,
     conversation_menu: ModelHandle<TuiConversationMenuModel>,
     model_menu: ModelHandle<TuiModelMenuModel>,
     skills_menu: ModelHandle<TuiSkillMenuModel>,
@@ -634,6 +655,17 @@ pub(crate) fn init(app: &mut AppContext) {
         .with_group(TUI_BINDING_GROUP),
     ]);
     app.register_editable_bindings([
+        EditableBinding::new(
+            ACCEPT_BLOCKED_TERMINAL_USE_ACTION_BINDING_NAME,
+            "Accept the blocked terminal-use action",
+            TuiTerminalSessionAction::AcceptBlockedTerminalUseAction,
+        )
+        .with_context_predicate(
+            (id!(TuiInputView::ui_name()) | view_context.clone())
+                & id!(SESSION_CAN_ACCEPT_BLOCKED_TERMINAL_USE_ACTION_FLAG),
+        )
+        .with_group(TUI_BINDING_GROUP)
+        .with_key_binding("ctrl-enter"),
         EditableBinding::new(
             AUTO_APPROVE_TOGGLE_BINDING_NAME,
             "Toggle auto approve",
@@ -758,6 +790,13 @@ impl TuiTerminalSessionView {
     fn input_target(&self) -> TuiInputTarget {
         let terminal_model = self.terminal_model.lock();
         tui_input_target(&terminal_model)
+    }
+
+    fn session_state(
+        &self,
+        ctx: &AppContext,
+    ) -> Result<TuiTerminalSessionState, TuiTerminalSessionStateResolveError> {
+        self.session_state.as_ref(ctx).resolve(ctx)
     }
 
     fn update_process_input_focus(&mut self, ctx: &mut ViewContext<Self>) {
@@ -887,7 +926,7 @@ impl TuiTerminalSessionView {
                     let controller = self.cli_subagent_controller.clone();
                     let action_model = self.ai_action_model.clone();
                     let terminal_model = self.terminal_model.clone();
-                    let view = ctx.add_typed_action_tui_view(|ctx| {
+                    let view = ctx.add_tui_view(|ctx| {
                         TuiCLISubagentView::new(
                             target,
                             controller,
@@ -986,6 +1025,36 @@ impl TuiTerminalSessionView {
             .as_ref(ctx)
             .active_target()
             .filter(|target| target.control_state.is_user_in_control())
+    }
+    fn active_cli_subagent_view(&self, ctx: &AppContext) -> Option<ViewHandle<TuiCLISubagentView>> {
+        let target = self.cli_subagent_controller.as_ref(ctx).active_target()?;
+        self.cli_subagent_views.get(&target.block_id).cloned()
+    }
+
+    fn accept_active_cli_subagent_action(&mut self, ctx: &mut ViewContext<Self>) -> bool {
+        let Some(view) = self.active_cli_subagent_view(ctx) else {
+            return false;
+        };
+        if !view.as_ref(ctx).has_blocked_action(ctx) {
+            return false;
+        }
+        view.update(ctx, |view, ctx| {
+            view.accept_blocked_terminal_use_action(ctx)
+        });
+        true
+    }
+
+    fn reject_active_cli_subagent_action(&mut self, ctx: &mut ViewContext<Self>) -> bool {
+        let Some(view) = self.active_cli_subagent_view(ctx) else {
+            return false;
+        };
+        if !view.as_ref(ctx).has_blocked_action(ctx) {
+            return false;
+        }
+        view.update(ctx, |view, ctx| {
+            view.reject_blocked_terminal_use_action(ctx)
+        });
+        true
     }
 
     fn send_terminal_use_prompt(&mut self, input: &str, ctx: &mut ViewContext<Self>) -> bool {
@@ -1304,19 +1373,27 @@ impl TuiTerminalSessionView {
         ];
         let inline_menus_for_input = inline_menus.clone();
         let suggestions_mode_for_input = suggestions_mode.clone();
-        let transcript_for_input = transcript.clone();
         let terminal_model_for_input = model.clone();
         let orchestration_tab_bar = ctx.add_typed_action_tui_view(|_| TuiTabBarView::empty());
-        let orchestration_tab_bar_for_input = orchestration_tab_bar.clone();
+        let session_state = ctx.add_model(|_| {
+            TuiTerminalSessionStateModel::new(
+                &model,
+                &cli_subagent_controller,
+                &transcript,
+                &ai_input_model,
+                &suggestions_mode,
+                &orchestration_tab_bar,
+            )
+        });
         let input_editor_for_input = input_editor_model.clone();
+        let session_state_for_input = session_state.clone();
         let input_view = ctx.add_typed_action_tui_view(move |ctx| {
             TuiInputView::new(
                 input_editor_for_input,
                 input_mode_for_input_view,
                 suggestions_mode_for_input,
                 inline_menus_for_input,
-                transcript_for_input,
-                move |ctx| orchestration_tab_bar_for_input.as_ref(ctx).has_tabs(),
+                session_state_for_input,
                 ctx,
             )
             .with_inline_menu_actions_allowed(move |_| {
@@ -1490,6 +1567,10 @@ impl TuiTerminalSessionView {
                 view.update_process_input_focus(ctx);
                 ctx.notify();
             }
+            ModelEvent::TerminalModeSwapped(_) => {
+                view.update_process_input_focus(ctx);
+                ctx.notify();
+            }
             ModelEvent::Typeahead => view.handle_typeahead_event(ctx),
             ModelEvent::BlockMetadataReceived(_)
             | ModelEvent::BlockWorkingDirectoryUpdated(_)
@@ -1608,6 +1689,7 @@ impl TuiTerminalSessionView {
             attachment_bar,
             inline_menus,
             suggestions_mode,
+            session_state,
             conversation_menu,
             model_menu,
             skills_menu,
@@ -1818,6 +1900,83 @@ impl TuiTerminalSessionView {
     /// Footer shown while orchestration tabs own keyboard focus.
     fn render_orchestration_tab_footer(&self, builder: &TuiUiBuilder) -> Box<dyn TuiElement> {
         render_orchestration_tab_footer(builder)
+    }
+
+    fn render_input_area(
+        &self,
+        state: TuiTerminalSessionState,
+        input_target: TuiInputTarget,
+        inline_menu: Option<Box<dyn TuiElement>>,
+        builder: &TuiUiBuilder,
+        ctx: &AppContext,
+    ) -> Box<dyn TuiElement> {
+        let mut content = TuiFlex::column();
+        if let (true, Some(menu)) = (input_target.agent_editor_owns_input(), inline_menu) {
+            content = content.child(
+                TuiConstrainedBox::new(
+                    TuiContainer::new(menu)
+                        .with_padding_top(INLINE_MENU_TOP_PADDING_ROWS)
+                        .finish(),
+                )
+                .with_max_rows(MAX_INLINE_MENU_ROWS + INLINE_MENU_TOP_PADDING_ROWS)
+                .finish(),
+            );
+        }
+        if state.should_render_shortcuts() {
+            let keymap_context = self.keymap_context(ctx);
+            content = content.child(
+                TuiContainer::new(shortcuts::render(state, &keymap_context, ctx))
+                    .with_padding_top(INLINE_MENU_TOP_PADDING_ROWS)
+                    .finish(),
+            );
+        }
+        let input = if self.input_view.as_ref(ctx).voice_state(ctx) == TuiVoiceInputState::Listening
+        {
+            let input_view = self.input_view.clone();
+            let builder = builder.clone();
+            let clock = self.input_view.as_ref(ctx).voice_animation_clock(ctx);
+            TuiAnimated::new(VOICE_INPUT_BORDER_REPAINT_INTERVAL, move || {
+                bordered_input(
+                    &input_view,
+                    builder.voice_input_border_style(clock.elapsed()),
+                )
+            })
+            .finish()
+        } else {
+            let border_style = if self.is_shell_mode(ctx) {
+                builder.shell_mode_accent_style()
+            } else {
+                builder.accent_border_style()
+            };
+            bordered_input(&self.input_view, border_style)
+        };
+
+        if self.attachment_bar.as_ref(ctx).should_render(ctx) {
+            content = content.child(
+                TuiConstrainedBox::new(
+                    TuiContainer::new(TuiChildView::new(&self.attachment_bar).finish())
+                        .with_padding_x(1)
+                        .finish(),
+                )
+                .with_max_rows(1)
+                .finish(),
+            );
+        }
+        content = content.child(
+            TuiConstrainedBox::new(input)
+                .with_max_rows(MAX_INPUT_TEXT_ROWS + 2)
+                .finish(),
+        );
+        let footer = if matches!(input_target, TuiInputTarget::Disabled) {
+            self.render_footer(ctx).finish()
+        } else if self.orchestration_tabs_focused {
+            self.render_orchestration_tab_footer(builder)
+        } else {
+            self.render_footer(ctx).finish()
+        };
+        content
+            .child(TuiConstrainedBox::new(footer).with_max_rows(1).finish())
+            .finish()
     }
     /// The active front-of-queue blocking interaction, if any.
     fn active_blocking_child(&self, ctx: &AppContext) -> Option<TuiBlockingChild> {
@@ -2240,6 +2399,20 @@ impl TuiTerminalSessionView {
         });
         if show_feedback {
             self.show_auto_approve_feedback(ctx);
+            let enabled = self
+                .conversation_selection
+                .as_ref(ctx)
+                .pending_query_autoexecute_override(ctx)
+                .is_autoexecute_any_action();
+            self.show_success_hint(
+                if enabled {
+                    AUTO_APPROVE_ENABLED_HINT
+                } else {
+                    AUTO_APPROVE_DISABLED_HINT
+                }
+                .to_owned(),
+                ctx,
+            );
         } else {
             self.clear_auto_approve_feedback(ctx);
         }
@@ -2307,10 +2480,10 @@ impl TuiTerminalSessionView {
         self.show_success_hint(COPY_SELECTION_HINT.to_owned(), ctx);
     }
 
-    /// Handles a ctrl-c press: a second press within [`CTRL_C_EXIT_WINDOW`]
-    /// exits the TUI; otherwise one contextual action runs — cancel the running
-    /// conversation if there is one, else clear the input — and the exit
-    /// confirmation is (re-)armed, surfacing [`CTRL_C_EXIT_HINT`] in the footer.
+    /// Handles a ctrl-c press: reject a blocked terminal-use action first, then
+    /// apply terminal-use takeover/interrupt behavior. Otherwise a second press
+    /// within [`CTRL_C_EXIT_WINDOW`] exits the TUI; the first cancels the running
+    /// conversation or clears input and arms the footer confirmation.
     fn handle_interrupt(&mut self, ctx: &mut ViewContext<Self>) {
         if self.cancel_conversation_restore(ctx) {
             return;
@@ -2322,6 +2495,14 @@ impl TuiTerminalSessionView {
             ctx.terminate_app(TerminationMode::ForceTerminate, None);
             return;
         }
+        if self.reject_active_cli_subagent_action(ctx) {
+            self.exit_confirmation.disarm();
+            ctx.notify();
+            return;
+        }
+        self.suggestions_mode.update(ctx, |mode, ctx| {
+            mode.close_if_active(TuiInputSuggestionsMode::Shortcuts, ctx);
+        });
         if self.handle_terminal_use_interrupt(ctx) {
             self.exit_confirmation.disarm();
             ctx.notify();
@@ -2471,7 +2652,6 @@ impl TuiTerminalSessionView {
         }
         None
     }
-
     /// Builds the status footer under the input box. The row is left-aligned:
     /// in agent mode `[model] [cwd ↬ branch] • [usage] • [+N -M]`, and in shell
     /// mode `[shell mode] [cwd ↬ branch] • [+N -M]` (model and usage hidden).
@@ -3475,25 +3655,34 @@ impl TuiView for TuiTerminalSessionView {
     }
 
     fn keymap_context(&self, ctx: &AppContext) -> keymap::Context {
+        let state = self.session_state(ctx).ok();
         let mut context = Self::default_keymap_context();
-        if self.orchestration_tabs_focused && self.input_target().agent_editor_owns_input() {
+        if self.orchestration_tabs_focused
+            && state.is_some_and(|state| state.input_target().agent_editor_owns_input())
+        {
             context.set.insert(ORCHESTRATION_TAB_BAR_FOCUSED_FLAG);
         }
         if self.is_conversation_restore_loading() {
             context.set.insert(SESSION_CAN_CANCEL_RESTORE_FLAG);
         }
-        if self.active_user_controlled_target(ctx).is_some() {
+        if state.is_some_and(TuiTerminalSessionState::can_hand_back_terminal_use) {
             context.set.insert(SESSION_CAN_HAND_BACK_CONTROL_FLAG);
         }
-        if self.transcript.as_ref(ctx).has_toggleable_plan(ctx) {
+        if self
+            .active_cli_subagent_view(ctx)
+            .is_some_and(|view| view.as_ref(ctx).has_blocked_action(ctx))
+        {
+            context
+                .set
+                .insert(SESSION_CAN_ACCEPT_BLOCKED_TERMINAL_USE_ACTION_FLAG);
+        }
+        if state.is_some_and(TuiTerminalSessionState::plan_available) {
             context.set.insert(PLAN_TOGGLE_AVAILABLE_FLAG);
         }
         if self.keyboard_enhancement_supported {
             context.set.insert(KEYBOARD_ENHANCEMENT_AVAILABLE_FLAG);
         }
-        if self.input_target().agent_editor_owns_input()
-            && !self.suggestions_mode.as_ref(ctx).mode().is_visible()
-        {
+        if state.is_some_and(TuiTerminalSessionState::composer_owns_input) {
             context.set.insert(SESSION_COMPOSER_OWNS_INPUT_FLAG);
             if attachment_focus_available(
                 self.is_shell_mode(ctx),
@@ -3520,25 +3709,15 @@ impl TuiView for TuiTerminalSessionView {
             }
             ConversationRestoreState::Idle => {}
         }
-        // While a full-screen (alt-screen) app is active, hand the whole pane to
-        // it: render its grid and forward input, instead of the block UI.
-        let (alt_screen_active, input_target, user_owns_running_command) = {
-            let terminal_model = self.terminal_model.lock();
-            (
-                terminal_model.is_alt_screen_active(),
-                tui_input_target(&terminal_model),
-                inline_process_owns_input(&terminal_model),
-            )
+        let Ok(state) = self.session_state(ctx) else {
+            return TuiText::new("").finish();
         };
-        if alt_screen_active {
-            return TuiTerminalContentElement::new(
-                self.terminal_resize_tx.clone(),
-                AltScreenElement::new(self.terminal_model.clone()).finish(),
-            )
-            .with_pty_input(self.terminal_model.clone())
-            .finish();
-        }
-
+        let input_target = state.input_target();
+        let cli_subagent_view = {
+            let terminal_model = self.terminal_model.lock();
+            let active_block = terminal_model.block_list().active_block();
+            self.cli_subagent_views.get(active_block.id()).cloned()
+        };
         let inline_menu = input_target
             .agent_editor_owns_input()
             .then(|| {
@@ -3551,7 +3730,54 @@ impl TuiView for TuiTerminalSessionView {
             })
             .flatten();
         let builder = TuiUiBuilder::from_app(ctx);
-        let orchestration_tabs_available = self.orchestration_tab_bar.as_ref(ctx).has_tabs();
+        let orchestration_tabs_available = state.orchestration_available();
+        let blocker_active = state.is_blocked();
+
+        if state.is_alt_screen() {
+            let terminal_content = TuiTerminalContentElement::new(
+                self.terminal_resize_tx.clone(),
+                AltScreenElement::new(self.terminal_model.clone()).finish(),
+            );
+            let terminal_content = if input_target.pty_owns_input() {
+                terminal_content.with_pty_input(self.terminal_model.clone())
+            } else {
+                terminal_content
+            };
+            let mut content = TuiFlex::column().flex_child(terminal_content.finish());
+            if input_target.agent_editor_owns_input() {
+                let mut agent_area = TuiFlex::column();
+                if let Some(cli_subagent_view) = cli_subagent_view {
+                    agent_area = agent_area.child(TuiChildView::new(&cli_subagent_view).finish());
+                }
+                if let Some(blocker) = self.active_blocking_child(ctx) {
+                    agent_area = agent_area.child(blocker.view_element());
+                } else {
+                    agent_area = agent_area.child(self.render_input_area(
+                        state,
+                        input_target,
+                        inline_menu,
+                        &builder,
+                        ctx,
+                    ));
+                }
+                content = content.child(
+                    TuiContainer::new(agent_area.finish())
+                        .with_padding_x(2)
+                        .with_padding_bottom(1)
+                        .finish(),
+                );
+            }
+
+            let session = content.finish();
+            return if orchestration_tabs_available {
+                TuiFlex::column()
+                    .child(TuiChildView::new(&self.orchestration_tab_bar).finish())
+                    .flex_child(session)
+                    .finish()
+            } else {
+                session
+            };
+        }
 
         // Ctrl-c (cancel/clear/exit) is handled by the keymap pass via the
         // fixed binding registered in [`Self::init`], so no element-level key
@@ -3574,7 +3800,6 @@ impl TuiView for TuiTerminalSessionView {
         // fresh each pass — no stored suppression flag — and the hidden
         // input model is never written to, so its draft/cursor/selection/
         // scroll survive untouched.
-        let blocker_active = self.active_blocking_child(ctx).is_some();
         if !blocker_active && matches!(input_target, TuiInputTarget::Disabled) {
             content = content.child(
                 TuiContainer::new(
@@ -3658,7 +3883,7 @@ impl TuiView for TuiTerminalSessionView {
         // PTY but is not a command the user should be told to interrupt.
         // (Agent-driven terminal use keeps the composer, and its control
         // hints come from the CLI-subagent status line.)
-        if !blocker_active && user_owns_running_command {
+        if !blocker_active && state.user_owns_running_command() {
             content = content.child(
                 TuiContainer::new(
                     TuiText::new(input_hints::LONG_RUNNING_COMMAND_HINT)
@@ -3674,62 +3899,13 @@ impl TuiView for TuiTerminalSessionView {
             && (input_target.agent_editor_owns_input()
                 || matches!(input_target, TuiInputTarget::Disabled))
         {
-            if let (true, Some(menu)) = (input_target.agent_editor_owns_input(), inline_menu) {
-                content = content.child(
-                    TuiConstrainedBox::new(
-                        TuiContainer::new(menu)
-                            .with_padding_top(INLINE_MENU_TOP_PADDING_ROWS)
-                            .finish(),
-                    )
-                    .with_max_rows(MAX_INLINE_MENU_ROWS + INLINE_MENU_TOP_PADDING_ROWS)
-                    .finish(),
-                );
-            }
-            let input =
-                if self.input_view.as_ref(ctx).voice_state(ctx) == TuiVoiceInputState::Listening {
-                    let input_view = self.input_view.clone();
-                    let builder = builder.clone();
-                    let clock = self.input_view.as_ref(ctx).voice_animation_clock(ctx);
-                    TuiAnimated::new(VOICE_INPUT_BORDER_REPAINT_INTERVAL, move || {
-                        bordered_input(
-                            &input_view,
-                            builder.voice_input_border_style(clock.elapsed()),
-                        )
-                    })
-                    .finish()
-                } else {
-                    let border_style = if self.is_shell_mode(ctx) {
-                        builder.shell_mode_accent_style()
-                    } else {
-                        builder.accent_border_style()
-                    };
-                    bordered_input(&self.input_view, border_style)
-                };
-
-            if self.attachment_bar.as_ref(ctx).should_render(ctx) {
-                content = content.child(
-                    TuiConstrainedBox::new(
-                        TuiContainer::new(TuiChildView::new(&self.attachment_bar).finish())
-                            .with_padding_x(1)
-                            .finish(),
-                    )
-                    .with_max_rows(1)
-                    .finish(),
-                );
-            }
-            content = content.child(
-                TuiConstrainedBox::new(input)
-                    .with_max_rows(MAX_INPUT_TEXT_ROWS + 2)
-                    .finish(),
-            );
-            let footer = if matches!(input_target, TuiInputTarget::Disabled) {
-                self.render_footer(ctx).finish()
-            } else if self.orchestration_tabs_focused {
-                self.render_orchestration_tab_footer(&builder)
-            } else {
-                self.render_footer(ctx).finish()
-            };
-            content = content.child(TuiConstrainedBox::new(footer).with_max_rows(1).finish());
+            content = content.child(self.render_input_area(
+                state,
+                input_target,
+                inline_menu,
+                &builder,
+                ctx,
+            ));
         }
         let content = content.finish();
         let terminal_content =
@@ -3761,6 +3937,20 @@ impl TuiView for TuiTerminalSessionView {
 }
 
 impl TuiTerminalSessionView {
+    fn forward_user_pty_bytes(&self, bytes: &[u8], ctx: &mut ViewContext<Self>) {
+        let composer_owns_input = self
+            .terminal_model
+            .lock()
+            .block_list()
+            .active_block()
+            .is_agent_in_control_or_tagged_in();
+        if composer_owns_input {
+            return;
+        }
+        ctx.emit(TuiTerminalSessionEvent::WriteUserInput(Cow::Owned(
+            bytes.to_vec(),
+        )));
+    }
     fn handle_typeahead_event(&mut self, ctx: &mut ViewContext<Self>) {
         let typeahead = self.terminal_model.lock().take_typeahead_for_input();
         if let Some((text, previously_inserted)) = typeahead {
@@ -3784,6 +3974,12 @@ impl TypedActionView for TuiTerminalSessionView {
             }
             TuiTerminalSessionAction::HandBackTerminalUseControl => {
                 self.hand_back_terminal_use_control(ctx)
+            }
+            TuiTerminalSessionAction::AcceptBlockedTerminalUseAction => {
+                self.accept_active_cli_subagent_action(ctx);
+            }
+            TuiTerminalSessionAction::RejectBlockedTerminalUseAction => {
+                self.reject_active_cli_subagent_action(ctx);
             }
             TuiTerminalSessionAction::ToggleUsageDisplay => self.toggle_usage_display(ctx),
             TuiTerminalSessionAction::ToggleResponseSummaryVisibility => {
@@ -3810,10 +4006,9 @@ impl TypedActionView for TuiTerminalSessionView {
             }
             TuiTerminalSessionAction::ForwardUserPtyBytes(bytes) => {
                 // Raw passthrough: the bytes are already the app's escape
-                // sequence, so write them to the PTY unmodified.
-                ctx.emit(TuiTerminalSessionEvent::WriteUserInput(Cow::Owned(
-                    bytes.clone(),
-                )));
+                // sequence. Recheck control at the final write boundary in
+                // case the element tree predates an agent takeover.
+                self.forward_user_pty_bytes(bytes, ctx);
             }
             TuiTerminalSessionAction::TogglePlan => {
                 self.transcript

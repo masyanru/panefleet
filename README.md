@@ -1,112 +1,217 @@
-<a href="https://www.warp.dev">
-    <img width="1024" alt="Warp Agentic Development Environment product preview" src="https://github.com/user-attachments/assets/9976b2da-2edd-4604-a36c-8fd53719c6d4" />
-</a>
-&nbsp;
 <p align="center">
-  <a href="https://www.warp.dev"><img height="20" alt="Built with Warp" src="https://raw.githubusercontent.com/warpdotdev/brand-assets/main/Github/Built-With-Warp-Export@2x.png" /></a>
-  &nbsp;
-  <a href="https://oz.warp.dev"><img height="20" alt="Powered by Oz" src="https://raw.githubusercontent.com/warpdotdev/brand-assets/main/Github/Powered-By-Oz-Export@2x.png" /></a>
+  <img src="app/assets/bundled/png/panefleet.png" width="160" alt="PaneFleet app icon" />
+</p>
+
+<h1 align="center">PaneFleet</h1>
+
+<p align="center">
+  A local-first project and CLI-agent workbench built on the open-source Warp terminal.
 </p>
 
 <p align="center">
-  <a href="https://www.warp.dev">Website</a>
-  ·
-  <a href="https://www.warp.dev/code">Code</a>
-  ·
-  <a href="https://www.warp.dev/agents">Agents</a>
-  ·
-  <a href="https://www.warp.dev/terminal">Terminal</a>
-  ·
-  <a href="https://www.warp.dev/drive">Drive</a>
-  ·
-  <a href="https://docs.warp.dev">Docs</a>
-  ·
-  <a href="https://www.warp.dev/blog/how-warp-works">How Warp Works</a>
+  <strong>Experimental macOS prototype · Source builds only</strong>
 </p>
 
-> [!NOTE]
-> OpenAI is the founding sponsor of the new, open-source Warp repository, and the new agentic management workflows are powered by GPT models.
+<!--
+Screenshot slot:
 
-<h1></h1>
+<p align="center">
+  <img src="docs/images/panefleet-workbench.png" width="1200" alt="PaneFleet workbench" />
+</p>
+-->
 
-## About
+## Why PaneFleet
 
-[Warp](https://www.warp.dev) is an agentic development environment, born out of the terminal. Use Warp's built-in coding agent, or bring your own CLI agent (Claude Code, Codex, Gemini CLI, and others).
+Terminal tabs are usually global to a window. Agentic development is not.
 
-## Installation
+When several projects and CLI agents are active at once, each project needs its
+own working context: terminal tabs, agent conversations, files, Git state, and
+session history. Switching projects should switch that entire context, not just
+change the current directory.
 
-You can [download Warp](https://www.warp.dev/download) and [read our docs](https://docs.warp.dev/) for platform-specific instructions.
+PaneFleet makes the project workspace the top-level unit:
 
-## Warp Contributions Overview Dashboard
-
-Explore [build.warp.dev](https://build.warp.dev) to:
-- Watch thousands of Oz agents triage issues, write specs, implement changes, and review PRs
-- View top contributors and in-flight features
-- Track your own issues with GitHub sign-in
-- Click into active agent sessions in a web-compiled Warp terminal
-
-## Oz for OSS
-
-Maintaining a popular open-source project? [Apply for Oz credits](https://tally.so/r/LZWxqG) to explore [Oz for OSS](https://github.com/warpdotdev/oz-for-oss).
-
-Oz for OSS is our partner program for bringing the same agentic open-source management workflows used in this repository to select partner repositories. We work directly with maintainers to implement workflows for issue triage, PR review, community management, and contributor coordination in a way that fits each project.
-
-## Licensing
-
-Warp's UI framework (the `warpui_core` and `warpui` crates) are licensed under the [MIT license](LICENSE-MIT).
-
-The rest of the code in this repository is licensed under the [AGPL v3](LICENSE-AGPL).
-
-## Open Source & Contributing
-
-Warp's client codebase is open source and lives in this repository. We welcome community contributions and have designed a lightweight workflow to help new contributors get started. For the full contribution flow, read our [CONTRIBUTING.md](CONTRIBUTING.md) guide.
-
-> [!TIP]
-> **Chat with contributors and the Warp team** in the [`#oss-contributors`](https://warpcommunity.slack.com/archives/C0B0LM8N4DB) Slack channel — a good place for ad-hoc questions, design discussion, and pairing with maintainers. New here? [Join the Warp Slack community](https://go.warp.dev/join-preview) first, then jump into `#oss-contributors`.
-
-### Issue to PR
-
-Before filing, [search existing issues](https://github.com/warpdotdev/warp/issues?q=is%3Aissue+is%3Aopen+sort%3Areactions-%2B1-desc) for your bug or feature request. If nothing exists, [file an issue](https://github.com/warpdotdev/warp/issues/new/choose) using our templates. Security vulnerabilities should be reported privately as described in [CONTRIBUTING.md](CONTRIBUTING.md#reporting-security-issues).
-
-Once filed, a Warp maintainer reviews the issue and may apply a readiness label: [`ready-to-spec`](https://github.com/warpdotdev/warp/issues?q=is%3Aissue+is%3Aopen+label%3Aready-to-spec) signals the design is open for contributors to spec out, and [`ready-to-implement`](https://github.com/warpdotdev/warp/issues?q=is%3Aissue+is%3Aopen+label%3Aready-to-implement) signals the design is settled and code PRs are welcome. Anyone can pick up a labeled issue — mention **@oss-maintainers** on an issue if you'd like it considered for a readiness label.
-
-### Building the Repo Locally
-
-To build and run Warp from source:
-
-```bash
-./script/bootstrap   # platform-specific setup
-./script/run         # build and run Warp
-./script/presubmit   # fmt, clippy, and tests
+```text
+Project workspace
+├── its own horizontal tabs
+├── terminal and CLI-agent sessions
+├── project files and Git context
+└── restored state after an app restart
 ```
 
-See [AGENTS.md](AGENTS.md) for the full engineering guide, including coding style, testing, and platform-specific notes.
+The terminal, editor, file tree, and code-review foundation come from Warp.
+PaneFleet adds a project-centric UI and lifecycle for running multiple local CLI
+agents side by side.
 
-## Joining the Team
+## What works today
 
-Interested in joining the team? See our [open roles](https://www.warp.dev/careers).
+- **Project workspaces** in a persistent left sidebar.
+- **Workspace-scoped tabs**: changing projects changes the complete set of open
+  terminal and agent tabs.
+- **Agent launcher bar** for Terminal, Codex, Claude, OpenCode, and custom agent
+  definitions.
+- **Configurable CLI agents** with executable, arguments, prompt transport,
+  launcher order, and resume adapter settings.
+- **Session persistence and resume** for supported CLI agents instead of
+  reopening an empty terminal with the old title.
+- **Agent activity indicators** that distinguish an active turn from an idle
+  CLI process.
+- **Project explorer** in the right context sidebar, alongside Changes and
+  Review.
+- **File actions** for creating files and folders, refreshing the tree, and
+  collapsing directories.
+- **Git-aware workspace rows** with optional project path and branch metadata.
+- **Native Warp terminal and editor capabilities** inside every workspace.
 
-## Support and Questions
+Bundled resume adapters currently cover:
 
-1. See our [docs](https://docs.warp.dev/) for a comprehensive guide to Warp's features.
-2. Join our [Slack Community](https://go.warp.dev/join-preview) to connect with other users and get help from the Warp team — contributors hang out in [`#oss-contributors`](https://warpcommunity.slack.com/archives/C0B0LM8N4DB).
-3. Try our [Preview build](https://www.warp.dev/download-preview) to test the latest experimental features.
-4. Mention **@oss-maintainers** on any issue to escalate to the team — for example, if you encounter problems with the automated agents.
+| Agent | New session | Resume |
+| --- | --- | --- |
+| Codex | `codex` | `codex resume <session-id>` |
+| Claude | `claude --session-id <uuid>` | `claude --resume <uuid>` |
+| OpenCode | `opencode` | `opencode -s <session-id>` |
 
-## Code of Conduct
+Each CLI must be installed and authenticated independently. PaneFleet does not
+bundle, proxy, or provide accounts for these services.
 
-We ask everyone to be respectful and empathetic. Warp follows the [Code of Conduct](CODE_OF_CONDUCT.md). To report violations, email warp-coc at warp.dev.
+## Interface model
 
-## Open Source Dependencies
+```text
+Application Window
+├── Project Sidebar
+│   └── Workspace Rows
+├── Workspace Surface
+│   ├── Horizontal Tab Strip
+│   ├── Agent Launcher Bar
+│   └── Active Terminal or Agent Pane
+└── Context Sidebar
+    ├── Files
+    ├── Changes
+    └── Review
+```
 
-We'd like to call out a few of the [open source dependencies](https://docs.warp.dev/help/licenses) that have helped Warp to get off the ground:
+The important rule is that a workspace owns its tabs. Selecting another
+workspace replaces the visible tab set; returning restores that workspace's tab
+order, active tab, working directories, and resumable agent sessions.
 
-- [Tokio](https://github.com/tokio-rs/tokio)
-- [NuShell](https://github.com/nushell/nushell)
-- [Fig Completion Specs](https://github.com/withfig/autocomplete)
-- [Warp Server Framework](https://github.com/seanmonstar/warp)
-- [Alacritty](https://github.com/alacritty/alacritty)
-- [Hyper HTTP library](https://github.com/hyperium/hyper)
-- [FontKit](https://github.com/servo/font-kit)
-- [Core-foundation](https://github.com/servo/core-foundation-rs)
-- [Smol](https://github.com/smol-rs/smol)
+The living UI and session-behavior specification is in
+[`specs/panefleet/UI_AND_AGENT_SESSIONS.md`](specs/panefleet/UI_AND_AGENT_SESSIONS.md).
+
+## Privacy and cloud services
+
+PaneFleet is currently local-first:
+
+- Warp telemetry and crash reporting are disabled.
+- Warp authentication, cloud agents, session sharing, and settings sync are
+  disabled.
+- PaneFleet has no account system, subscription service, or cloud sync backend.
+- Workspace and agent metadata are stored locally.
+
+The CLI agents and commands launched inside the terminal may still connect to
+their own providers or any network destination available to them. Their network
+behavior and privacy policies are outside PaneFleet.
+
+If PaneFleet gains optional account or synchronization features later, they
+will use a separate PaneFleet service rather than Warp's production endpoints.
+
+## Status and limitations
+
+PaneFleet is an early development prototype, not a finished distribution.
+
+- macOS is the current development and testing platform.
+- There are no signed or notarized downloads yet; build from source.
+- Windows and Linux support inherited from the upstream codebase has not been
+  adapted or verified for the PaneFleet workbench.
+- Agent resume depends on the installed CLI version and its locally available
+  session history.
+- Some inherited Warp implementation details and settings are still being
+  separated from the PaneFleet product surface.
+- Storage formats and UI behavior may change without migration guarantees while
+  the prototype is evolving.
+
+Use it on non-critical workspaces and keep normal Git backups.
+
+## Build on macOS
+
+### Prerequisites
+
+- macOS
+- Xcode and its first-launch components
+- Rust via [rustup](https://rustup.rs/)
+- Git LFS
+
+The repository contains a bootstrap script inherited from Warp. It installs the
+full upstream development toolchain, which is larger than PaneFleet itself
+currently needs.
+
+```bash
+git clone https://github.com/masyanru/panefleet.git
+cd panefleet
+
+./script/bootstrap --skip-common-skills --skip-gcloud-auth
+cargo run -p warp --bin panefleet
+```
+
+If the development dependencies are already installed, the shorter path is:
+
+```bash
+git lfs install
+git lfs pull
+cargo run -p warp --bin panefleet
+```
+
+The first build is large because PaneFleet compiles the complete terminal,
+editor, and GPU UI stack.
+
+### Build an app bundle
+
+After installing `cargo-bundle`:
+
+```bash
+cargo bundle --bin panefleet
+open target/debug/bundle/osx/PaneFleet.app
+```
+
+The resulting application is locally built and unsigned.
+
+## Development
+
+Useful focused checks:
+
+```bash
+cargo fmt --all -- --check
+cargo check -p warp --bin panefleet
+cargo test -p warp panefleet
+```
+
+The full upstream engineering and testing guide remains available in
+[`AGENTS.md`](AGENTS.md). PaneFleet-specific product behavior should be updated
+in the living specification before or alongside implementation changes.
+
+Issues and focused pull requests are welcome:
+
+- [Report a PaneFleet bug](https://github.com/masyanru/panefleet/issues/new)
+- [Browse open issues](https://github.com/masyanru/panefleet/issues)
+
+## Relationship to Warp
+
+PaneFleet is an independent fork of
+[`warpdotdev/warp`](https://github.com/warpdotdev/warp). It is not an official
+Warp product and is not affiliated with or endorsed by Warp.
+
+The project intentionally reuses Warp's terminal emulator, editor, GPU UI
+framework, file explorer, and code-review surfaces while exploring a different
+project- and agent-oriented workflow. The Git history and upstream remote are
+preserved so changes and attribution remain traceable.
+
+## License
+
+PaneFleet follows the licensing structure of the upstream repository:
+
+- `warpui_core` and `warpui` are available under the
+  [MIT License](LICENSE-MIT).
+- The rest of the repository is available under the
+  [GNU Affero General Public License v3.0](LICENSE-AGPL).
+
+PaneFleet changes follow the license of the files and crates they modify.
+Existing copyright and third-party notices remain in their respective files.

@@ -374,10 +374,47 @@ impl CLIAgent {
     /// env-var assignments (e.g. `FOO=1 claude` → `claude`).
     /// Otherwise falls back to a simple whitespace split.
     fn extract_first_command(command: &str, escape_char: Option<EscapeChar>) -> Option<String> {
-        match escape_char {
+        let first_command = match escape_char {
             Some(esc) => top_level_command(command, esc),
             None => command.split_whitespace().next().map(String::from),
+        }?;
+
+        if first_command.rsplit('/').next() != Some("env") {
+            return Some(first_command);
         }
+
+        // PaneFleet deliberately launches nested Codex sessions through
+        // `env -u CODEX_THREAD_ID -u CODEX_CI codex …`. `env` is a real command rather than a
+        // shell assignment, so the regular top-level parser stops there. Walk the small, portable
+        // subset of `env` syntax we use and return the wrapped executable for CLI-agent detection.
+        let tokens = shell_words::split(command).ok()?;
+        let mut index = 1;
+        while index < tokens.len() {
+            let token = &tokens[index];
+            match token.as_str() {
+                "--" => {
+                    index += 1;
+                    break;
+                }
+                "-u" | "--unset" | "-C" | "--chdir" => {
+                    index += 2;
+                }
+                "-i" | "--ignore-environment" | "-0" | "--null" => {
+                    index += 1;
+                }
+                _ if token.starts_with("--unset=") || token.starts_with("--chdir=") => {
+                    index += 1;
+                }
+                _ if token.contains('=') && !token.starts_with('=') => {
+                    index += 1;
+                }
+                _ if token.starts_with('-') => {
+                    index += 1;
+                }
+                _ => break,
+            }
+        }
+        tokens.get(index).cloned()
     }
 
     /// Returns whether the command's executable name identifies this CLI agent.

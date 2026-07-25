@@ -6,17 +6,17 @@ use serde::{Deserialize, Serialize};
 
 use crate::terminal::CLIAgent;
 
-pub(super) const PANEFLEET_AGENT_DEFINITIONS_VERSION: u32 = 1;
+pub(crate) const PANEFLEET_AGENT_DEFINITIONS_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub(super) enum PaneFleetPromptTransport {
+pub(crate) enum PaneFleetPromptTransport {
     Argv,
     Stdin,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
-pub(super) struct PaneFleetAgentDefinition {
+pub(crate) struct PaneFleetAgentDefinition {
     pub id: String,
     pub label: String,
     pub agent: CLIAgent,
@@ -35,7 +35,7 @@ pub(super) struct PaneFleetAgentDefinition {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
-pub(super) struct PaneFleetAgentDefinitions {
+pub(crate) struct PaneFleetAgentDefinitions {
     pub version: u32,
     #[serde(default)]
     pub definitions: Vec<PaneFleetAgentDefinition>,
@@ -150,6 +150,13 @@ impl PaneFleetAgentDefinitions {
         self.enabled_launchers()
             .into_iter()
             .find(|definition| definition.agent == agent)
+    }
+
+    pub fn bundled_default(id: &str) -> Option<PaneFleetAgentDefinition> {
+        Self::bundled_defaults()
+            .definitions
+            .into_iter()
+            .find(|definition| definition.id == id)
     }
 
     pub fn write_atomic(&self, path: &Path) -> io::Result<()> {

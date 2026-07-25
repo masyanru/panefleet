@@ -37,6 +37,7 @@ use super::features_page::FeaturesPageView;
 use super::keybindings::KeybindingsView;
 use super::main_page::MainSettingsPageView;
 use super::mcp_servers_page::MCPServersSettingsPageView;
+use super::panefleet_agents_page::PaneFleetAgentsSettingsPageView;
 use super::privacy_page::PrivacyPageView;
 use super::referrals_page::ReferralsPageView;
 use super::scripting_page::ScriptingSettingsPageView;
@@ -120,6 +121,7 @@ pub enum SettingsPageViewHandle {
     BillingAndUsage(ViewHandle<BillingAndUsageDispatchView>),
     MCPServers(ViewHandle<MCPServersSettingsPageView>),
     WarpDrive(ViewHandle<WarpDriveSettingsPageView>),
+    PaneFleetAgents(ViewHandle<PaneFleetAgentsSettingsPageView>),
 }
 
 impl SettingsPageViewHandle {
@@ -144,6 +146,7 @@ impl SettingsPageViewHandle {
             BillingAndUsage(view_handle) => ChildView::new(view_handle).finish(),
             MCPServers(view_handle) => ChildView::new(view_handle).finish(),
             WarpDrive(view_handle) => ChildView::new(view_handle).finish(),
+            PaneFleetAgents(view_handle) => ChildView::new(view_handle).finish(),
         }
     }
 }

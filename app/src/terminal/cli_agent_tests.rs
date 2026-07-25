@@ -297,6 +297,32 @@ fn test_detect_with_arguments() {
 }
 
 #[test]
+fn test_detect_agent_wrapped_by_env() {
+    App::test((), |mut app| async move {
+        app.update(|ctx| {
+            assert_eq!(
+                CLIAgent::detect(
+                    "env -u CODEX_THREAD_ID -u CODEX_CI codex resume session-id",
+                    None,
+                    None,
+                    ctx,
+                ),
+                Some(CLIAgent::Codex),
+            );
+            assert_eq!(
+                CLIAgent::detect(
+                    "/usr/bin/env --unset=CODEX_THREAD_ID CLAUDE_CONFIG_DIR=/tmp/claude claude",
+                    None,
+                    None,
+                    ctx,
+                ),
+                Some(CLIAgent::Claude),
+            );
+        });
+    });
+}
+
+#[test]
 fn test_detect_vibe_acp_binary() {
     // The mistral-vibe package ships a `vibe-acp` ACP-mode binary alongside
     // the user-facing `vibe` TUI. Both must be detected as the same agent.

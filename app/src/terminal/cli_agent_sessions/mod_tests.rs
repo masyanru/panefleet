@@ -7,6 +7,9 @@ use super::{
 };
 use crate::ai::blocklist::{InputConfig, InputType};
 use crate::terminal::CLIAgent;
+use std::cell::RefCell;
+use std::rc::Rc;
+use warpui::{App, EntityId};
 
 #[test]
 fn parse_stop_notification() {
@@ -105,6 +108,79 @@ fn parse_idle_prompt_notification() {
         notif.payload.summary.as_deref(),
         Some("Claude is waiting for your input")
     );
+}
+
+#[test]
+fn idle_prompt_emits_session_updated_for_resume_confirmation() {
+    App::test((), |mut app| async move {
+        let model = app.add_model(|_| CLIAgentSessionsModel::new());
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let captured_events = events.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_model(&model, move |_, event, _| {
+                captured_events.borrow_mut().push(event.clone());
+            });
+        });
+
+        let terminal_view_id = EntityId::new();
+        model.update(&mut app, |model, ctx| {
+            model.set_session(
+                terminal_view_id,
+                CLIAgentSession {
+                    agent: CLIAgent::Claude,
+                    status: CLIAgentSessionStatus::InProgress,
+                    session_context: CLIAgentSessionContext::default(),
+                    input_state: CLIAgentInputState::Closed,
+                    should_auto_toggle_input: false,
+                    listener: None,
+                    plugin_version: None,
+                    remote_host: None,
+                    draft_text: None,
+                    custom_command_prefix: None,
+                    received_rich_notification: false,
+                },
+                ctx,
+            );
+        });
+        events.borrow_mut().clear();
+
+        let event = CLIAgentEvent {
+            source: CLIAgentEventSource::RichPlugin,
+            v: 1,
+            agent: CLIAgent::Claude,
+            event: CLIAgentEventType::IdlePrompt,
+            session_id: Some("resumed-session".to_string()),
+            cwd: Some("/tmp/project".to_string()),
+            project: Some("project".to_string()),
+            payload: CLIAgentEventPayload::default(),
+        };
+        model.update(&mut app, |model, ctx| {
+            model.update_from_event(terminal_view_id, &event, ctx);
+        });
+
+        model.read(&app, |model, _| {
+            assert_eq!(
+                model
+                    .session(terminal_view_id)
+                    .and_then(|session| session.session_context.session_id.as_deref()),
+                Some("resumed-session")
+            );
+        });
+        assert_eq!(
+            events
+                .borrow()
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    super::CLIAgentSessionsModelEvent::SessionUpdated {
+                        terminal_view_id: event_terminal_view_id,
+                        agent: CLIAgent::Claude,
+                    } if *event_terminal_view_id == terminal_view_id
+                ))
+                .count(),
+            1
+        );
+    });
 }
 
 #[test]

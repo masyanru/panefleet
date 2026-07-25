@@ -976,6 +976,11 @@ enum PaneFleetAgentRestoreState {
     Restoring {
         agent: crate::terminal::CLIAgent,
     },
+    /// The resume command started the expected agent. Keep validating later rich events, but no
+    /// longer cover the restored terminal with a progress banner.
+    Confirming {
+        agent: crate::terminal::CLIAgent,
+    },
     Failed {
         agent: crate::terminal::CLIAgent,
         message: String,
@@ -3897,9 +3902,30 @@ impl Workspace {
         {
             let observed_session = CLIAgentSessionsModel::as_ref(ctx)
                 .session(event.terminal_view_id())
-                .map(|session| (session.agent, session.session_context.session_id.clone()));
+                .map(|session| {
+                    (
+                        session.agent,
+                        session.session_context.session_id.clone(),
+                        session.received_rich_notification,
+                    )
+                });
 
-            if let Some((agent, observed_session_id)) = observed_session {
+            if let Some((agent, observed_session_id, received_rich_notification)) = observed_session
+            {
+                if matches!(event, CLIAgentSessionsModelEvent::Started { .. })
+                    && matches!(
+                        self.panefleet_agent_restore_states.get(&pane_group_id),
+                        Some(PaneFleetAgentRestoreState::Restoring {
+                            agent: restoring_agent
+                        }) if *restoring_agent == agent
+                    )
+                {
+                    self.panefleet_agent_restore_states.insert(
+                        pane_group_id,
+                        PaneFleetAgentRestoreState::Confirming { agent },
+                    );
+                }
+
                 let saved_session = self
                     .panefleet_tab_sessions
                     .entry(pane_group_id)
@@ -3910,26 +3936,44 @@ impl Workspace {
                     saved_session.provider_session_id = observed_session_id.clone();
                 }
 
-                if let Some(PaneFleetAgentRestoreState::Restoring { .. }) =
-                    self.panefleet_agent_restore_states.get(&pane_group_id)
-                    && let Some(observed_session_id) = observed_session_id
+                if let Some(
+                    PaneFleetAgentRestoreState::Restoring { .. }
+                    | PaneFleetAgentRestoreState::Confirming { .. },
+                ) = self.panefleet_agent_restore_states.get(&pane_group_id)
                 {
-                    if expected_session_id.as_deref() == Some(observed_session_id.as_str()) {
-                        self.panefleet_agent_restore_states.remove(&pane_group_id);
-                    } else {
-                        self.panefleet_agent_restore_states.insert(
-                            pane_group_id,
-                            PaneFleetAgentRestoreState::Failed {
-                                agent,
-                                message: "The CLI resumed a different session than requested"
-                                    .to_string(),
-                            },
-                        );
+                    match observed_session_id {
+                        Some(observed_session_id)
+                            if expected_session_id.as_deref()
+                                == Some(observed_session_id.as_str()) =>
+                        {
+                            self.panefleet_agent_restore_states.remove(&pane_group_id);
+                        }
+                        Some(_) => {
+                            self.panefleet_agent_restore_states.insert(
+                                pane_group_id,
+                                PaneFleetAgentRestoreState::Failed {
+                                    agent,
+                                    message: "The CLI resumed a different session than requested"
+                                        .to_string(),
+                                },
+                            );
+                        }
+                        // Some providers (including current Claude Code hooks) confirm that the
+                        // resumed agent reached its idle prompt without exposing a provider
+                        // session ID. A rich notification is still a reliable completion signal:
+                        // it can only arrive after the requested resume command has started the
+                        // agent and its plugin hooks are active.
+                        None if received_rich_notification => {
+                            self.panefleet_agent_restore_states.remove(&pane_group_id);
+                        }
+                        None => {}
                     }
                 }
             } else if matches!(event, CLIAgentSessionsModelEvent::Ended { .. })
-                && let Some(PaneFleetAgentRestoreState::Restoring { agent }) =
-                    self.panefleet_agent_restore_states.remove(&pane_group_id)
+                && let Some(
+                    PaneFleetAgentRestoreState::Restoring { agent }
+                    | PaneFleetAgentRestoreState::Confirming { agent },
+                ) = self.panefleet_agent_restore_states.remove(&pane_group_id)
             {
                 self.panefleet_agent_restore_states.insert(
                     pane_group_id,
@@ -9040,34 +9084,49 @@ impl Workspace {
             );
         }
 
-        self.tabs = active_state.tabs;
-        self.tab_mru_order = active_state.tab_mru_order;
-        self.tab_groups = active_state.tab_groups;
-        self.active_tab_index = active_state
-            .active_tab_index
-            .min(self.tabs.len().saturating_sub(1));
-
         if let Some(active_workspace) = active_workspace {
             let restored_active_tab_index = active_workspace.active_tab_index;
-            for (tab_index, persisted_tab) in active_workspace.tabs.into_iter().enumerate() {
-                if tab_index >= self.tabs.len() {
-                    self.add_tab_with_pane_layout(
-                        PanesLayout::SingleTerminal(Box::new(NewTerminalOptions {
-                            initial_directory: Some(active_project.clone()),
-                            hide_homepage: true,
-                            ..Default::default()
-                        })),
-                        Arc::new(HashMap::new()),
-                        persisted_tab.title.clone(),
+            let working_directories_model = self.working_directories_model.clone();
+            Self::dispose_panefleet_project_state(active_state, &working_directories_model, ctx);
+            self.tabs.clear();
+            self.active_tab_index = 0;
+            self.tab_mru_order.clear();
+            self.tab_groups.clear();
+            self.panefleet_active_project = Some(active_project.clone());
+
+            let tabs = if active_workspace.tabs.is_empty() {
+                vec![PaneFleetPersistedTab::terminal(None)]
+            } else {
+                active_workspace.tabs
+            };
+            for persisted_tab in tabs {
+                self.add_tab_with_pane_layout(
+                    PanesLayout::SingleTerminal(Box::new(NewTerminalOptions {
+                        initial_directory: Some(active_project.clone()),
+                        hide_homepage: true,
+                        ..Default::default()
+                    })),
+                    Arc::new(HashMap::new()),
+                    persisted_tab.title.clone(),
+                    ctx,
+                );
+                if let Some(agent_session) = persisted_tab.agent_session {
+                    self.restore_panefleet_agent_at_tab_index(
+                        self.tabs.len().saturating_sub(1),
+                        agent_session,
                         ctx,
                     );
-                }
-                if let Some(agent_session) = persisted_tab.agent_session {
-                    self.restore_panefleet_agent_at_tab_index(tab_index, agent_session, ctx);
                 }
             }
             self.active_tab_index =
                 restored_active_tab_index.min(self.tabs.len().saturating_sub(1));
+        } else {
+            self.tabs = active_state.tabs;
+            self.tab_mru_order = active_state.tab_mru_order;
+            self.tab_groups = active_state.tab_groups;
+            self.active_tab_index = active_state
+                .active_tab_index
+                .min(self.tabs.len().saturating_sub(1));
         }
 
         self.panefleet_active_project = Some(active_project.clone());
@@ -15809,6 +15868,12 @@ impl Workspace {
                 self.open_custom_router_file(path, ctx);
                 #[cfg(not(feature = "local_fs"))]
                 let _ = path;
+            }
+            SettingsViewEvent::PaneFleetAgentDefinitionsChanged => {
+                self.panefleet_agent_definitions = PaneFleetAgentDefinitions::load_or_default(
+                    &Self::panefleet_agent_definitions_path(),
+                );
+                ctx.notify();
             }
         }
     }
@@ -22839,7 +22904,7 @@ impl Workspace {
                 appearance,
                 icons::Icon::Gear,
                 &self.mouse_states.panefleet_launcher_settings,
-                WorkspaceAction::ShowSettings,
+                WorkspaceAction::ShowSettingsPage(SettingsSection::PaneFleetAgents),
                 "Settings".to_string(),
                 self.cached_keybindings[SHOW_SETTINGS_KEYBINDING_NAME].clone(),
                 false,
@@ -22908,6 +22973,7 @@ impl Workspace {
                 Fill::warn(),
                 format!("Restoring {} session…", agent.display_name()),
             ),
+            PaneFleetAgentRestoreState::Confirming { .. } => return None,
             PaneFleetAgentRestoreState::Failed { agent, message } => (
                 Icon::Warning,
                 Fill::error(),

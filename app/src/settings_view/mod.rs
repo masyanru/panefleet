@@ -15,6 +15,7 @@ use keybindings::KeybindingsView;
 use main_page::{MainPageAction, MainSettingsPageEvent, MainSettingsPageView};
 use mcp_servers_page::MCPServersSettingsPageView;
 use nav::{SettingsNavItem, SettingsUmbrella};
+use panefleet_agents_page::{PaneFleetAgentsSettingsPageEvent, PaneFleetAgentsSettingsPageView};
 use pathfinder_geometry::vector::Vector2F;
 use privacy_page::{PrivacyPageView, PrivacyPageViewEvent};
 use referrals_page::{ReferralsPageEvent, ReferralsPageView};
@@ -97,6 +98,7 @@ pub mod mcp_servers;
 pub mod mcp_servers_page;
 mod nav;
 pub mod pane_manager;
+mod panefleet_agents_page;
 mod platform;
 mod platform_page;
 mod privacy;
@@ -239,6 +241,7 @@ pub enum SettingsViewEvent {
     OpenProjectRulesPane {
         rule_paths: Vec<PathBuf>,
     },
+    PaneFleetAgentDefinitionsChanged,
 }
 
 /// Different navigation sections within the settings view
@@ -269,6 +272,7 @@ pub enum SettingsSection {
     AgentProfiles,
     AgentMCPServers,
     Knowledge,
+    PaneFleetAgents,
     ThirdPartyCLIAgents,
     /// Internal backing-page identifier for CodeSettingsPageView. Multiple subpages
     /// (CodeIndexing, EditorAndCodeReview) share this single backing page,
@@ -300,6 +304,7 @@ impl Display for SettingsSection {
             SettingsSection::AgentProfiles => write!(f, "Profiles"),
             SettingsSection::AgentMCPServers => write!(f, "MCP servers"),
             SettingsSection::Knowledge => write!(f, "Knowledge"),
+            SettingsSection::PaneFleetAgents => write!(f, "CLI agents"),
             SettingsSection::ThirdPartyCLIAgents => write!(f, "Third party CLI agents"),
             SettingsSection::CodeIndexing => write!(f, "Indexing and projects"),
             SettingsSection::EditorAndCodeReview => write!(f, "Editor and Code Review"),
@@ -324,6 +329,7 @@ impl SettingsSection {
                 | Self::AgentProfiles
                 | Self::AgentMCPServers
                 | Self::Knowledge
+                | Self::PaneFleetAgents
                 | Self::ThirdPartyCLIAgents
         )
     }
@@ -344,6 +350,8 @@ impl SettingsSection {
         match self {
             // AgentMCPServers renders the standalone MCPServers page directly.
             Self::AgentMCPServers => Self::MCPServers,
+            // PaneFleet's CLI agent editor is its own backing page.
+            Self::PaneFleetAgents => Self::PaneFleetAgents,
             // All other AI subpages render within the AI page.
             s if s.is_ai_subpage() => Self::AI,
             // Code subpages render within the Code page.
@@ -361,7 +369,7 @@ impl SettingsSection {
             Self::AgentProfiles,
             Self::AgentMCPServers,
             Self::Knowledge,
-            Self::ThirdPartyCLIAgents,
+            Self::PaneFleetAgents,
         ]
     }
 
@@ -402,6 +410,7 @@ impl FromStr for SettingsSection {
             "Profiles" | "AgentProfiles" => Ok(Self::AgentProfiles),
             "MCP servers" | "AgentMCPServers" => Ok(Self::AgentMCPServers),
             "Knowledge" => Ok(Self::Knowledge),
+            "CLI agents" | "PaneFleetAgents" => Ok(Self::PaneFleetAgents),
             "Third party CLI agents" | "ThirdPartyCLIAgents" => Ok(Self::ThirdPartyCLIAgents),
             "Indexing and projects" | "CodeIndexing" => Ok(Self::CodeIndexing),
             "Editor and Code Review" | "EditorAndCodeReview" => Ok(Self::EditorAndCodeReview),
@@ -1109,6 +1118,7 @@ macro_rules! update_page {
             SettingsPageViewHandle::BillingAndUsage(handle) => $ctx.update_view(handle, $update),
             SettingsPageViewHandle::MCPServers(handle) => $ctx.update_view(handle, $update),
             SettingsPageViewHandle::WarpDrive(handle) => $ctx.update_view(handle, $update),
+            SettingsPageViewHandle::PaneFleetAgents(handle) => $ctx.update_view(handle, $update),
         }
     };
 }
@@ -1194,6 +1204,12 @@ impl SettingsView {
         let ai_page_handle_for_nav = ai_page_handle.clone();
         ctx.subscribe_to_view(&ai_page_handle, |me, _, event, ctx| {
             me.handle_ai_page_event(event, ctx);
+        });
+
+        let panefleet_agents_page_handle =
+            ctx.add_typed_action_view(PaneFleetAgentsSettingsPageView::new);
+        ctx.subscribe_to_view(&panefleet_agents_page_handle, |me, _, event, ctx| {
+            me.handle_panefleet_agents_page_event(event, ctx);
         });
 
         // Environments page
@@ -1305,6 +1321,7 @@ impl SettingsView {
         let mut settings_pages = vec![
             SettingsPage::new(main_page_handle),
             SettingsPage::new(ai_page_handle),
+            SettingsPage::new(panefleet_agents_page_handle),
             billing_and_usage_page,
             SettingsPage::new(code_page_handle),
             SettingsPage::new(teams_page_handle),
@@ -1491,8 +1508,11 @@ impl SettingsView {
                     // widget set and run the filter to get a subpage-specific result.
                     self.subpage_filter.clear();
                     for &subpage_section in SettingsSection::ai_subpages() {
-                        if subpage_section == SettingsSection::AgentMCPServers {
-                            // AgentMCPServers has its own backing page; handled below.
+                        if matches!(
+                            subpage_section,
+                            SettingsSection::AgentMCPServers | SettingsSection::PaneFleetAgents
+                        ) {
+                            // These subpages have their own backing pages; handled below.
                             continue;
                         }
                         if let Some(subpage) = AISubpage::from_section(subpage_section) {
@@ -1558,7 +1578,10 @@ impl SettingsView {
                 if is_search_active {
                     let current = self.current_settings_page;
                     if current.is_ai_subpage()
-                        && current != SettingsSection::AgentMCPServers
+                        && !matches!(
+                            current,
+                            SettingsSection::AgentMCPServers | SettingsSection::PaneFleetAgents
+                        )
                         && let Some(subpage) = AISubpage::from_section(current)
                     {
                         self.ai_page_handle.update(ctx, |view, ctx| {
@@ -1981,6 +2004,18 @@ impl SettingsView {
         }
     }
 
+    fn handle_panefleet_agents_page_event(
+        &mut self,
+        event: &PaneFleetAgentsSettingsPageEvent,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        match event {
+            PaneFleetAgentsSettingsPageEvent::DefinitionsChanged => {
+                ctx.emit(SettingsViewEvent::PaneFleetAgentDefinitionsChanged);
+            }
+        }
+    }
+
     fn handle_code_page_event(
         &mut self,
         event: &CodeSettingsPageEvent,
@@ -2073,7 +2108,12 @@ impl SettingsView {
         // and auto-expand the umbrella containing it.
         if section.is_subpage() {
             // AI subpages: update the AI page's subpage mode.
-            if section.is_ai_subpage() && section != SettingsSection::AgentMCPServers {
+            if section.is_ai_subpage()
+                && !matches!(
+                    section,
+                    SettingsSection::AgentMCPServers | SettingsSection::PaneFleetAgents
+                )
+            {
                 let subpage = AISubpage::from_section(section);
                 self.ai_page_handle.update(ctx, |view, ctx| {
                     view.set_active_subpage(subpage, ctx);
@@ -2150,6 +2190,7 @@ impl SettingsView {
             SettingsPageViewHandle::MCPServers(v) => v.as_ref(app).should_render(app),
             SettingsPageViewHandle::Code(v) => v.as_ref(app).should_render(app),
             SettingsPageViewHandle::WarpDrive(v) => v.as_ref(app).should_render(app),
+            SettingsPageViewHandle::PaneFleetAgents(v) => v.as_ref(app).should_render(app),
         }
     }
 
@@ -2258,7 +2299,10 @@ impl SettingsView {
     ) {
         let current = self.current_settings_page;
         if current.is_ai_subpage()
-            && current != SettingsSection::AgentMCPServers
+            && !matches!(
+                current,
+                SettingsSection::AgentMCPServers | SettingsSection::PaneFleetAgents
+            )
             && AISubpage::from_section(current).is_some()
         {
             self.ai_page_handle.update(ctx, |view, ctx| {

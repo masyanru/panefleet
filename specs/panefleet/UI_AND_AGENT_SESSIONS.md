@@ -133,6 +133,9 @@ Application Window
 - маленькая иконка слева от каждого label;
 - клик запускает новую вкладку в текущем workspace;
 - рабочая директория новой вкладки равна корню текущего workspace;
+- при восстановлении активного workspace вкладки реконструируются с
+  `initial_directory = workspace root`; нативная стартовая вкладка Warp из
+  каталога процесса не должна переиспользоваться как вкладка другого проекта;
 - порядок и видимость launchers берутся из Agent Definitions;
 - settings открывает экран конфигурации агентов;
 - Terminal остаётся встроенным системным launcher и не удаляется.
@@ -201,6 +204,12 @@ Settings navigation | Agent definitions | Selected agent editor
 Опасные флаги вроде `--dangerously-skip-permissions` и
 `--dangerously-bypass-approvals-and-sandbox` должны быть видны пользователю в
 редакторе и не добавляться скрыто.
+
+Текущий реализованный редактор включает Label, Resume adapter, Executable,
+Launch arguments, Prompt-only arguments, Prompt transport, Launcher order,
+Enabled in launcher, Add agent, Delete, Restore default и Save. Пользовательская
+иконка, Environment, Permission mode и произвольный resume template остаются
+следующим расширением; built-in resume поведение пока выбирается через adapter.
 
 ## 6. Точное восстановление Agent Session
 
@@ -285,6 +294,13 @@ shell-командами.
 9. При ошибке оставить вкладку на месте с объяснением и действиями
    `Retry`, `Open transcript`, `Start new session`, `Close tab`.
 
+Командный detector должен видеть агента и за системным wrapper, например
+`env -u CODEX_THREAD_ID -u CODEX_CI codex resume <id>`. После старта ожидаемого
+процесса прогресс-баннер скрывается, но внутреннее состояние `Confirming`
+остаётся до plugin event. Совпавший session ID завершает проверку; другой ID
+переводит вкладку в `Failed`. Для provider hook без session ID допустим
+best-effort confirm по rich-событию, полученному после запуска resume-команды.
+
 ## 7. Состояния вкладки агента
 
 ```text
@@ -345,11 +361,12 @@ Restoring  → InProgress → Blocked → InProgress → Success
 ### P1 — конфигурация CLI
 
 - [x] Добавить модель Agent Definition.
-- [ ] Сделать Settings → Agents.
+- [x] Сделать Settings → Agents.
 - [x] Подключить launcher к сохранённым определениям.
-- [ ] Добавить bundled defaults и Restore default. Bundled defaults уже есть,
-      действие Restore default ещё не подключено к UI.
-- [ ] Добавить пользовательские определения и валидацию команд.
+- [x] Добавить bundled defaults и Restore default.
+- [x] Добавить пользовательские определения и валидацию команд.
+- [ ] Добавить пользовательские иконки, Environment, Permission mode и
+      произвольные resume templates.
 
 ### P2 — workspace activity UI
 

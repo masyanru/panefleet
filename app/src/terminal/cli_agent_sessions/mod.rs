@@ -388,6 +388,13 @@ impl CLIAgentSessionsModel {
             session.session_context.project = project.or(session.session_context.project.take());
             session.session_context.session_id =
                 session_id.or(session.session_context.session_id.take());
+            // Command detection often creates the session before the rich plugin reports its
+            // identity. Notify subscribers when the listener upgrades that existing session so
+            // restore flows can confirm that the requested provider session was resumed.
+            ctx.emit(CLIAgentSessionsModelEvent::SessionUpdated {
+                terminal_view_id,
+                agent,
+            });
             return;
         }
 
@@ -457,6 +464,7 @@ impl CLIAgentSessionsModel {
             CLIAgentEventType::SessionStart
                 | CLIAgentEventType::PromptSubmit
                 | CLIAgentEventType::ToolComplete
+                | CLIAgentEventType::IdlePrompt
         ) {
             ctx.emit(CLIAgentSessionsModelEvent::SessionUpdated {
                 terminal_view_id,

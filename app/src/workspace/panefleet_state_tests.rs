@@ -95,3 +95,16 @@ fn quotes_opencode_session_id_before_building_shell_command() {
         Ok("opencode -s 'session with spaces'".to_string())
     );
 }
+
+#[test]
+fn rejects_warp_tui_resume_without_an_adapter() {
+    let session = PaneFleetPersistedAgentSession::new(
+        CLIAgent::WarpTui,
+        Some("warp-tui-session".to_string()),
+    );
+
+    assert_eq!(
+        session.resume_command(),
+        Err(PaneFleetResumeError::UnsupportedAgent(CLIAgent::WarpTui))
+    );
+}

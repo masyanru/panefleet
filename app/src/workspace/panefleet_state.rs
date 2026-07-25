@@ -138,6 +138,7 @@ impl PaneFleetPersistedAgentSession {
             | CLIAgent::Hermes
             | CLIAgent::Vibe
             | CLIAgent::Antigravity
+            | CLIAgent::WarpTui
             | CLIAgent::Unknown => Err(PaneFleetResumeError::UnsupportedAgent(self.agent)),
         }
     }

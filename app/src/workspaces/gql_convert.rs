@@ -1141,6 +1141,9 @@ impl From<GqlUser> for WorkspacesMetadataResponse {
             })
             .map(|gql_workspace| {
                 let mut workspace = gql_workspace.into();
+                // TODO(isaiah): this is a temporary measure while the client doesn't support many teams per user.
+                // Workspace admins technically have access to every team in their workspace, but when they're on the
+                // client, they should only see the 1 team they're formally a part of.
                 order_authenticated_teams_first(&mut workspace, user_uid);
                 workspace
             })

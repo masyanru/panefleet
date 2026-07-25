@@ -213,9 +213,9 @@ pub use crate::themes::default_themes::{dark_theme, light_theme};
 pub use crate::throttle::throttle;
 pub use crate::tui::{
     TuiMcpAction, TuiMcpConfigState, TuiMcpManager, TuiMcpManagerEvent, TuiMcpServerId,
-    TuiMcpServerSnapshot, TuiMcpServerStatus, TuiMcpSnapshot, TuiMcpTransport, log_out_tui,
+    TuiMcpServerSnapshot, TuiMcpServerStatus, TuiMcpSnapshot, TuiMcpTransport, TuiUserInfoManager,
+    TuiUserInfoManagerEvent, TuiUserInfoSnapshot, log_out_tui,
 };
-pub use crate::tui::{TuiUserInfoManager, TuiUserInfoManagerEvent, TuiUserInfoSnapshot};
 #[cfg(any(test, feature = "test-util"))]
 pub use crate::tui_test_support::{
     blocklist_ai_history_model_with_queries, queue_tui_permission_action,

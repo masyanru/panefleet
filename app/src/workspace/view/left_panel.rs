@@ -123,7 +123,15 @@ impl PaneFleetWorkspaceActivity {
             Self::Blocked { agent_names } => ("waiting for input", agent_names),
             Self::Failed { agent_names } => ("failed", agent_names),
         };
-        format!("{}: {verb}", agent_names.join(", "))
+        if agent_names.len() > 1 {
+            format!(
+                "{} agents {verb}: {}",
+                agent_names.len(),
+                agent_names.join(", ")
+            )
+        } else {
+            format!("{}: {verb}", agent_names.join(", "))
+        }
     }
 }
 
@@ -1173,7 +1181,7 @@ impl LeftPanelView {
         };
 
         let indicator = match activity {
-            PaneFleetWorkspaceActivity::Working { .. } => {
+            PaneFleetWorkspaceActivity::Working { agent_names } => {
                 let mut dots = Flex::row()
                     .with_main_axis_size(MainAxisSize::Min)
                     .with_cross_axis_alignment(CrossAxisAlignment::Center)
@@ -1185,6 +1193,17 @@ impl LeftPanelView {
                         internal_colors::fg_overlay_3(theme).into()
                     };
                     dots.add_child(dot(fill, 4.));
+                }
+                if agent_names.len() > 1 {
+                    dots.add_child(
+                        Text::new_inline(
+                            agent_names.len().to_string(),
+                            appearance.ui_font_family(),
+                            10.,
+                        )
+                        .with_color(theme.sub_text_color(theme.background()).into())
+                        .finish(),
+                    );
                 }
                 dots.finish()
             }
@@ -1201,7 +1220,7 @@ impl LeftPanelView {
             .button(ButtonVariant::Text, mouse_state)
             .with_custom_label(
                 ConstrainedBox::new(indicator)
-                    .with_width(20.)
+                    .with_width(28.)
                     .with_height(14.)
                     .finish(),
             )

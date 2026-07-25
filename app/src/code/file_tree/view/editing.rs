@@ -125,6 +125,56 @@ impl FileTreeView {
         });
     }
 
+    /// Creates an inline editable directory placeholder below the given directory.
+    pub(super) fn create_new_directory(
+        &mut self,
+        id: &FileTreeIdentifier,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let Some(root_dir) = self.root_directories.get_mut(&id.root) else {
+            return;
+        };
+        let (path, depth) = match root_dir.items.get(id.index) {
+            Some(FileTreeItem::DirectoryHeader {
+                directory, depth, ..
+            }) => (directory.path.clone(), *depth),
+            _ => return,
+        };
+
+        if !self.is_folder_expanded(&id.root, &path) {
+            self.toggle_folder_expansion(&id.root, &path, ctx);
+        }
+
+        let new_item_index = id.index + 1;
+        let Some(root_dir) = self.root_directories.get_mut(&id.root) else {
+            return;
+        };
+        root_dir.items.insert(
+            new_item_index,
+            FileTreeItem::DirectoryHeader {
+                directory: repo_metadata::file_tree_store::FileTreeDirectoryEntryState {
+                    path: Arc::new(path.join("new_folder")),
+                    ignored: false,
+                    loaded: true,
+                },
+                depth: depth + 1,
+                mouse_state_handle: MouseStateHandle::default(),
+                draggable_state: warpui::elements::DraggableState::default(),
+            },
+        );
+
+        let new_id = FileTreeIdentifier {
+            root: id.root.clone(),
+            index: new_item_index,
+        };
+        self.select_id(&new_id, ctx);
+        ctx.focus(&self.editor_view);
+        self.pending_edit = Some(PendingEdit {
+            id: new_id,
+            kind: PendingEditKind::CreateNewDirectory,
+        });
+    }
+
     /// Starts a rename edit on the item at the given identifier.
     pub(super) fn start_rename(&mut self, id: &FileTreeIdentifier, ctx: &mut ViewContext<Self>) {
         let Some(root_dir) = self.root_directories.get(&id.root) else {
@@ -201,6 +251,39 @@ impl FileTreeView {
                 self.open_in_new_pane(&file_tree_id, ctx);
                 self.rebuild_flattened_items();
             }
+            PendingEditKind::CreateNewDirectory => {
+                let new_entry = {
+                    let Some(root_dir) = self.root_directories.get_mut(&file_tree_id.root) else {
+                        return;
+                    };
+                    let Some(item) = root_dir.items.get_mut(file_tree_id.index) else {
+                        return;
+                    };
+
+                    if let FileTreeItem::DirectoryHeader { directory, .. } = item {
+                        let mut new_path = (*directory.path).clone();
+                        new_path.set_file_name(&buffer_content);
+                        let local_path = new_path.to_local_path_lossy();
+                        directory.path = Arc::new(new_path);
+
+                        if let Err(error) = std::fs::create_dir(&local_path) {
+                            log::warn!("Failed to create directory: {error}");
+                            return;
+                        }
+
+                        send_telemetry_from_ctx!(TelemetryEvent::FileTreeItemCreated, ctx);
+                        FileTreeEntryState::Directory(directory.clone())
+                    } else {
+                        return;
+                    }
+                };
+
+                if let Some(root_dir) = self.root_directories.get_mut(&file_tree_id.root) {
+                    Self::insert_entry(&mut root_dir.entry, new_entry);
+                }
+                self.rebuild_flattened_items();
+                ctx.notify();
+            }
             PendingEditKind::RenameExisting => {
                 let Some(root_dir) = self.root_directories.get(&file_tree_id.root) else {
                     return;
@@ -255,8 +338,10 @@ impl FileTreeView {
                 view.clear_buffer(ctx);
             });
             // Only remove placeholder in the create-new-file flow.
-            if pending_edit.kind == PendingEditKind::CreateNewFile
-                && let Some(root_dir) = self.root_directories.get_mut(&id.root)
+            if matches!(
+                pending_edit.kind,
+                PendingEditKind::CreateNewFile | PendingEditKind::CreateNewDirectory
+            ) && let Some(root_dir) = self.root_directories.get_mut(&id.root)
             {
                 root_dir.items.remove(id.index);
             }

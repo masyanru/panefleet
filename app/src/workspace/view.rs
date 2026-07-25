@@ -3770,7 +3770,7 @@ impl Workspace {
         ctx: &AppContext,
     ) -> Option<PaneFleetWorkspaceActivity> {
         let sessions = CLIAgentSessionsModel::as_ref(ctx);
-        let mut working = HashSet::new();
+        let mut working = Vec::new();
         let mut blocked = HashSet::new();
         let mut failed = HashSet::new();
 
@@ -3786,7 +3786,16 @@ impl Workspace {
                 let name = session.agent.display_name().to_string();
                 match &session.status {
                     CLIAgentSessionStatus::InProgress => {
-                        working.insert(name);
+                        // A detected CLI starts in `InProgress` before the user submits a turn.
+                        // Only animate once the agent protocol has reported an actual query.
+                        if session
+                            .session_context
+                            .query
+                            .as_deref()
+                            .is_some_and(|query| !query.trim().is_empty())
+                        {
+                            working.push(name);
+                        }
                     }
                     CLIAgentSessionStatus::Blocked { .. } => {
                         blocked.insert(name);
@@ -3801,8 +3810,9 @@ impl Workspace {
 
         let sorted_names = |names: HashSet<String>| names.into_iter().sorted().collect::<Vec<_>>();
         if !working.is_empty() {
+            working.sort();
             Some(PaneFleetWorkspaceActivity::Working {
-                agent_names: sorted_names(working),
+                agent_names: working,
             })
         } else if !blocked.is_empty() {
             Some(PaneFleetWorkspaceActivity::Blocked {
@@ -20532,7 +20542,7 @@ impl Workspace {
                 TabBarHoverIndex::BeforeTab { .. } => false,
             });
 
-        TabComponent::new(
+        let mut component = TabComponent::new(
             tab_index,
             tab_bar_state,
             tab,
@@ -20541,9 +20551,18 @@ impl Workspace {
             is_drag_target,
             ctx,
         )
-        .with_multi_tab_selection(self.is_tab_in_multi_tab_selection(tab_index))
-        .build()
-        .finish()
+        .with_multi_tab_selection(self.is_tab_in_multi_tab_selection(tab_index));
+
+        if FeatureFlag::PaneFleetWorkbench.is_enabled() {
+            let icon = self
+                .panefleet_tab_sessions
+                .get(&tab.pane_group.id())
+                .and_then(|session| session.agent.icon())
+                .unwrap_or(Icon::Terminal);
+            component = component.with_leading_icon(icon);
+        }
+
+        component.build().finish()
     }
 
     /// Flex weight of the spacer on each side of an expanded group's members.

@@ -28,7 +28,7 @@ use warpui::{
 use crate::ai::agent::AgentReviewCommentBatch;
 use crate::appearance::{Appearance, AppearanceEvent};
 use crate::code::buffer_location::LocalOrRemotePath;
-use crate::code::file_tree::FileTreeView;
+use crate::code::file_tree::{FileTreeAction, FileTreeView};
 use crate::code_review::code_review_header::HEADER_BUTTON_PADDING;
 #[cfg(feature = "local_fs")]
 use crate::code_review::code_review_view::CodeReviewAction;
@@ -397,6 +397,10 @@ impl CodeReviewState {
 pub enum RightPanelAction {
     ToggleFileSidebar,
     SelectPaneFleetTab(PaneFleetRightPanelTab),
+    CreateFile,
+    CreateDirectory,
+    RefreshFiles,
+    CollapseFileTree,
     SelectRepo {
         repo_path: LocalOrRemotePath,
         from_dropdown: bool,
@@ -418,6 +422,10 @@ struct PaneFleetRightPanelMouseStates {
     files: MouseStateHandle,
     changes: MouseStateHandle,
     review: MouseStateHandle,
+    create_file: MouseStateHandle,
+    create_directory: MouseStateHandle,
+    refresh_files: MouseStateHandle,
+    collapse_file_tree: MouseStateHandle,
 }
 
 #[derive(Clone, Debug)]
@@ -978,15 +986,60 @@ impl RightPanelView {
             .finish();
 
         let body = match self.panefleet_selected_tab {
-            PaneFleetRightPanelTab::Files => self
-                .active_file_tree_view(app)
-                .map(|file_tree| {
-                    Container::new(ChildView::new(&file_tree).finish())
-                        .with_padding_left(2.)
-                        .with_padding_right(2.)
-                        .finish()
-                })
-                .unwrap_or_else(|| Container::new(Empty::new().finish()).finish()),
+            PaneFleetRightPanelTab::Files => {
+                let actions = Flex::row()
+                    .with_main_axis_size(MainAxisSize::Max)
+                    .with_main_axis_alignment(MainAxisAlignment::End)
+                    .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                    .with_spacing(4.)
+                    .with_child(self.render_panefleet_file_action(
+                        RightPanelAction::CreateFile,
+                        icons::Icon::File,
+                        "New file",
+                        self.panefleet_mouse_states.create_file.clone(),
+                        appearance,
+                    ))
+                    .with_child(self.render_panefleet_file_action(
+                        RightPanelAction::CreateDirectory,
+                        icons::Icon::Folder,
+                        "New folder",
+                        self.panefleet_mouse_states.create_directory.clone(),
+                        appearance,
+                    ))
+                    .with_child(self.render_panefleet_file_action(
+                        RightPanelAction::RefreshFiles,
+                        icons::Icon::Refresh,
+                        "Refresh",
+                        self.panefleet_mouse_states.refresh_files.clone(),
+                        appearance,
+                    ))
+                    .with_child(self.render_panefleet_file_action(
+                        RightPanelAction::CollapseFileTree,
+                        icons::Icon::ListCollapsed,
+                        "Collapse all",
+                        self.panefleet_mouse_states.collapse_file_tree.clone(),
+                        appearance,
+                    ))
+                    .finish();
+                let actions = Container::new(actions)
+                    .with_padding(Padding::uniform(6.).with_left(10.).with_right(10.))
+                    .with_border(Border::bottom(1.).with_border_fill(appearance.theme().outline()))
+                    .finish();
+                let file_tree = self
+                    .active_file_tree_view(app)
+                    .map(|file_tree| {
+                        Container::new(ChildView::new(&file_tree).finish())
+                            .with_padding_left(2.)
+                            .with_padding_right(2.)
+                            .finish()
+                    })
+                    .unwrap_or_else(|| Container::new(Empty::new().finish()).finish());
+                Flex::column()
+                    .with_main_axis_size(MainAxisSize::Max)
+                    .with_child(actions)
+                    .with_child(Shrinkable::new(1., file_tree).finish())
+                    .finish()
+            }
             PaneFleetRightPanelTab::Changes | PaneFleetRightPanelTab::Review => {
                 self.render_panel_content(app)
             }
@@ -996,6 +1049,33 @@ impl RightPanelView {
             .with_main_axis_size(MainAxisSize::Max)
             .with_child(tabs)
             .with_child(Shrinkable::new(1., body).finish())
+            .finish()
+    }
+
+    fn render_panefleet_file_action(
+        &self,
+        action: RightPanelAction,
+        icon: icons::Icon,
+        tooltip_text: &'static str,
+        mouse_state: MouseStateHandle,
+        appearance: &Appearance,
+    ) -> Box<dyn Element> {
+        let tooltip = appearance
+            .ui_builder()
+            .tool_tip(tooltip_text.to_string())
+            .build()
+            .finish();
+        let icon_color = appearance
+            .theme()
+            .sub_text_color(appearance.theme().background());
+
+        icon_button_with_color(appearance, icon, false, mouse_state, icon_color)
+            .with_tooltip(move || tooltip)
+            .build()
+            .on_click(move |ctx, _, _| {
+                ctx.dispatch_typed_action(action.clone());
+            })
+            .with_cursor(Cursor::PointingHand)
             .finish()
     }
 
@@ -1950,6 +2030,34 @@ impl TypedActionView for RightPanelView {
             RightPanelAction::SelectPaneFleetTab(tab) => {
                 self.panefleet_selected_tab = *tab;
                 ctx.notify();
+            }
+            RightPanelAction::CreateFile => {
+                if let Some(file_tree) = self.active_file_tree_view(ctx) {
+                    file_tree.update(ctx, |view, ctx| {
+                        view.handle_action(&FileTreeAction::CreateNewFile, ctx);
+                    });
+                }
+            }
+            RightPanelAction::CreateDirectory => {
+                if let Some(file_tree) = self.active_file_tree_view(ctx) {
+                    file_tree.update(ctx, |view, ctx| {
+                        view.handle_action(&FileTreeAction::CreateNewDirectory, ctx);
+                    });
+                }
+            }
+            RightPanelAction::RefreshFiles => {
+                if let Some(file_tree) = self.active_file_tree_view(ctx) {
+                    file_tree.update(ctx, |view, ctx| {
+                        view.handle_action(&FileTreeAction::Refresh, ctx);
+                    });
+                }
+            }
+            RightPanelAction::CollapseFileTree => {
+                if let Some(file_tree) = self.active_file_tree_view(ctx) {
+                    file_tree.update(ctx, |view, ctx| {
+                        view.handle_action(&FileTreeAction::CollapseAll, ctx);
+                    });
+                }
             }
             RightPanelAction::SelectRepo {
                 repo_path,

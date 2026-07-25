@@ -879,6 +879,7 @@ pub struct TabComponent<'a> {
     styles: TabStyles,
     ui_builder: UiBuilder,
     indicator: Indicator,
+    leading_icon: Option<Icon>,
     close_button_position: TabCloseButtonPosition,
     appearance: &'a Appearance,
     tooltip_message: Option<String>,
@@ -1056,6 +1057,7 @@ impl<'a> TabComponent<'a> {
             styles: TabStyles::default(appearance, tab.color()),
             ui_builder: appearance.ui_builder().clone(),
             indicator,
+            leading_icon: None,
             close_button_position,
             appearance,
             tooltip_message,
@@ -1100,6 +1102,12 @@ impl<'a> TabComponent<'a> {
     /// dispatch the multi-tab selection menu instead of the single-tab menu.
     pub fn with_multi_tab_selection(mut self, is_in_multi_tab_selection: bool) -> Self {
         self.is_in_multi_tab_selection = is_in_multi_tab_selection;
+        self
+    }
+
+    /// Adds a stable content-kind icon before the tab title.
+    pub fn with_leading_icon(mut self, icon: Icon) -> Self {
+        self.leading_icon = Some(icon);
         self
     }
 
@@ -1653,6 +1661,27 @@ impl<'a> TabComponent<'a> {
                 .with_main_axis_size(MainAxisSize::Max)
                 .with_main_axis_alignment(MainAxisAlignment::Center)
                 .with_cross_axis_alignment(warpui::elements::CrossAxisAlignment::Center);
+            if let Some(icon) = self.leading_icon {
+                flex_row.add_child(
+                    Container::new(
+                        ConstrainedBox::new(
+                            icon.to_warpui_icon(
+                                self.styles
+                                    .default
+                                    .font_color
+                                    .unwrap_or(ColorU::white())
+                                    .into(),
+                            )
+                            .finish(),
+                        )
+                        .with_width(14.)
+                        .with_height(14.)
+                        .finish(),
+                    )
+                    .with_margin_right(5.)
+                    .finish(),
+                );
+            }
             if let Some(indicator) = self.render_indicator() {
                 flex_row.add_child(indicator);
             }

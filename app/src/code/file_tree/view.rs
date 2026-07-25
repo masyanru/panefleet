@@ -83,11 +83,16 @@ pub struct FileTreeIdentifier {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PendingEditKind {
     CreateNewFile,
+    CreateNewDirectory,
     RenameExisting,
 }
 
 #[derive(Debug, Clone)]
 pub enum FileTreeAction {
+    CreateNewFile,
+    CreateNewDirectory,
+    Refresh,
+    CollapseAll,
     ItemClicked {
         id: FileTreeIdentifier,
     },
@@ -309,6 +314,42 @@ struct PendingFocusTarget {
 }
 
 impl FileTreeView {
+    fn preferred_directory_id(&self) -> Option<FileTreeIdentifier> {
+        if let Some(selected) = &self.selected_item
+            && self
+                .root_directories
+                .get(&selected.root)
+                .and_then(|root| root.items.get(selected.index))
+                .is_some_and(|item| matches!(item, FileTreeItem::DirectoryHeader { .. }))
+        {
+            return Some(selected.clone());
+        }
+
+        self.displayed_directories
+            .first()
+            .cloned()
+            .map(|root| FileTreeIdentifier { root, index: 0 })
+    }
+
+    fn collapse_all(&mut self, ctx: &mut ViewContext<Self>) {
+        for (root_path, root) in &mut self.root_directories {
+            root.expanded_folders.clear();
+            self.explicitly_collapsed
+                .entry(root_path.clone())
+                .or_default()
+                .insert(root_path.clone());
+        }
+        self.rebuild_flattened_items();
+        ctx.notify();
+    }
+
+    #[cfg(feature = "local_fs")]
+    fn refresh_all(&mut self, ctx: &mut ViewContext<Self>) {
+        let paths = self.displayed_directories.clone();
+        self.update_directory_contents(&paths, false, ctx);
+        ctx.notify();
+    }
+
     fn is_explicitly_collapsed(&self, root: &StandardizedPath, path: &StandardizedPath) -> bool {
         self.explicitly_collapsed
             .get(root)
@@ -3000,6 +3041,25 @@ impl TypedActionView for FileTreeView {
 
     fn handle_action(&mut self, action: &Self::Action, ctx: &mut ViewContext<Self>) {
         match action {
+            FileTreeAction::CreateNewFile => {
+                if let Some(id) = self.preferred_directory_id()
+                    && !self.is_remote_item(&id)
+                {
+                    self.create_new_file(&id, ctx);
+                }
+            }
+            FileTreeAction::CreateNewDirectory => {
+                if let Some(id) = self.preferred_directory_id()
+                    && !self.is_remote_item(&id)
+                {
+                    self.create_new_directory(&id, ctx);
+                }
+            }
+            FileTreeAction::Refresh => {
+                #[cfg(feature = "local_fs")]
+                self.refresh_all(ctx);
+            }
+            FileTreeAction::CollapseAll => self.collapse_all(ctx),
             FileTreeAction::ItemClicked { id } => {
                 ctx.focus_self();
                 self.select_and_execute_item_at_id(id, ctx);

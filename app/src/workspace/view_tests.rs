@@ -736,7 +736,6 @@ fn test_worktree_sidecar_hover_takes_precedence_over_selection() {
 
     App::test((), |mut app| async move {
         initialize_app(&mut app);
-
         let workspace = mock_workspace(&mut app);
         let temp_root = TempDir::new().expect("failed to create temp dir");
         let alpha_repo = temp_root.path().join("alpha-repo");
@@ -2775,6 +2774,10 @@ fn add_get_started_tab(workspace: &mut Workspace, ctx: &mut ViewContext<Workspac
     );
 }
 
+fn add_settings_tab(workspace: &mut Workspace, ctx: &mut ViewContext<Workspace>) {
+    workspace.open_settings_pane(Some(SettingsSection::PaneFleetAgents), None, ctx);
+}
+
 fn find_terminal_tab_index(workspace: &Workspace, ctx: &AppContext) -> usize {
     workspace
         .tabs
@@ -2793,6 +2796,61 @@ fn find_non_following_tab_index(workspace: &Workspace, ctx: &AppContext) -> usiz
             )
         })
         .expect("Expected a non-following tab")
+}
+
+#[test]
+fn panefleet_does_not_open_workspace_panels_for_settings_tab() {
+    let _panefleet_guard = FeatureFlag::PaneFleetWorkbench.override_enabled(true);
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        app.add_singleton_model(|ctx| ProjectManagementModel::new(Vec::new(), None, ctx));
+
+        let workspace = mock_workspace(&mut app);
+        workspace.update(&mut app, |workspace, ctx| {
+            add_settings_tab(workspace, ctx);
+
+            assert_eq!(
+                Workspace::should_enable_file_tree_and_global_search_for_pane_group(
+                    workspace.active_tab_pane_group().as_ref(ctx),
+                ),
+                false
+            );
+            assert_eq!(
+                workspace
+                    .active_tab_pane_group()
+                    .as_ref(ctx)
+                    .left_panel_open,
+                false
+            );
+            assert_eq!(
+                workspace
+                    .active_tab_pane_group()
+                    .as_ref(ctx)
+                    .right_panel_open,
+                false
+            );
+
+            // A click inside Settings emits AppStateChanged. The PaneFleet panel
+            // reconciliation invoked by that event must remain a no-op here.
+            workspace.ensure_panefleet_panels_open(ctx);
+
+            assert_eq!(
+                workspace
+                    .active_tab_pane_group()
+                    .as_ref(ctx)
+                    .left_panel_open,
+                false
+            );
+            assert_eq!(
+                workspace
+                    .active_tab_pane_group()
+                    .as_ref(ctx)
+                    .right_panel_open,
+                false
+            );
+        });
+    });
 }
 
 #[test]

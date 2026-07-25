@@ -9147,9 +9147,13 @@ impl Workspace {
             return;
         }
 
+        let pane_group = self.active_tab_pane_group().clone();
+        if !Self::should_enable_file_tree_and_global_search_for_pane_group(pane_group.as_ref(ctx)) {
+            return;
+        }
+
         self.open_left_panel(ctx);
 
-        let pane_group = self.active_tab_pane_group().clone();
         if !pane_group.as_ref(ctx).right_panel_open {
             self.update_right_panel_open_state(
                 RightPanelUpdateParams {
@@ -16842,6 +16846,9 @@ impl Workspace {
                 self.update_active_session(ctx);
                 if FeatureFlag::PaneFleetWorkbench.is_enabled()
                     && pane_group.id() == self.active_tab_pane_group().id()
+                    && Self::should_enable_file_tree_and_global_search_for_pane_group(
+                        pane_group.as_ref(ctx),
+                    )
                 {
                     self.ensure_panefleet_panels_open(ctx);
                     #[cfg(feature = "local_fs")]

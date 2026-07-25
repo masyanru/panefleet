@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "$(uname -s)" != "Darwin" ]]; then
+  echo "error: PaneFleet macOS packaging must run on macOS." >&2
+  exit 1
+fi
+
+if [[ $# -ne 1 ]]; then
+  echo "usage: $0 <version>" >&2
+  echo "example: $0 v0.1.0-alpha.1" >&2
+  exit 1
+fi
+
+PANEFLEET_VERSION="$1"
+if [[ ! "${PANEFLEET_VERSION}" =~ ^[A-Za-z0-9._-]+$ ]]; then
+  echo "error: version may contain only letters, numbers, dots, underscores, and hyphens." >&2
+  exit 1
+fi
+
+if ! command -v cargo-bundle >/dev/null 2>&1; then
+  echo "error: cargo-bundle is required. Run ./script/bootstrap or install cargo-bundle." >&2
+  exit 1
+fi
+
+PANEFLEET_REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PANEFLEET_ARCH="$(uname -m)"
+PANEFLEET_APP="${PANEFLEET_REPO_ROOT}/target/release/bundle/osx/PaneFleet.app"
+PANEFLEET_DIST_DIR="${PANEFLEET_REPO_ROOT}/target/panefleet-dist"
+PANEFLEET_ARCHIVE_NAME="PaneFleet-${PANEFLEET_VERSION}-macos-${PANEFLEET_ARCH}.zip"
+PANEFLEET_ARCHIVE="${PANEFLEET_DIST_DIR}/${PANEFLEET_ARCHIVE_NAME}"
+PANEFLEET_CHECKSUM="${PANEFLEET_ARCHIVE}.sha256"
+
+echo "Building PaneFleet release bundle..."
+cd "${PANEFLEET_REPO_ROOT}/app"
+cargo bundle --release --bin panefleet
+cd "${PANEFLEET_REPO_ROOT}"
+
+if [[ ! -d "${PANEFLEET_APP}" ]]; then
+  echo "error: expected app bundle was not created at ${PANEFLEET_APP}" >&2
+  exit 1
+fi
+
+echo "Applying an ad-hoc signature..."
+codesign --force --deep --sign - "${PANEFLEET_APP}"
+codesign --verify --deep --strict --verbose=2 "${PANEFLEET_APP}"
+
+mkdir -p "${PANEFLEET_DIST_DIR}"
+rm -f "${PANEFLEET_ARCHIVE}" "${PANEFLEET_CHECKSUM}"
+
+echo "Creating ${PANEFLEET_ARCHIVE_NAME}..."
+ditto -c -k --sequesterRsrc --keepParent "${PANEFLEET_APP}" "${PANEFLEET_ARCHIVE}"
+cd "${PANEFLEET_DIST_DIR}"
+shasum -a 256 "${PANEFLEET_ARCHIVE_NAME}" | tee "${PANEFLEET_ARCHIVE_NAME}.sha256"
+cd "${PANEFLEET_REPO_ROOT}"
+
+echo
+echo "PaneFleet release artifacts:"
+echo "  ${PANEFLEET_ARCHIVE}"
+echo "  ${PANEFLEET_CHECKSUM}"

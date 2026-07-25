@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <strong>Experimental macOS prototype · Source builds only</strong>
+  <strong>Experimental macOS prototype · Apple Silicon alpha available</strong>
 </p>
 
 <p align="center">
@@ -115,7 +115,8 @@ will use a separate PaneFleet service rather than Warp's production endpoints.
 PaneFleet is an early development prototype, not a finished distribution.
 
 - macOS is the current development and testing platform.
-- There are no signed or notarized downloads yet; build from source.
+- The downloadable alpha is ad-hoc signed, not Developer ID signed or
+  notarized yet.
 - Windows and Linux support inherited from the upstream codebase has not been
   adapted or verified for the PaneFleet workbench.
 - Agent resume depends on the installed CLI version and its locally available
@@ -126,6 +127,21 @@ PaneFleet is an early development prototype, not a finished distribution.
   the prototype is evolving.
 
 Use it on non-critical workspaces and keep normal Git backups.
+
+## Download for macOS
+
+The current alpha is available for Apple Silicon Macs (`arm64`):
+
+[**Download the latest PaneFleet release**](https://github.com/masyanru/panefleet/releases/latest)
+
+1. Download `PaneFleet-…-macos-arm64.zip` and its `.sha256` file.
+2. Unzip it and move `PaneFleet.app` to `/Applications`.
+3. On first launch, Control-click the app and choose **Open**. If macOS still
+   blocks it, use **System Settings → Privacy & Security → Open Anyway**.
+
+The release is ad-hoc signed but cannot be notarized until the project's Apple
+Developer enrollment is approved. An Intel build and automatic updates are not
+available yet.
 
 ## Build on macOS
 
@@ -164,11 +180,14 @@ editor, and GPU UI stack.
 After installing `cargo-bundle`:
 
 ```bash
-cargo bundle --bin panefleet
-open target/debug/bundle/osx/PaneFleet.app
+./script/generate-panefleet-macos-icon
+./script/package-panefleet-macos v0.1.0-alpha.1
 ```
 
-The resulting application is locally built and unsigned.
+The release ZIP and SHA-256 checksum are written to
+`target/panefleet-dist/`. The application receives an ad-hoc signature; replace
+that step with Developer ID signing and notarization for a trusted public
+release.
 
 ## Development
 

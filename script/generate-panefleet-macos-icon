@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "$(uname -s)" != "Darwin" ]]; then
+  echo "error: generating a macOS icon requires macOS iconutil." >&2
+  exit 1
+fi
+
+PANEFLEET_REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PANEFLEET_ICON_SOURCE="${PANEFLEET_REPO_ROOT}/app/assets/bundled/png/panefleet.png"
+PANEFLEET_ICON_OUTPUT_DIR="${PANEFLEET_REPO_ROOT}/app/assets/bundled/icons"
+PANEFLEET_ICON_OUTPUT="${PANEFLEET_ICON_OUTPUT_DIR}/panefleet.icns"
+PANEFLEET_ICON_TEMP_DIR="$(mktemp -d)"
+PANEFLEET_ICONSET="${PANEFLEET_ICON_TEMP_DIR}/panefleet.iconset"
+
+cleanup_panefleet_icon_temp() {
+  rm -rf "${PANEFLEET_ICON_TEMP_DIR}"
+}
+trap cleanup_panefleet_icon_temp EXIT
+
+mkdir -p "${PANEFLEET_ICONSET}" "${PANEFLEET_ICON_OUTPUT_DIR}"
+
+sips -z 16 16 "${PANEFLEET_ICON_SOURCE}" --out "${PANEFLEET_ICONSET}/icon_16x16.png" >/dev/null
+sips -z 32 32 "${PANEFLEET_ICON_SOURCE}" --out "${PANEFLEET_ICONSET}/icon_16x16@2x.png" >/dev/null
+sips -z 32 32 "${PANEFLEET_ICON_SOURCE}" --out "${PANEFLEET_ICONSET}/icon_32x32.png" >/dev/null
+sips -z 64 64 "${PANEFLEET_ICON_SOURCE}" --out "${PANEFLEET_ICONSET}/icon_32x32@2x.png" >/dev/null
+sips -z 128 128 "${PANEFLEET_ICON_SOURCE}" --out "${PANEFLEET_ICONSET}/icon_128x128.png" >/dev/null
+sips -z 256 256 "${PANEFLEET_ICON_SOURCE}" --out "${PANEFLEET_ICONSET}/icon_128x128@2x.png" >/dev/null
+sips -z 256 256 "${PANEFLEET_ICON_SOURCE}" --out "${PANEFLEET_ICONSET}/icon_256x256.png" >/dev/null
+sips -z 512 512 "${PANEFLEET_ICON_SOURCE}" --out "${PANEFLEET_ICONSET}/icon_256x256@2x.png" >/dev/null
+sips -z 512 512 "${PANEFLEET_ICON_SOURCE}" --out "${PANEFLEET_ICONSET}/icon_512x512.png" >/dev/null
+cp "${PANEFLEET_ICON_SOURCE}" "${PANEFLEET_ICONSET}/icon_512x512@2x.png"
+
+iconutil -c icns "${PANEFLEET_ICONSET}" -o "${PANEFLEET_ICON_OUTPUT}"
+echo "Generated ${PANEFLEET_ICON_OUTPUT}"

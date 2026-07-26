@@ -136,8 +136,33 @@ The current alpha is available for Apple Silicon Macs (`arm64`):
 
 1. Download `PaneFleet-…-macos-arm64.zip` and its `.sha256` file.
 2. Unzip it and move `PaneFleet.app` to `/Applications`.
-3. On first launch, Control-click the app and choose **Open**. If macOS still
-   blocks it, use **System Settings → Privacy & Security → Open Anyway**.
+3. Try to open PaneFleet once. Because this alpha is not notarized yet, macOS
+   may show a **“PaneFleet Not Opened”** warning.
+
+### Opening the unsigned alpha
+
+The preferred per-app override is:
+
+1. Open **System Settings → Privacy & Security**.
+2. Scroll to **Security** and click **Open Anyway** for PaneFleet.
+3. Enter your Mac login password and confirm **Open**.
+
+The **Open Anyway** button is available for about an hour after macOS blocks
+the app. See [Apple's instructions for opening an unnotarized
+app](https://support.apple.com/guide/mac-help/open-a-mac-app-from-an-unidentified-developer-mh40616/mac).
+
+If that option does not appear, you can remove the quarantine attribute for
+this specific app and launch it from Terminal:
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/PaneFleet.app"
+open "/Applications/PaneFleet.app"
+```
+
+If PaneFleet is installed elsewhere, replace the path above with its actual
+location. Only bypass Gatekeeper for an archive downloaded from the official
+PaneFleet GitHub release; verify the accompanying `.sha256` checksum when
+possible.
 
 The release is ad-hoc signed but cannot be notarized until the project's Apple
 Developer enrollment is approved. An Intel build and automatic updates are not

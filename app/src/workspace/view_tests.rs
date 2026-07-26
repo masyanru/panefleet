@@ -2933,7 +2933,15 @@ fn panefleet_fleet_event_age_is_human_readable_and_saturating() {
     );
     assert_eq!(
         Workspace::format_panefleet_event_age_at(now, now - 42_000),
-        "42s ago"
+        "just now"
+    );
+    assert_eq!(
+        Workspace::format_panefleet_event_age_at(now, now - 59_999),
+        "just now"
+    );
+    assert_eq!(
+        Workspace::format_panefleet_event_age_at(now, now - 60_000),
+        "1m ago"
     );
     assert_eq!(
         Workspace::format_panefleet_event_age_at(now, now - 12 * 60_000),

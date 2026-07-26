@@ -23462,8 +23462,7 @@ impl Workspace {
     fn format_panefleet_event_age_at(now_ms: u64, occurred_at_unix_ms: u64) -> String {
         let elapsed_seconds = now_ms.saturating_sub(occurred_at_unix_ms) / 1_000;
         match elapsed_seconds {
-            0..=4 => "just now".to_string(),
-            5..=59 => format!("{elapsed_seconds}s ago"),
+            0..=59 => "just now".to_string(),
             60..=3_599 => format!("{}m ago", elapsed_seconds / 60),
             3_600..=86_399 => format!("{}h ago", elapsed_seconds / 3_600),
             _ => format!("{}d ago", elapsed_seconds / 86_400),

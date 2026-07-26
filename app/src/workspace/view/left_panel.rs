@@ -67,6 +67,10 @@ use crate::workspace::panefleet_preferences::{
     PaneFleetWorkspaceIcon, PaneFleetWorkspacePreferences, git_branch_for_workspace,
     workspace_icon_for_path,
 };
+use crate::workspace::panefleet_state::PaneFleetWorkspaceSource;
+use crate::workspace::panefleet_workspace_groups::{
+    PaneFleetWorkspaceEnvironment, PaneFleetWorkspaceGroup, group_panefleet_workspaces,
+};
 use crate::workspace::view::conversation_list::view::{
     ConversationListView, Event as ConversationListViewEvent,
 };
@@ -90,6 +94,7 @@ struct MouseStateHandles {
 }
 
 const PANEFLEET_PROJECT_LIMIT: usize = 6;
+const PANEFLEET_ENVIRONMENT_LIMIT: usize = 12;
 const PANEFLEET_MIN_SIDEBAR_WIDTH: f32 = 168.;
 
 #[derive(Default)]
@@ -99,11 +104,27 @@ struct PaneFleetWorkspaceRowMouseStates {
     activity: MouseStateHandle,
 }
 
+struct PaneFleetWorkspaceGroupMouseStates {
+    header: PaneFleetWorkspaceRowMouseStates,
+    environments: Vec<PaneFleetWorkspaceRowMouseStates>,
+}
+
+impl Default for PaneFleetWorkspaceGroupMouseStates {
+    fn default() -> Self {
+        Self {
+            header: Default::default(),
+            environments: (0..PANEFLEET_ENVIRONMENT_LIMIT)
+                .map(|_| Default::default())
+                .collect(),
+        }
+    }
+}
+
 struct PaneFleetMouseStateHandles {
     add_project: MouseStateHandle,
     add_worktree: MouseStateHandle,
     fleet_dashboard: MouseStateHandle,
-    project_rows: Vec<PaneFleetWorkspaceRowMouseStates>,
+    project_rows: Vec<PaneFleetWorkspaceGroupMouseStates>,
 }
 
 impl Default for PaneFleetMouseStateHandles {
@@ -113,7 +134,7 @@ impl Default for PaneFleetMouseStateHandles {
             add_worktree: Default::default(),
             fleet_dashboard: Default::default(),
             project_rows: (0..PANEFLEET_PROJECT_LIMIT)
-                .map(|_| PaneFleetWorkspaceRowMouseStates::default())
+                .map(|_| PaneFleetWorkspaceGroupMouseStates::default())
                 .collect(),
         }
     }
@@ -300,6 +321,7 @@ pub struct LeftPanelView {
     panefleet_active_project: Option<PathBuf>,
     panefleet_fleet_dashboard_open: bool,
     panefleet_workspace_activities: HashMap<PathBuf, PaneFleetWorkspaceActivity>,
+    panefleet_workspace_sources: HashMap<PathBuf, PaneFleetWorkspaceSource>,
     panefleet_preferences: PaneFleetWorkspacePreferences,
     panefleet_activity_frame: usize,
     #[cfg_attr(not(feature = "local_fs"), allow(dead_code))]
@@ -563,6 +585,7 @@ impl LeftPanelView {
             panefleet_active_project: None,
             panefleet_fleet_dashboard_open: false,
             panefleet_workspace_activities: HashMap::new(),
+            panefleet_workspace_sources: HashMap::new(),
             panefleet_preferences: PaneFleetWorkspacePreferences::load_or_default(
                 &PaneFleetWorkspacePreferences::path(),
             ),
@@ -1185,6 +1208,17 @@ impl LeftPanelView {
         }
     }
 
+    pub(super) fn set_panefleet_workspace_sources(
+        &mut self,
+        sources: HashMap<PathBuf, PaneFleetWorkspaceSource>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        if self.panefleet_workspace_sources != sources {
+            self.panefleet_workspace_sources = sources;
+            ctx.notify();
+        }
+    }
+
     pub(super) fn reload_panefleet_preferences(&mut self, ctx: &mut ViewContext<Self>) {
         self.panefleet_preferences =
             PaneFleetWorkspacePreferences::load_or_default(&PaneFleetWorkspacePreferences::path());
@@ -1266,6 +1300,269 @@ impl LeftPanelView {
             .with_tooltip(move || tooltip)
             .build()
             .finish()
+    }
+
+    fn panefleet_workspace_group_activity(
+        &self,
+        group: &PaneFleetWorkspaceGroup,
+    ) -> Option<PaneFleetWorkspaceActivity> {
+        let mut working = Vec::new();
+        let mut blocked = Vec::new();
+        let mut failed = Vec::new();
+        for environment in &group.environments {
+            match self.panefleet_workspace_activities.get(&environment.path) {
+                Some(PaneFleetWorkspaceActivity::Working { agent_names }) => {
+                    working.extend(agent_names.iter().cloned());
+                }
+                Some(PaneFleetWorkspaceActivity::Blocked { agent_names }) => {
+                    blocked.extend(agent_names.iter().cloned());
+                }
+                Some(PaneFleetWorkspaceActivity::Failed { agent_names }) => {
+                    failed.extend(agent_names.iter().cloned());
+                }
+                None => {}
+            }
+        }
+        let deduplicate = |mut names: Vec<String>| {
+            names.sort();
+            names.dedup();
+            names
+        };
+        if !failed.is_empty() {
+            Some(PaneFleetWorkspaceActivity::Failed {
+                agent_names: deduplicate(failed),
+            })
+        } else if !blocked.is_empty() {
+            Some(PaneFleetWorkspaceActivity::Blocked {
+                agent_names: deduplicate(blocked),
+            })
+        } else if !working.is_empty() {
+            Some(PaneFleetWorkspaceActivity::Working {
+                agent_names: deduplicate(working),
+            })
+        } else {
+            None
+        }
+    }
+
+    fn render_panefleet_workspace_group_header(
+        &self,
+        group: &PaneFleetWorkspaceGroup,
+        mouse_states: &PaneFleetWorkspaceRowMouseStates,
+        is_active: bool,
+        appearance: &Appearance,
+    ) -> Box<dyn Element> {
+        let theme = appearance.theme();
+        let font_family = appearance.ui_font_family();
+        let main_text = theme.main_text_color(theme.background());
+        let sub_text = theme.sub_text_color(theme.background());
+        let title = group
+            .root_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .filter(|name| !name.is_empty())
+            .unwrap_or("Workspace")
+            .to_string();
+        let path_label = group.root_path.to_string_lossy().into_owned();
+        let workspace_icon = workspace_icon_for_path(&group.root_path);
+        let activity = self
+            .panefleet_preferences
+            .show_agent_activity
+            .then(|| self.panefleet_workspace_group_activity(group))
+            .flatten();
+        let activity_indicator = activity.map(|activity| {
+            self.render_panefleet_activity_indicator(
+                activity,
+                mouse_states.activity.clone(),
+                appearance,
+            )
+        });
+
+        Hoverable::new(mouse_states.row.clone(), move |state| {
+            let icon: Box<dyn Element> = match workspace_icon {
+                PaneFleetWorkspaceIcon::Github => Icon::Github.to_warpui_icon(sub_text).finish(),
+                PaneFleetWorkspaceIcon::Git => Icon::GitBranch.to_warpui_icon(sub_text).finish(),
+                PaneFleetWorkspaceIcon::PaneFleet => Image::new(
+                    AssetSource::Bundled {
+                        path: "bundled/png/panefleet-64.png",
+                    },
+                    CacheOption::BySize,
+                )
+                .finish(),
+            };
+            let labels = Flex::column()
+                .with_main_axis_size(MainAxisSize::Min)
+                .with_spacing(2.)
+                .with_child(
+                    Text::new_inline(title.clone(), font_family, 12.)
+                        .with_color(main_text.into())
+                        .with_style(warpui::fonts::Properties {
+                            weight: Weight::Semibold,
+                            ..Default::default()
+                        })
+                        .finish(),
+                )
+                .with_child(
+                    Text::new_inline(path_label.clone(), font_family, 10.)
+                        .with_color(sub_text.into())
+                        .finish(),
+                )
+                .finish();
+            let mut content = Flex::row()
+                .with_main_axis_size(MainAxisSize::Max)
+                .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                .with_spacing(8.)
+                .with_child(
+                    ConstrainedBox::new(icon)
+                        .with_width(22.)
+                        .with_height(22.)
+                        .finish(),
+                )
+                .with_child(Shrinkable::new(1., labels).finish());
+            if let Some(activity_indicator) = activity_indicator {
+                content.add_child(activity_indicator);
+            }
+
+            let mut row = Container::new(content.finish())
+                .with_padding(Padding::uniform(8.).with_bottom(6.))
+                .with_corner_radius(CornerRadius::with_all(Radius::Pixels(4.)));
+            if is_active {
+                row = row.with_background(internal_colors::fg_overlay_1(theme));
+            } else if state.is_hovered() {
+                row = row.with_background(internal_colors::fg_overlay_1(theme));
+            }
+            row.finish()
+        })
+        .finish()
+    }
+
+    fn render_panefleet_environment_row(
+        &self,
+        environment: &PaneFleetWorkspaceEnvironment,
+        mouse_states: &PaneFleetWorkspaceRowMouseStates,
+        is_selected: bool,
+        appearance: &Appearance,
+    ) -> Box<dyn Element> {
+        let theme = appearance.theme();
+        let font_family = appearance.ui_font_family();
+        let main_text = theme.main_text_color(theme.background());
+        let sub_text = theme.sub_text_color(theme.background());
+        let path = environment.path.clone();
+        let path_for_row = path.clone();
+        let path_for_close = path.clone();
+        let title = environment
+            .branch
+            .clone()
+            .or_else(|| git_branch_for_workspace(&path))
+            .unwrap_or_else(|| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("working tree")
+                    .to_string()
+            });
+        let path_label = self
+            .panefleet_preferences
+            .show_workspace_path
+            .then(|| path.to_string_lossy().into_owned());
+        let activity = self
+            .panefleet_preferences
+            .show_agent_activity
+            .then(|| self.panefleet_workspace_activities.get(&path).cloned())
+            .flatten();
+        let activity_indicator = activity.map(|activity| {
+            self.render_panefleet_activity_indicator(
+                activity,
+                mouse_states.activity.clone(),
+                appearance,
+            )
+        });
+        let close_mouse_state = mouse_states.close.clone();
+
+        Container::new(
+            Hoverable::new(mouse_states.row.clone(), move |state| {
+                let mut labels = Flex::column()
+                    .with_main_axis_size(MainAxisSize::Min)
+                    .with_child(
+                        Text::new_inline(title.clone(), font_family, 11.)
+                            .with_color(main_text.into())
+                            .finish(),
+                    );
+                if let Some(path_label) = path_label.clone() {
+                    labels.add_child(
+                        Text::new_inline(path_label, font_family, 9.)
+                            .with_color(sub_text.into())
+                            .finish(),
+                    );
+                }
+                let mut content = Flex::row()
+                    .with_main_axis_size(MainAxisSize::Max)
+                    .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                    .with_spacing(7.)
+                    .with_child(
+                        ConstrainedBox::new(Icon::GitBranch.to_warpui_icon(sub_text).finish())
+                            .with_width(14.)
+                            .with_height(14.)
+                            .finish(),
+                    )
+                    .with_child(Shrinkable::new(1., labels.finish()).finish());
+                if let Some(activity_indicator) = activity_indicator {
+                    content.add_child(activity_indicator);
+                }
+                if state.is_hovered() {
+                    content.add_child(
+                        Hoverable::new(close_mouse_state.clone(), move |button_state| {
+                            let mut close = Container::new(
+                                ConstrainedBox::new(Icon::X.to_warpui_icon(sub_text).finish())
+                                    .with_width(11.)
+                                    .with_height(11.)
+                                    .finish(),
+                            )
+                            .with_padding(Padding::uniform(2.))
+                            .with_corner_radius(CornerRadius::with_all(Radius::Pixels(4.)));
+                            if button_state.is_hovered() {
+                                close = close.with_background(internal_colors::fg_overlay_3(theme));
+                            }
+                            close.finish()
+                        })
+                        .with_cursor(Cursor::PointingHand)
+                        .on_click({
+                            let path = path_for_close.clone();
+                            move |ctx, _, _| {
+                                ctx.dispatch_typed_action(LeftPanelAction::ClosePaneFleetProject {
+                                    path: path.clone(),
+                                });
+                            }
+                        })
+                        .finish(),
+                    );
+                }
+
+                let mut row = Container::new(content.finish())
+                    .with_padding(Padding::uniform(6.).with_left(8.))
+                    .with_corner_radius(CornerRadius::with_all(Radius::Pixels(4.)))
+                    .with_border(Border::all(1.).with_border_fill(if is_selected {
+                        internal_colors::fg_overlay_3(theme).into()
+                    } else {
+                        ElementFill::None
+                    }));
+                if is_selected {
+                    row = row.with_background(internal_colors::fg_overlay_2(theme));
+                } else if state.is_hovered() {
+                    row = row.with_background(internal_colors::fg_overlay_1(theme));
+                }
+                row.finish()
+            })
+            .with_defer_events_to_children()
+            .on_click(move |ctx, _, _| {
+                ctx.dispatch_typed_action(LeftPanelAction::SwitchPaneFleetProject {
+                    path: path_for_row.clone(),
+                });
+            })
+            .with_cursor(Cursor::PointingHand)
+            .finish(),
+        )
+        .with_margin_left(18.)
+        .finish()
     }
 
     fn render_panefleet_workspace_row(
@@ -1521,20 +1818,64 @@ impl LeftPanelView {
             .map(|project| (project.path.clone(), project.added_ts))
             .collect::<Vec<_>>();
         projects.sort_by(|left, right| left.1.cmp(&right.1));
+        let groups = group_panefleet_workspaces(
+            projects
+                .into_iter()
+                .map(|(path, _)| PathBuf::from(path))
+                .collect(),
+            &self.panefleet_workspace_sources,
+            active_path.clone(),
+        );
 
-        for ((project_path, _), mouse_states) in projects
+        for (group, mouse_states) in groups
             .into_iter()
             .take(PANEFLEET_PROJECT_LIMIT)
             .zip(&self.panefleet_mouse_state_handles.project_rows)
         {
-            let path = PathBuf::from(&project_path);
-            let row = self.render_panefleet_workspace_row(
-                path.clone(),
-                mouse_states,
-                active_path.as_ref() == Some(&path),
-                appearance,
-            );
-            content = content.with_child(row);
+            let grouped = group.environments.len() > 1
+                || group
+                    .environments
+                    .first()
+                    .is_some_and(|environment| environment.path != group.root_path);
+            if grouped {
+                let is_active = active_path.as_ref().is_some_and(|active| {
+                    group
+                        .environments
+                        .iter()
+                        .any(|environment| &environment.path == active)
+                });
+                let mut group_content = Flex::column()
+                    .with_main_axis_size(MainAxisSize::Min)
+                    .with_spacing(2.)
+                    .with_child(self.render_panefleet_workspace_group_header(
+                        &group,
+                        &mouse_states.header,
+                        is_active,
+                        appearance,
+                    ));
+                for (environment, environment_mouse_states) in
+                    group.environments.iter().zip(&mouse_states.environments)
+                {
+                    group_content.add_child(self.render_panefleet_environment_row(
+                        environment,
+                        environment_mouse_states,
+                        active_path.as_ref() == Some(&environment.path),
+                        appearance,
+                    ));
+                }
+                content.add_child(
+                    Container::new(group_content.finish())
+                        .with_margin_bottom(4.)
+                        .finish(),
+                );
+            } else if let Some(environment) = group.environments.first() {
+                content.add_child(self.render_panefleet_workspace_row(
+                    environment.path.clone(),
+                    &mouse_states.header,
+                    active_path.as_ref() == Some(&environment.path),
+                    appearance,
+                ));
+            }
         }
 
         Container::new(content.finish())
@@ -1937,7 +2278,7 @@ impl View for LeftPanelView {
                 .finish();
                 let worktree_tooltip = appearance
                     .ui_builder()
-                    .tool_tip("New isolated workspace".to_string())
+                    .tool_tip("New worktree environment".to_string())
                     .build()
                     .finish();
                 let add_worktree = icon_button(

@@ -3050,15 +3050,18 @@ fn panefleet_fleet_workspace_order_stays_aligned_with_project_sidebar() {
     let workspace = |path: &str, status| PaneFleetFleetWorkspace {
         path: PathBuf::from(path),
         name: path.trim_start_matches('/').to_string(),
-        branch: None,
-        sessions: vec![PaneFleetFleetRow {
-            terminal_view_id: EntityId::new(),
-            workspace_path: PathBuf::from(path),
-            workspace_name: path.trim_start_matches('/').to_string(),
-            agent: CLIAgent::Claude,
-            status,
-            task: "Task".to_string(),
-            elapsed: None,
+        environments: vec![PaneFleetFleetEnvironment {
+            path: PathBuf::from(path),
+            name: "main".to_string(),
+            sessions: vec![PaneFleetFleetRow {
+                terminal_view_id: EntityId::new(),
+                workspace_path: PathBuf::from(path),
+                workspace_name: path.trim_start_matches('/').to_string(),
+                agent: CLIAgent::Claude,
+                status,
+                task: "Task".to_string(),
+                elapsed: None,
+            }],
         }],
     };
     let mut workspaces = vec![
@@ -3076,45 +3079,6 @@ fn panefleet_fleet_workspace_order_stays_aligned_with_project_sidebar() {
             .map(|workspace| workspace.path.as_path())
             .collect::<Vec<_>>(),
         vec![Path::new("/first"), Path::new("/second")]
-    );
-}
-
-#[test]
-fn panefleet_fleet_workspace_paths_exclude_stale_saved_projects() {
-    let paths = Workspace::panefleet_visible_fleet_workspace_paths(
-        vec![
-            PathBuf::from("/projects/coolify"),
-            PathBuf::from("/projects/sentinel"),
-        ],
-        Some(PathBuf::from("/projects/sentinel")),
-    );
-
-    assert_eq!(
-        paths,
-        vec![
-            PathBuf::from("/projects/coolify"),
-            PathBuf::from("/projects/sentinel"),
-        ]
-    );
-    assert!(!paths.contains(&PathBuf::from("/Users/antonmosyagin")));
-}
-
-#[test]
-fn panefleet_fleet_workspace_paths_include_transient_active_project_once() {
-    let paths = Workspace::panefleet_visible_fleet_workspace_paths(
-        vec![
-            PathBuf::from("/projects/coolify"),
-            PathBuf::from("/projects/coolify"),
-        ],
-        Some(PathBuf::from("/projects/sentinel")),
-    );
-
-    assert_eq!(
-        paths,
-        vec![
-            PathBuf::from("/projects/coolify"),
-            PathBuf::from("/projects/sentinel"),
-        ]
     );
 }
 

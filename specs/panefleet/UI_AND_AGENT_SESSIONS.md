@@ -2,7 +2,7 @@
 
 Статус: живая спецификация прототипа
 
-Последнее обновление: 2026-07-26
+Последнее обновление: 2026-07-27
 
 Этот файл — единая памятка по интерфейсу PaneFleet и ожидаемому поведению
 workspace, вкладок и CLI-агентов. Если реализация расходится с этим документом,
@@ -20,6 +20,7 @@ Application Window
 ├── Project Sidebar
 │   ├── Workspace Header
 │   └── Workspace Rows
+│       └── Worktree Environment Rows
 ├── Workspace Surface
 │   ├── Horizontal Tab Strip
 │   ├── Agent Launcher Bar
@@ -33,8 +34,13 @@ Application Window
 Термины:
 
 - **Project Sidebar** — постоянная левая колонка со списком workspace.
-- **Workspace Row** — строка одного проекта в левой колонке.
-- **Workspace** — проект и принадлежащий ему набор вкладок.
+- **Workspace Row** — верхнеуровневая строка одного проекта/репозитория.
+- **Workspace** — проект, объединяющий исходный working tree и несколько
+  worktree environment для параллельных фич.
+- **Worktree Environment** — конкретный working directory и Git-ветка внутри
+  workspace; environment владеет своим набором вкладок и Agent Session.
+- **Worktree Environment Row** — вложенная строка `main`, `feature-a`,
+  `feature-b` под одним Workspace Row.
 - **Horizontal Tab Strip** — верхняя полоса вкладок активного workspace.
 - **Agent Launcher Bar** — компактная строка запуска Terminal, Codex, Claude,
   OpenCode и будущих агентов.
@@ -47,21 +53,33 @@ Application Window
 
 ### 2.1 Workspace Row
 
-Строки workspace должны выглядеть и вести себя как оригинальные
-`Vertical Tab Row` в Warp, а не как отдельный новый компонент.
+Строки workspace и вложенных environment должны использовать визуальный язык
+оригинального `Vertical Tab Row` в Warp, а не выглядеть как независимые
+карточки.
 
-Состав строки:
+Состав группы:
 
 ```text
-[project/terminal icon]  Project name                 [activity] [close]
-                         workspace path  [git branch]
+[repository icon]  Project name                      [activity] [close]
+                   source repository path
+    [git branch]   main                               [activity] [close]
+    [git branch]   feature-a                          [activity] [close]
+    [git branch]   feature-b                          [activity] [close]
 ```
 
 Требования:
 
-- название проекта показывается всегда;
+- один исходный репозиторий показывается в Project Sidebar ровно один раз;
+- название проекта показывается в верхнеуровневой строке всегда;
 - иконка определяется локально: GitHub для remote на `github.com`, Git для
   остальных Git-репозиториев и мини-иконка PaneFleet для обычной папки;
+- исходный working tree и managed/external worktree показываются вложенными
+  environment rows; обычная не-Git папка остаётся одним невложенным workspace;
+- выбор environment переключает весь Horizontal Tab Strip и Context Sidebar на
+  его working directory;
+- Workspace Row агрегирует активность всех вложенных environment;
+- environment row показывает собственную ветку и собственную активность;
+- Workspace Row разворачивается и сворачивается, не меняя порядок проектов;
 - показ полного пути и текущей Git-ветки независимо настраивается в
   `Settings → Workspace`;
 - при выключенном пути полный путь остаётся доступен в tooltip и контекстном
@@ -111,10 +129,10 @@ Application Window
 
 ### 3.1 Horizontal Tab Strip
 
-- Каждый workspace имеет собственный набор горизонтальных вкладок.
-- Смена workspace целиком переключает набор вкладок.
-- Вкладки другого workspace не должны оставаться видимыми.
-- Возврат в workspace восстанавливает порядок вкладок, активную вкладку,
+- Каждый Worktree Environment имеет собственный набор горизонтальных вкладок.
+- Смена environment целиком переключает набор вкладок.
+- Вкладки другого environment не должны оставаться видимыми.
+- Возврат в environment восстанавливает порядок вкладок, активную вкладку,
   pane groups и содержимое pane.
 - Вкладка агента хранит не только заголовок, но и его тип, рабочую директорию,
   Agent Definition и identity сессии.
@@ -191,10 +209,11 @@ Dashboard дополнительно показывает:
 - количество `Blocked` + `Failed`, требующих внимания;
 - количество завершённых сессий;
 - количество открытых workspace;
-- responsive-сетку карточек всех workspace, включая workspace без
-  обнаруженных CLI-сессий;
-- название, локальный путь, Git-ветку, число сессий и агрегированный статус
-  workspace;
+- responsive-сетку карточек всех верхнеуровневых workspace, включая workspace
+  без обнаруженных CLI-сессий;
+- внутри карточки workspace — отдельные секции worktree environment с веткой,
+  локальным путём, числом сессий и собственным статусом;
+- заголовок workspace агрегирует число и статус сессий всех environment;
 - вложенные кликабельные карточки обнаруженных агентов;
 - секцию `Recent activity` из локальной временной ленты структурированных
   lifecycle-событий;
@@ -523,29 +542,36 @@ Restoring  → InProgress → Blocked → InProgress → Success
 - [ ] Добавить live-состояния Claude tool/skill/subagent и сворачивание
       низкоуровневых tool calls в `Recent activity`.
 
-### P3 — workspace isolation через Git worktrees
+### P3 — environment isolation через Git worktrees
 
-Следующий крупный этап после Claude Activity v2. Цель — параллельно работать с
-одной исходной репой в нескольких PaneFleet workspace на разных Git-ветках,
-не разделяя один working tree между агентами.
+Цель — параллельно работать с одной исходной репой на нескольких Git-ветках,
+не разделяя один working tree между агентами. Исходный репозиторий остаётся
+одним верхнеуровневым PaneFleet workspace, а каждая ветка представлена
+вложенным worktree environment.
 
 - [x] Добавить отдельные действия `Existing folder` и `Isolated worktree` в
       заголовок Project Sidebar.
-- [x] Для isolated workspace выбирать базовую ветку и создавать новую ветку.
+- [x] Для isolated environment выбирать базовую ветку и создавать новую ветку.
 - [x] Создавать отдельный Git worktree и использовать его корень как `cwd` для
-      всех Terminal и Agent Session этого workspace.
+      всех Terminal и Agent Session этого environment.
 - [x] Направлять Files / Changes / Review и Git metadata на конкретный worktree,
       а не на исходную папку репозитория.
-- [x] Сохранять связь `source repository → worktree path → branch → workspace`
+- [x] Сохранять связь `workspace → worktree path → branch → environment`
       в версионированном локальном состоянии.
+- [x] Показывать исходный working tree и все связанные worktree как вложенные
+      environment rows под одной строкой проекта в Project Sidebar.
+- [x] Показывать во Fleet Dashboard одну карточку проекта с отдельными
+      environment-секциями и агрегированным статусом.
+- [x] Мигрировать сохранённые top-level worktree-записи обратно под исходный
+      репозиторий без потери вкладок и Agent Session.
 - [ ] Поддержать подключение уже существующего внешнего worktree без его
       переноса под управление PaneFleet.
 - [x] Проверять конфликт ветки, занятый путь и незакоммиченные изменения до
       создания managed worktree.
-- [x] При закрытии workspace не удалять worktree или Git-ветку автоматически.
+- [x] При закрытии environment не удалять worktree или Git-ветку автоматически.
 - [ ] Добавить отдельное подтверждаемое действие очистки с проверкой dirty state,
       которое никогда не удаляет Git-ветку неявно.
-- [x] Гарантировать, что агенты двух isolated workspace не получают одинаковый
+- [x] Гарантировать, что агенты двух isolated environment не получают одинаковый
       working directory.
 - [ ] После изоляции добавить CLI-specific activity adapters для Codex и
       OpenCode.
@@ -568,11 +594,11 @@ Restoring  → InProgress → Blocked → InProgress → Success
 - Files / Changes / Review относятся к активному workspace.
 - После полного restart все восстанавливаемые Agent Session продолжают прежние
   беседы.
-- Два workspace одной репы могут одновременно работать на разных ветках через
-  разные Git worktrees и не изменяют файлы друг друга.
+- Два environment одного workspace могут одновременно работать на разных
+  ветках через разные Git worktrees и не изменяют файлы друг друга.
 - Files / Changes / Review и все новые Agent Session используют worktree
-  выбранного workspace.
-- Закрытие workspace не удаляет его worktree или ветку без отдельного
+  выбранного environment.
+- Закрытие environment не удаляет его worktree или ветку без отдельного
   подтверждённого действия.
 - Невозможность resume никогда не маскируется новой пустой сессией.
 - UI использует существующие темы, кнопки, иконки и состояния Warp.

@@ -46,8 +46,8 @@ agents side by side.
 ## What works today
 
 - **Project workspaces** in a persistent left sidebar.
-- **Isolated Git worktree workspaces** with a selected base branch and a new,
-  independently checked-out branch for parallel agent work.
+- **Grouped Git worktree environments** under one project workspace, each with
+  an independently checked-out branch, tabs, agents, and Git context.
 - **Workspace-scoped tabs**: changing projects changes the complete set of open
   terminal and agent tabs.
 - **Agent launcher bar** for Terminal, Codex, Claude, OpenCode, and custom agent
@@ -58,8 +58,8 @@ agents side by side.
   reopening an empty terminal with the old title.
 - **Agent activity indicators** that distinguish an active turn from an idle
   CLI process.
-- **Fleet Dashboard** with every open workspace, live agent state, and a local
-  recent-activity timeline for real agent turns.
+- **Fleet Dashboard** with every project and its related worktree environments,
+  live agent state, and a local recent-activity timeline for real agent turns.
 - **Structured Claude activity** in Fleet: completed tools, skill calls, and
   subagent launches from Claude Code hooks, without parsing terminal text.
 - **Agent completion sounds** with three subtle macOS cues and no notification

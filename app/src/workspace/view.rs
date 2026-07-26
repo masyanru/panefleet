@@ -86,6 +86,7 @@ use warp_util::standardized_path::StandardizedPath;
 use warpui::accessibility::{
     AccessibilityContent, AccessibilityVerbosity, ActionAccessibilityContent, WarpA11yRole,
 };
+use warpui::assets::asset_cache::AssetSource;
 use warpui::r#async::Timer;
 use warpui::clipboard::ClipboardContent;
 #[cfg(target_family = "wasm")]
@@ -153,12 +154,16 @@ use super::panefleet_fleet_events::{
     PaneFleetFleetEvent, PaneFleetFleetEventKind, PaneFleetFleetEventStore,
 };
 use super::panefleet_notifications::PaneFleetNotificationPreferences;
-use super::panefleet_preferences::{PaneFleetWorkspacePreferences, git_branch_for_workspace};
+use super::panefleet_preferences::{
+    PaneFleetWorkspaceIcon, PaneFleetWorkspacePreferences, git_branch_for_workspace,
+    workspace_icon_for_path,
+};
 use super::panefleet_state::{
     PANEFLEET_STATE_VERSION, PaneFleetPersistedAgentSession, PaneFleetPersistedState,
     PaneFleetPersistedTab, PaneFleetPersistedWorkspace, PaneFleetWorkspaceSource,
     panefleet_agent_launch_command, write_panefleet_state_atomic,
 };
+use super::panefleet_workspace_groups::group_panefleet_workspaces;
 use super::panefleet_worktrees::create_panefleet_worktree;
 use super::rewind_confirmation_dialog::{
     RewindConfirmationDialog, RewindConfirmationEvent, RewindDialogSource,
@@ -1007,11 +1012,17 @@ struct PaneFleetFleetRow {
 }
 
 #[derive(Clone)]
+struct PaneFleetFleetEnvironment {
+    path: PathBuf,
+    name: String,
+    sessions: Vec<PaneFleetFleetRow>,
+}
+
+#[derive(Clone)]
 struct PaneFleetFleetWorkspace {
     path: PathBuf,
     name: String,
-    branch: Option<String>,
-    sessions: Vec<PaneFleetFleetRow>,
+    environments: Vec<PaneFleetFleetEnvironment>,
 }
 
 enum PaneFleetAgentRestoreState {
@@ -4051,16 +4062,15 @@ impl Workspace {
             .map(|project| (PathBuf::from(&project.path), project.added_ts))
             .collect::<Vec<_>>();
         ordered_projects.sort_by(|left, right| left.1.cmp(&right.1));
-        let paths = Self::panefleet_visible_fleet_workspace_paths(
+        let groups = group_panefleet_workspaces(
             ordered_projects.into_iter().map(|(path, _)| path).collect(),
+            &self.panefleet_workspace_sources,
             self.current_panefleet_project_path(ctx),
         );
-        let project_order = paths
+        let project_order = groups
             .iter()
-            .cloned()
-            .into_iter()
             .enumerate()
-            .map(|(index, path)| (path, index))
+            .map(|(index, group)| (group.root_path.clone(), index))
             .collect::<HashMap<_, _>>();
         let mut sessions_by_path = rows.into_iter().fold(
             BTreeMap::<PathBuf, Vec<PaneFleetFleetRow>>::new(),
@@ -4073,42 +4083,50 @@ impl Workspace {
             },
         );
 
-        let mut workspaces = paths
+        let mut workspaces = groups
             .into_iter()
-            .map(|path| {
-                let name = path
+            .map(|group| {
+                let name = group
+                    .root_path
                     .file_name()
                     .and_then(|name| name.to_str())
                     .filter(|name| !name.is_empty())
                     .unwrap_or("Workspace")
                     .to_string();
+                let environments = group
+                    .environments
+                    .into_iter()
+                    .map(|environment| {
+                        let branch = environment
+                            .branch
+                            .or_else(|| git_branch_for_workspace(&environment.path));
+                        let environment_name = branch.clone().unwrap_or_else(|| {
+                            environment
+                                .path
+                                .file_name()
+                                .and_then(|name| name.to_str())
+                                .filter(|name| !name.is_empty())
+                                .unwrap_or("working tree")
+                                .to_string()
+                        });
+                        PaneFleetFleetEnvironment {
+                            sessions: sessions_by_path
+                                .remove(&environment.path)
+                                .unwrap_or_default(),
+                            path: environment.path,
+                            name: environment_name,
+                        }
+                    })
+                    .collect();
                 PaneFleetFleetWorkspace {
-                    branch: git_branch_for_workspace(&path),
-                    sessions: sessions_by_path.remove(&path).unwrap_or_default(),
-                    path,
+                    path: group.root_path,
                     name,
+                    environments,
                 }
             })
             .collect::<Vec<_>>();
         Self::sort_panefleet_fleet_workspaces(&mut workspaces, &project_order);
         workspaces
-    }
-
-    fn panefleet_visible_fleet_workspace_paths(
-        project_paths: Vec<PathBuf>,
-        active_path: Option<PathBuf>,
-    ) -> Vec<PathBuf> {
-        let mut seen = HashSet::new();
-        let mut paths = project_paths
-            .into_iter()
-            .filter(|path| seen.insert(path.clone()))
-            .collect::<Vec<_>>();
-        if let Some(active_path) = active_path
-            && seen.insert(active_path.clone())
-        {
-            paths.push(active_path);
-        }
-        paths
     }
 
     fn sort_panefleet_fleet_workspaces(
@@ -4135,7 +4153,11 @@ impl Workspace {
         workspace: &PaneFleetFleetWorkspace,
     ) -> PaneFleetFleetStatus {
         Self::aggregate_panefleet_fleet_status(
-            workspace.sessions.iter().map(|session| session.status),
+            workspace
+                .environments
+                .iter()
+                .flat_map(|environment| environment.sessions.iter())
+                .map(|session| session.status),
         )
     }
 
@@ -4202,8 +4224,10 @@ impl Workspace {
             activities.insert(path, activity);
         }
 
+        let sources = self.panefleet_workspace_sources.clone();
         self.left_panel_view.update(ctx, |left_panel, ctx| {
             left_panel.set_panefleet_workspace_activities(activities, ctx);
+            left_panel.set_panefleet_workspace_sources(sources, ctx);
         });
     }
 
@@ -9687,9 +9711,30 @@ impl Workspace {
         self.left_panel_view.update(ctx, |left_panel, ctx| {
             left_panel.set_panefleet_active_project(Some(active_project), ctx);
         });
+        self.normalize_panefleet_project_roots(ctx);
         self.ensure_panefleet_panels_open(ctx);
         self.sync_panefleet_workspace_activities(ctx);
         self.persist_panefleet_state(ctx);
+    }
+
+    fn normalize_panefleet_project_roots(&self, ctx: &mut ViewContext<Self>) {
+        let worktree_environments = self
+            .panefleet_workspace_sources
+            .iter()
+            .filter_map(|(path, source)| {
+                let root = source.project_root(path);
+                (root != *path).then(|| (path.clone(), root))
+            })
+            .collect::<Vec<_>>();
+        if worktree_environments.is_empty() {
+            return;
+        }
+        ProjectManagementModel::handle(ctx).update(ctx, |projects, ctx| {
+            for (worktree_path, project_root) in worktree_environments {
+                projects.remove_project(&worktree_path, ctx);
+                projects.upsert_project(project_root, ctx);
+            }
+        });
     }
 
     fn ensure_panefleet_panels_open(&mut self, ctx: &mut ViewContext<Self>) {
@@ -9737,8 +9782,14 @@ impl Workspace {
             self.left_panel_view.update(ctx, |left_panel, ctx| {
                 left_panel.set_panefleet_active_project(Some(path.clone()), ctx);
             });
+            let project_root = self
+                .panefleet_workspace_sources
+                .get(&path)
+                .cloned()
+                .unwrap_or_default()
+                .project_root(&path);
             ProjectManagementModel::handle(ctx).update(ctx, |projects, ctx| {
-                projects.upsert_project(path, ctx);
+                projects.upsert_project(project_root, ctx);
             });
             self.ensure_panefleet_panels_open(ctx);
             self.sync_panefleet_workspace_activities(ctx);
@@ -9794,8 +9845,14 @@ impl Workspace {
             );
         }
 
+        let project_root = self
+            .panefleet_workspace_sources
+            .get(&path)
+            .cloned()
+            .unwrap_or_default()
+            .project_root(&path);
         ProjectManagementModel::handle(ctx).update(ctx, |projects, ctx| {
-            projects.upsert_project(path, ctx);
+            projects.upsert_project(project_root, ctx);
         });
         self.ensure_panefleet_panels_open(ctx);
         self.sync_panefleet_workspace_activities(ctx);
@@ -9881,9 +9938,24 @@ impl Workspace {
             let working_directories_model = self.working_directories_model.clone();
             Self::dispose_panefleet_project_state(state, &working_directories_model, ctx);
         }
+        let project_root = self
+            .panefleet_workspace_sources
+            .get(path)
+            .cloned()
+            .unwrap_or_default()
+            .project_root(path);
         self.panefleet_workspace_sources.remove(path);
+        let project_has_environments = self
+            .panefleet_workspace_sources
+            .iter()
+            .any(|(workspace_path, source)| source.project_root(workspace_path) == project_root);
         ProjectManagementModel::handle(ctx).update(ctx, |projects, ctx| {
-            projects.remove_project(path, ctx);
+            if path != &project_root {
+                projects.remove_project(path, ctx);
+            }
+            if !project_has_environments {
+                projects.remove_project(&project_root, ctx);
+            }
         });
         self.ensure_panefleet_panels_open(ctx);
         self.sync_panefleet_workspace_activities(ctx);
@@ -9899,10 +9971,6 @@ impl Workspace {
         ctx: &mut ViewContext<Self>,
     ) {
         self.switch_panefleet_project(path.clone(), false, ctx);
-
-        ProjectManagementModel::handle(ctx).update(ctx, |projects, ctx| {
-            projects.upsert_project(path.clone(), ctx);
-        });
 
         let project_name = path
             .file_name()
@@ -12261,7 +12329,7 @@ impl Workspace {
                 self.toast_stack.update(ctx, |toast_stack, ctx| {
                     toast_stack.add_ephemeral_toast(
                         DismissibleToast::success(format!(
-                            "Created isolated workspace on '{}'",
+                            "Created worktree environment on '{}'",
                             worktree.branch
                         )),
                         ctx,
@@ -12270,7 +12338,7 @@ impl Workspace {
                 true
             }
             Err(error) => {
-                let message = format!("Could not create isolated workspace: {error:#}");
+                let message = format!("Could not create worktree environment: {error:#}");
                 log::warn!("{message}");
                 self.toast_stack.update(ctx, |toast_stack, ctx| {
                     toast_stack.add_persistent_toast(DismissibleToast::error(message), ctx);
@@ -14572,9 +14640,6 @@ impl Workspace {
         self.panefleet_workspace_sources
             .insert(path_buf.clone(), source);
         self.switch_panefleet_project(path_buf.clone(), false, ctx);
-        ProjectManagementModel::handle(ctx).update(ctx, |projects, ctx| {
-            projects.upsert_project(path_buf.clone(), ctx);
-        });
         self.add_tab_with_pane_layout(
             PanesLayout::SingleTerminal(Box::new(NewTerminalOptions {
                 initial_directory: Some(path_buf.clone()),
@@ -23455,16 +23520,18 @@ impl Workspace {
         }
     }
 
-    fn render_panefleet_fleet_workspace_card(
+    fn render_panefleet_fleet_environment_card(
         &self,
-        workspace: PaneFleetFleetWorkspace,
+        environment: PaneFleetFleetEnvironment,
         appearance: &Appearance,
     ) -> Box<dyn Element> {
         let theme = appearance.theme();
         let font_family = appearance.ui_font_family();
         let main_text = theme.main_text_color(theme.background());
         let sub_text = theme.sub_text_color(theme.background());
-        let status = Self::panefleet_fleet_workspace_status(&workspace);
+        let status = Self::aggregate_panefleet_fleet_status(
+            environment.sessions.iter().map(|session| session.status),
+        );
         let status_fill = match status {
             PaneFleetFleetStatus::Working => theme.accent(),
             PaneFleetFleetStatus::Blocked => Fill::warn(),
@@ -23472,7 +23539,7 @@ impl Workspace {
             PaneFleetFleetStatus::Ready => sub_text,
             PaneFleetFleetStatus::Done => Fill::success(),
         };
-        let path = workspace.path.clone();
+        let path = environment.path.clone();
         let mouse_state = self
             .panefleet_fleet_workspace_mouse_states
             .borrow_mut()
@@ -23481,11 +23548,10 @@ impl Workspace {
             .clone();
         let activity_frame = self.panefleet_fleet_activity_frame;
         let is_working = status == PaneFleetFleetStatus::Working;
-        let session_count = workspace.sessions.len();
-        let branch = workspace.branch.clone();
-        let title = workspace.name.clone();
-        let path_label = workspace.path.to_string_lossy().into_owned();
-        let sessions = workspace.sessions;
+        let session_count = environment.sessions.len();
+        let title = environment.name;
+        let path_label = environment.path.to_string_lossy().into_owned();
+        let sessions = environment.sessions;
 
         let header = Hoverable::new(mouse_state, move |state| {
             let mut signal = Flex::row()
@@ -23511,7 +23577,7 @@ impl Workspace {
                 );
             }
 
-            let mut metadata = Flex::row()
+            let metadata = Flex::row()
                 .with_main_axis_size(MainAxisSize::Max)
                 .with_cross_axis_alignment(CrossAxisAlignment::Center)
                 .with_spacing(5.)
@@ -23525,24 +23591,6 @@ impl Workspace {
                     )
                     .finish(),
                 );
-            if let Some(branch) = &branch {
-                metadata.add_child(
-                    ConstrainedBox::new(Icon::GitBranch.to_warpui_icon(sub_text).finish())
-                        .with_width(10.)
-                        .with_height(10.)
-                        .finish(),
-                );
-                metadata.add_child(
-                    Shrinkable::new(
-                        0.6,
-                        Text::new_inline(branch.clone(), font_family, 10.)
-                            .with_color(sub_text.into())
-                            .with_clip(ClipConfig::ellipsis())
-                            .finish(),
-                    )
-                    .finish(),
-                );
-            }
 
             let trailing = Flex::row()
                 .with_main_axis_size(MainAxisSize::Min)
@@ -23575,8 +23623,8 @@ impl Workspace {
                 .with_spacing(9.)
                 .with_child(
                     ConstrainedBox::new(Icon::GitBranch.to_warpui_icon(sub_text).finish())
-                        .with_width(18.)
-                        .with_height(18.)
+                        .with_width(16.)
+                        .with_height(16.)
                         .finish(),
                 )
                 .with_child(
@@ -23619,7 +23667,7 @@ impl Workspace {
                 )
                 .finish(),
             )
-            .with_padding(Padding::uniform(12.).with_left(14.).with_right(14.));
+            .with_padding(Padding::uniform(9.).with_left(11.).with_right(11.));
             if state.is_hovered() {
                 container = container.with_background(internal_colors::fg_overlay_1(theme));
             }
@@ -23660,7 +23708,7 @@ impl Workspace {
                         )
                         .finish(),
                 )
-                .with_uniform_padding(16.)
+                .with_uniform_padding(12.)
                 .finish(),
             );
         } else {
@@ -23668,35 +23716,179 @@ impl Workspace {
                 .with_main_axis_size(MainAxisSize::Min)
                 .with_spacing(8.);
             for session in sessions {
-                session_list.add_child(
-                    Container::new(self.render_panefleet_fleet_agent_card_row(session, appearance))
-                        .with_padding_left(18.)
-                        .finish(),
-                );
+                session_list
+                    .add_child(self.render_panefleet_fleet_agent_card_row(session, appearance));
             }
             card_content.add_child(
                 Container::new(session_list.finish())
-                    .with_padding(Padding::uniform(10.).with_left(12.).with_right(12.))
+                    .with_padding(Padding::uniform(9.).with_left(10.).with_right(10.))
                     .finish(),
             );
         }
 
         Container::new(card_content.finish())
-            .with_background(theme.surface_2())
-            .with_border(Border::all(1.).with_border_fill(
-                if matches!(
-                    status,
-                    PaneFleetFleetStatus::Working
-                        | PaneFleetFleetStatus::Blocked
-                        | PaneFleetFleetStatus::Failed
-                ) {
-                    status_fill
-                } else {
-                    theme.outline()
-                },
-            ))
-            .with_corner_radius(CornerRadius::with_all(Radius::Pixels(8.)))
+            .with_background(theme.surface_1())
+            .with_border(Border::all(1.).with_border_fill(theme.outline()))
+            .with_corner_radius(CornerRadius::with_all(Radius::Pixels(6.)))
             .finish()
+    }
+
+    fn render_panefleet_fleet_workspace_card(
+        &self,
+        workspace: PaneFleetFleetWorkspace,
+        appearance: &Appearance,
+    ) -> Box<dyn Element> {
+        let theme = appearance.theme();
+        let font_family = appearance.ui_font_family();
+        let main_text = theme.main_text_color(theme.background());
+        let sub_text = theme.sub_text_color(theme.background());
+        let status = Self::panefleet_fleet_workspace_status(&workspace);
+        let status_fill = match status {
+            PaneFleetFleetStatus::Working => theme.accent(),
+            PaneFleetFleetStatus::Blocked => Fill::warn(),
+            PaneFleetFleetStatus::Failed => Fill::error(),
+            PaneFleetFleetStatus::Ready => sub_text,
+            PaneFleetFleetStatus::Done => Fill::success(),
+        };
+        let session_count = workspace
+            .environments
+            .iter()
+            .map(|environment| environment.sessions.len())
+            .sum::<usize>();
+        let title = workspace.name;
+        let path_label = workspace.path.to_string_lossy().into_owned();
+        let workspace_icon = workspace_icon_for_path(&workspace.path);
+
+        let icon: Box<dyn Element> = match workspace_icon {
+            PaneFleetWorkspaceIcon::Github => Icon::Github.to_warpui_icon(sub_text).finish(),
+            PaneFleetWorkspaceIcon::Git => Icon::GitBranch.to_warpui_icon(sub_text).finish(),
+            PaneFleetWorkspaceIcon::PaneFleet => Image::new(
+                AssetSource::Bundled {
+                    path: "bundled/png/panefleet-64.png",
+                },
+                CacheOption::BySize,
+            )
+            .finish(),
+        };
+        let identity = Flex::row()
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_spacing(9.)
+            .with_child(
+                ConstrainedBox::new(icon)
+                    .with_width(20.)
+                    .with_height(20.)
+                    .finish(),
+            )
+            .with_child(
+                Shrinkable::new(
+                    1.,
+                    Flex::column()
+                        .with_main_axis_size(MainAxisSize::Min)
+                        .with_spacing(3.)
+                        .with_child(
+                            Text::new_inline(title, font_family, 13.)
+                                .with_color(main_text.into())
+                                .with_style(Properties {
+                                    weight: Weight::Semibold,
+                                    ..Default::default()
+                                })
+                                .with_clip(ClipConfig::ellipsis())
+                                .finish(),
+                        )
+                        .with_child(
+                            Text::new_inline(path_label, font_family, 10.)
+                                .with_color(sub_text.into())
+                                .with_clip(ClipConfig::ellipsis())
+                                .finish(),
+                        )
+                        .finish(),
+                )
+                .finish(),
+            )
+            .finish();
+        let summary = Flex::row()
+            .with_main_axis_size(MainAxisSize::Min)
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_spacing(6.)
+            .with_child(
+                Text::new_inline(
+                    format!(
+                        "{} environment{} · {session_count} session{}",
+                        workspace.environments.len(),
+                        if workspace.environments.len() == 1 {
+                            ""
+                        } else {
+                            "s"
+                        },
+                        if session_count == 1 { "" } else { "s" }
+                    ),
+                    font_family,
+                    10.,
+                )
+                .with_color(sub_text.into())
+                .finish(),
+            )
+            .with_child(
+                ConstrainedBox::new(
+                    Container::new(Empty::new().finish())
+                        .with_background(status_fill)
+                        .with_corner_radius(CornerRadius::with_all(Radius::Percentage(50.)))
+                        .finish(),
+                )
+                .with_width(7.)
+                .with_height(7.)
+                .finish(),
+            )
+            .finish();
+        let header = Container::new(
+            Flex::row()
+                .with_main_axis_size(MainAxisSize::Max)
+                .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
+                .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                .with_spacing(10.)
+                .with_child(Shrinkable::new(1., identity).finish())
+                .with_child(summary)
+                .finish(),
+        )
+        .with_padding(Padding::uniform(12.).with_left(14.).with_right(14.))
+        .with_border(Border::bottom(1.).with_border_fill(theme.outline()))
+        .finish();
+
+        let mut environments = Flex::column()
+            .with_main_axis_size(MainAxisSize::Min)
+            .with_spacing(8.);
+        for environment in workspace.environments {
+            environments
+                .add_child(self.render_panefleet_fleet_environment_card(environment, appearance));
+        }
+
+        Container::new(
+            Flex::column()
+                .with_main_axis_size(MainAxisSize::Min)
+                .with_child(header)
+                .with_child(
+                    Container::new(environments.finish())
+                        .with_uniform_padding(10.)
+                        .finish(),
+                )
+                .finish(),
+        )
+        .with_background(theme.surface_2())
+        .with_border(Border::all(1.).with_border_fill(
+            if matches!(
+                status,
+                PaneFleetFleetStatus::Working
+                    | PaneFleetFleetStatus::Blocked
+                    | PaneFleetFleetStatus::Failed
+            ) {
+                status_fill
+            } else {
+                theme.outline()
+            },
+        ))
+        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(8.)))
+        .finish()
     }
 
     fn render_panefleet_fleet_workspace_grid(

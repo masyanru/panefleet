@@ -68,6 +68,17 @@ pub(super) enum PaneFleetWorkspaceSource {
     },
 }
 
+impl PaneFleetWorkspaceSource {
+    pub(super) fn project_root(&self, workspace_path: &Path) -> PathBuf {
+        match self {
+            Self::ExistingFolder => workspace_path.to_path_buf(),
+            Self::IsolatedWorktree {
+                source_repository, ..
+            } => source_repository.clone(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub(super) struct PaneFleetPersistedTab {
     pub title: Option<String>,

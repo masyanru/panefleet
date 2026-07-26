@@ -24,6 +24,7 @@ pub enum PaneFleetWorkspaceSettingsPageAction {
     ToggleWorkspacePath,
     ToggleGitBranch,
     ToggleAgentActivity,
+    ToggleCloseLastTabConfirmation,
 }
 
 pub struct PaneFleetWorkspaceSettingsPageView {
@@ -32,6 +33,7 @@ pub struct PaneFleetWorkspaceSettingsPageView {
     workspace_path_switch: SwitchStateHandle,
     git_branch_switch: SwitchStateHandle,
     agent_activity_switch: SwitchStateHandle,
+    close_last_tab_confirmation_switch: SwitchStateHandle,
 }
 
 impl PaneFleetWorkspaceSettingsPageView {
@@ -50,6 +52,7 @@ impl PaneFleetWorkspaceSettingsPageView {
             workspace_path_switch: SwitchStateHandle::default(),
             git_branch_switch: SwitchStateHandle::default(),
             agent_activity_switch: SwitchStateHandle::default(),
+            close_last_tab_confirmation_switch: SwitchStateHandle::default(),
         }
     }
 
@@ -151,6 +154,10 @@ impl TypedActionView for PaneFleetWorkspaceSettingsPageView {
             PaneFleetWorkspaceSettingsPageAction::ToggleAgentActivity => {
                 self.preferences.show_agent_activity = !self.preferences.show_agent_activity;
             }
+            PaneFleetWorkspaceSettingsPageAction::ToggleCloseLastTabConfirmation => {
+                self.preferences.confirm_before_closing_last_tab =
+                    !self.preferences.confirm_before_closing_last_tab;
+            }
         }
         self.persist(ctx);
     }
@@ -190,7 +197,7 @@ impl SettingsWidget for PaneFleetWorkspaceSettingsWidget {
     type View = PaneFleetWorkspaceSettingsPageView;
 
     fn search_terms(&self) -> &str {
-        "workspace projects sidebar path working directory git branch activity agents"
+        "workspace projects sidebar path working directory git branch activity agents close tab confirmation"
     }
 
     fn render(
@@ -244,6 +251,14 @@ impl SettingsWidget for PaneFleetWorkspaceSettingsWidget {
                 view.preferences.show_agent_activity,
                 view.agent_activity_switch.clone(),
                 PaneFleetWorkspaceSettingsPageAction::ToggleAgentActivity,
+                appearance,
+            ))
+            .with_child(view.render_toggle_row(
+                "Confirm before closing the last tab",
+                "Ask before replacing the final tab with a new Terminal in the workspace.",
+                view.preferences.confirm_before_closing_last_tab,
+                view.close_last_tab_confirmation_switch.clone(),
+                PaneFleetWorkspaceSettingsPageAction::ToggleCloseLastTabConfirmation,
                 appearance,
             ))
             .finish()

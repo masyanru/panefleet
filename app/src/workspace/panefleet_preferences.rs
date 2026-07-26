@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-pub(crate) const PANEFLEET_WORKSPACE_PREFERENCES_VERSION: u32 = 1;
+pub(crate) const PANEFLEET_WORKSPACE_PREFERENCES_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub(crate) struct PaneFleetWorkspacePreferences {
@@ -16,6 +16,8 @@ pub(crate) struct PaneFleetWorkspacePreferences {
     pub show_git_branch: bool,
     #[serde(default = "default_true")]
     pub show_agent_activity: bool,
+    #[serde(default = "default_true")]
+    pub confirm_before_closing_last_tab: bool,
 }
 
 fn current_version() -> u32 {
@@ -33,6 +35,7 @@ impl Default for PaneFleetWorkspacePreferences {
             show_workspace_path: true,
             show_git_branch: true,
             show_agent_activity: true,
+            confirm_before_closing_last_tab: true,
         }
     }
 }
@@ -47,11 +50,13 @@ impl PaneFleetWorkspacePreferences {
     }
 
     pub fn load_or_default(path: &Path) -> Self {
-        fs::read(path)
+        let mut preferences = fs::read(path)
             .ok()
             .and_then(|contents| Self::decode(&contents).ok())
             .filter(|preferences| preferences.version <= PANEFLEET_WORKSPACE_PREFERENCES_VERSION)
-            .unwrap_or_default()
+            .unwrap_or_default();
+        preferences.version = PANEFLEET_WORKSPACE_PREFERENCES_VERSION;
+        preferences
     }
 
     pub fn write_atomic(&self, path: &Path) -> io::Result<()> {

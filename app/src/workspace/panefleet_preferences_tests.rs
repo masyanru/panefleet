@@ -14,6 +14,7 @@ fn defaults_all_workspace_indicators_to_visible() {
             show_workspace_path: true,
             show_git_branch: true,
             show_agent_activity: true,
+            confirm_before_closing_last_tab: true,
         }
     );
 }
@@ -25,6 +26,20 @@ fn missing_fields_in_older_preferences_receive_defaults() {
     assert!(preferences.show_workspace_path);
     assert!(preferences.show_git_branch);
     assert!(preferences.show_agent_activity);
+    assert!(preferences.confirm_before_closing_last_tab);
+}
+
+#[test]
+fn loading_older_preferences_advances_the_schema_version() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("workspace-preferences.json");
+    fs::write(&path, br#"{"version":1,"show_workspace_path":false}"#).unwrap();
+
+    let preferences = PaneFleetWorkspacePreferences::load_or_default(&path);
+
+    assert_eq!(preferences.version, PANEFLEET_WORKSPACE_PREFERENCES_VERSION);
+    assert!(!preferences.show_workspace_path);
+    assert!(preferences.confirm_before_closing_last_tab);
 }
 
 #[test]

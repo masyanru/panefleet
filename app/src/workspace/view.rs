@@ -135,7 +135,7 @@ use super::action::{
 use super::auto_handoff::AutoCloudHandoffController;
 pub(crate) use super::close_session_confirmation_dialog::OpenDialogSource;
 use super::close_session_confirmation_dialog::{
-    CloseSessionConfirmationDialog, CloseSessionConfirmationEvent,
+    CloseSessionConfirmationDialog, CloseSessionConfirmationEvent, CloseSessionConfirmationKind,
 };
 use super::delete_conversation_confirmation_dialog::{
     DeleteConversationConfirmationDialog, DeleteConversationConfirmationEvent,
@@ -153,7 +153,7 @@ use super::panefleet_fleet_events::{
     PaneFleetFleetEvent, PaneFleetFleetEventKind, PaneFleetFleetEventStore,
 };
 use super::panefleet_notifications::PaneFleetNotificationPreferences;
-use super::panefleet_preferences::git_branch_for_workspace;
+use super::panefleet_preferences::{PaneFleetWorkspacePreferences, git_branch_for_workspace};
 use super::panefleet_state::{
     PANEFLEET_STATE_VERSION, PaneFleetPersistedAgentSession, PaneFleetPersistedState,
     PaneFleetPersistedTab, PaneFleetPersistedWorkspace, panefleet_agent_launch_command,
@@ -4048,10 +4048,16 @@ impl Workspace {
             .map(|project| (PathBuf::from(&project.path), project.added_ts))
             .collect::<Vec<_>>();
         ordered_projects.sort_by(|left, right| left.1.cmp(&right.1));
-        let project_order = ordered_projects
+        let paths = Self::panefleet_visible_fleet_workspace_paths(
+            ordered_projects.into_iter().map(|(path, _)| path).collect(),
+            self.current_panefleet_project_path(ctx),
+        );
+        let project_order = paths
+            .iter()
+            .cloned()
             .into_iter()
             .enumerate()
-            .map(|(index, (path, _))| (path, index))
+            .map(|(index, path)| (path, index))
             .collect::<HashMap<_, _>>();
         let mut sessions_by_path = rows.into_iter().fold(
             BTreeMap::<PathBuf, Vec<PaneFleetFleetRow>>::new(),
@@ -4063,14 +4069,6 @@ impl Workspace {
                 groups
             },
         );
-        let mut paths = self
-            .panefleet_project_tabs
-            .keys()
-            .cloned()
-            .collect::<HashSet<_>>();
-        if let Some(active_path) = self.current_panefleet_project_path(ctx) {
-            paths.insert(active_path);
-        }
 
         let mut workspaces = paths
             .into_iter()
@@ -4091,6 +4089,23 @@ impl Workspace {
             .collect::<Vec<_>>();
         Self::sort_panefleet_fleet_workspaces(&mut workspaces, &project_order);
         workspaces
+    }
+
+    fn panefleet_visible_fleet_workspace_paths(
+        project_paths: Vec<PathBuf>,
+        active_path: Option<PathBuf>,
+    ) -> Vec<PathBuf> {
+        let mut seen = HashSet::new();
+        let mut paths = project_paths
+            .into_iter()
+            .filter(|path| seen.insert(path.clone()))
+            .collect::<Vec<_>>();
+        if let Some(active_path) = active_path
+            && seen.insert(active_path.clone())
+        {
+            paths.push(active_path);
+        }
+        paths
     }
 
     fn sort_panefleet_fleet_workspaces(
@@ -12652,34 +12667,72 @@ impl Workspace {
             }
             CloseSessionConfirmationEvent::CloseSession {
                 dont_show_again,
+                kind,
                 open_confirmation_source,
             } => {
-                if *dont_show_again
-                    && let Err(e) = SessionSettings::handle(ctx).update(ctx, |settings, ctx| {
-                        settings.should_confirm_close_session.set_value(false, ctx)
-                    })
-                {
-                    report_error!(
-                        e.context("Failed to set should_confirm_close_session setting to false")
-                    );
-                };
-                match *open_confirmation_source {
-                    OpenDialogSource::CloseTab { tab_index } => {
+                if *dont_show_again {
+                    match kind {
+                        CloseSessionConfirmationKind::SharedSession => {
+                            if let Err(e) =
+                                SessionSettings::handle(ctx).update(ctx, |settings, ctx| {
+                                    settings.should_confirm_close_session.set_value(false, ctx)
+                                })
+                            {
+                                report_error!(e.context(
+                                    "Failed to set should_confirm_close_session setting to false"
+                                ));
+                            }
+                        }
+                        CloseSessionConfirmationKind::PaneFleetLastTab => {
+                            let mut preferences = PaneFleetWorkspacePreferences::load_or_default(
+                                &PaneFleetWorkspacePreferences::path(),
+                            );
+                            preferences.confirm_before_closing_last_tab = false;
+                            if let Err(error) =
+                                preferences.write_atomic(&PaneFleetWorkspacePreferences::path())
+                            {
+                                log::warn!(
+                                    "Failed to disable PaneFleet last-tab confirmation: {error}"
+                                );
+                            }
+                        }
+                    }
+                }
+                match (*kind, *open_confirmation_source) {
+                    (
+                        CloseSessionConfirmationKind::PaneFleetLastTab,
+                        OpenDialogSource::CloseTab { tab_index },
+                    ) => {
+                        self.close_tabs(
+                            std::iter::once(tab_index),
+                            OpenDialogSource::CloseTab { tab_index },
+                            false,
+                            true,
+                            ctx,
+                        );
+                    }
+                    (_, OpenDialogSource::CloseTab { tab_index }) => {
                         self.remove_tab(tab_index, true, true, ctx);
                     }
-                    OpenDialogSource::ClosePane {
-                        pane_group_id,
-                        pane_id,
-                    } => {
+                    (
+                        _,
+                        OpenDialogSource::ClosePane {
+                            pane_group_id,
+                            pane_id,
+                        },
+                    ) => {
                         self.close_pane(pane_group_id, pane_id, ctx);
                     }
-                    OpenDialogSource::CloseTabsDirection {
-                        tab_index,
-                        direction,
-                    } => {
+                    (
+                        _,
+                        OpenDialogSource::CloseTabsDirection {
+                            tab_index,
+                            direction,
+                        },
+                    ) => {
                         self.close_tabs_direction(tab_index, direction, true, ctx);
                     }
-                    OpenDialogSource::CloseOtherTabs { tab_index } => {
+                    (_, OpenDialogSource::CloseOtherTabs { tab_index }) => {
                         self.close_other_tabs(tab_index, true, ctx);
                     }
                 }
@@ -13512,16 +13565,31 @@ impl Workspace {
         if !ContextFlag::CloseWindow.is_enabled() && is_last_tab && !preserves_panefleet_workspace {
             return;
         }
+        if self.tabs.get(index).is_none() {
+            return;
+        }
+
+        if preserves_panefleet_workspace && !skip_confirmation {
+            let preferences = PaneFleetWorkspacePreferences::load_or_default(
+                &PaneFleetWorkspacePreferences::path(),
+            );
+            if preferences.confirm_before_closing_last_tab {
+                self.show_panefleet_last_tab_confirmation_dialog(
+                    OpenDialogSource::CloseTab { tab_index: index },
+                    ctx,
+                );
+                return;
+            }
+        }
 
         let closed_tab_id = self.tabs.get(index).map(|tab| tab.pane_group.id());
 
         let tabs_closed = self.close_tabs(
             vec![index].into_iter(),
             OpenDialogSource::CloseTab { tab_index: index },
-            // The normal last-tab flow delegates confirmation to window close.
-            // PaneFleet keeps the window open, so its final tab must use the
-            // regular tab confirmation path.
-            skip_confirmation || (is_last_tab && !preserves_panefleet_workspace),
+            // A normal last tab delegates confirmation to window close. PaneFleet
+            // handles its optional confirmation above and then replaces the tab.
+            skip_confirmation || is_last_tab,
             add_to_undo_stack,
             ctx,
         );
@@ -19925,6 +19993,21 @@ impl Workspace {
         self.close_session_confirmation_dialog
             .update(ctx, |view, _| {
                 view.set_open_confirmation_source(source);
+            });
+        self.current_workspace_state
+            .is_close_session_confirmation_dialog_open = true;
+        ctx.focus(&self.close_session_confirmation_dialog);
+        ctx.notify();
+    }
+
+    fn show_panefleet_last_tab_confirmation_dialog(
+        &mut self,
+        source: OpenDialogSource,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        self.close_session_confirmation_dialog
+            .update(ctx, |view, _| {
+                view.set_panefleet_last_tab_source(source);
             });
         self.current_workspace_state
             .is_close_session_confirmation_dialog_open = true;
@@ -30468,11 +30551,12 @@ impl View for Workspace {
             stack.add_child(ChildView::new(create_auth_secret_modal).finish());
         }
 
-        if FeatureFlag::CreatingSharedSessions.is_enabled()
-            && ContextFlag::CreateSharedSession.is_enabled()
-            && self
-                .current_workspace_state
-                .is_close_session_confirmation_dialog_open
+        if self
+            .current_workspace_state
+            .is_close_session_confirmation_dialog_open
+            && (FeatureFlag::PaneFleetWorkbench.is_enabled()
+                || (FeatureFlag::CreatingSharedSessions.is_enabled()
+                    && ContextFlag::CreateSharedSession.is_enabled()))
         {
             stack.add_positioned_overlay_child(
                 ChildView::new(&self.close_session_confirmation_dialog).finish(),

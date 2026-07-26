@@ -1655,6 +1655,7 @@ fn test_close_tab_confirmation_dialog() {
             workspace.handle_close_session_confirmation_dialog_event(
                 &CloseSessionConfirmationEvent::CloseSession {
                     dont_show_again: false,
+                    kind: CloseSessionConfirmationKind::SharedSession,
                     open_confirmation_source: OpenDialogSource::CloseTab { tab_index: 1 },
                 },
                 ctx,
@@ -1812,6 +1813,7 @@ fn test_close_pane_confirmation_dialog() {
             workspace.handle_close_session_confirmation_dialog_event(
                 &CloseSessionConfirmationEvent::CloseSession {
                     dont_show_again: false,
+                    kind: CloseSessionConfirmationKind::SharedSession,
                     open_confirmation_source: OpenDialogSource::ClosePane {
                         pane_group_id: shared_pane_group_id,
                         pane_id: shared_pane_id,
@@ -1889,6 +1891,7 @@ fn test_close_other_tabs_confirmation_dialog() {
             workspace.handle_close_session_confirmation_dialog_event(
                 &CloseSessionConfirmationEvent::CloseSession {
                     dont_show_again: false,
+                    kind: CloseSessionConfirmationKind::SharedSession,
                     open_confirmation_source: OpenDialogSource::CloseOtherTabs { tab_index: 2 },
                 },
                 ctx,
@@ -1928,6 +1931,7 @@ fn test_close_tabs_right_confirmation_dialog() {
             workspace.handle_close_session_confirmation_dialog_event(
                 &CloseSessionConfirmationEvent::CloseSession {
                     dont_show_again: false,
+                    kind: CloseSessionConfirmationKind::SharedSession,
                     open_confirmation_source: OpenDialogSource::CloseTabsDirection {
                         tab_index: 0,
                         direction: TabMovement::Right,
@@ -1969,6 +1973,7 @@ fn test_confirmation_dialog_dont_show_again() {
             workspace.handle_close_session_confirmation_dialog_event(
                 &CloseSessionConfirmationEvent::CloseSession {
                     dont_show_again: true,
+                    kind: CloseSessionConfirmationKind::SharedSession,
                     open_confirmation_source: OpenDialogSource::CloseTab { tab_index: 1 },
                 },
                 ctx,
@@ -2881,6 +2886,47 @@ fn panefleet_closing_final_tab_keeps_workspace_and_project_alive() {
 }
 
 #[test]
+fn panefleet_confirming_final_tab_close_keeps_workspace_alive() {
+    let _panefleet_guard = FeatureFlag::PaneFleetWorkbench.override_enabled(true);
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        app.add_singleton_model(|ctx| ProjectManagementModel::new(Vec::new(), None, ctx));
+
+        let workspace = mock_workspace(&mut app);
+        workspace.update(&mut app, |workspace, ctx| {
+            let project_path = std::env::temp_dir();
+            workspace.panefleet_active_project = Some(project_path.clone());
+            let original_tab_id = workspace.active_tab_pane_group().id();
+            workspace
+                .current_workspace_state
+                .is_close_session_confirmation_dialog_open = true;
+
+            workspace.handle_close_session_confirmation_dialog_event(
+                &CloseSessionConfirmationEvent::CloseSession {
+                    dont_show_again: false,
+                    kind: CloseSessionConfirmationKind::PaneFleetLastTab,
+                    open_confirmation_source: OpenDialogSource::CloseTab { tab_index: 0 },
+                },
+                ctx,
+            );
+
+            assert_eq!(workspace.tab_count(), 1);
+            assert_ne!(workspace.active_tab_pane_group().id(), original_tab_id);
+            assert_eq!(
+                workspace.current_panefleet_project_path(ctx),
+                Some(project_path)
+            );
+            assert!(
+                !workspace
+                    .current_workspace_state
+                    .is_close_session_confirmation_dialog_open
+            );
+        });
+    });
+}
+
+#[test]
 fn panefleet_fleet_overview_renders_with_finite_geometry() {
     let _panefleet_guard = FeatureFlag::PaneFleetWorkbench.override_enabled(true);
 
@@ -3001,6 +3047,45 @@ fn panefleet_fleet_workspace_order_stays_aligned_with_project_sidebar() {
             .map(|workspace| workspace.path.as_path())
             .collect::<Vec<_>>(),
         vec![Path::new("/first"), Path::new("/second")]
+    );
+}
+
+#[test]
+fn panefleet_fleet_workspace_paths_exclude_stale_saved_projects() {
+    let paths = Workspace::panefleet_visible_fleet_workspace_paths(
+        vec![
+            PathBuf::from("/projects/coolify"),
+            PathBuf::from("/projects/sentinel"),
+        ],
+        Some(PathBuf::from("/projects/sentinel")),
+    );
+
+    assert_eq!(
+        paths,
+        vec![
+            PathBuf::from("/projects/coolify"),
+            PathBuf::from("/projects/sentinel"),
+        ]
+    );
+    assert!(!paths.contains(&PathBuf::from("/Users/antonmosyagin")));
+}
+
+#[test]
+fn panefleet_fleet_workspace_paths_include_transient_active_project_once() {
+    let paths = Workspace::panefleet_visible_fleet_workspace_paths(
+        vec![
+            PathBuf::from("/projects/coolify"),
+            PathBuf::from("/projects/coolify"),
+        ],
+        Some(PathBuf::from("/projects/sentinel")),
+    );
+
+    assert_eq!(
+        paths,
+        vec![
+            PathBuf::from("/projects/coolify"),
+            PathBuf::from("/projects/sentinel"),
+        ]
     );
 }
 

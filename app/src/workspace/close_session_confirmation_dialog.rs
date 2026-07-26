@@ -39,11 +39,18 @@ pub enum OpenDialogSource {
     },
 }
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum CloseSessionConfirmationKind {
+    SharedSession,
+    PaneFleetLastTab,
+}
+
 pub struct CloseSessionConfirmationDialog {
     cancel_mouse_state: MouseStateHandle,
     confirm_mouse_state: MouseStateHandle,
     dont_show_again_mouse_state: MouseStateHandle,
     dont_show_again: bool,
+    kind: CloseSessionConfirmationKind,
     // Source will be None if dialog was never opened, since there is no reasonable default
     open_confirmation_source: Option<OpenDialogSource>,
 }
@@ -57,9 +64,18 @@ impl CloseSessionConfirmationDialog {
             dont_show_again_mouse_state: Default::default(),
             open_confirmation_source: None,
             dont_show_again: false,
+            kind: CloseSessionConfirmationKind::SharedSession,
         }
     }
     pub fn set_open_confirmation_source(&mut self, source: OpenDialogSource) {
+        self.kind = CloseSessionConfirmationKind::SharedSession;
+        self.dont_show_again = false;
+        self.open_confirmation_source = Some(source);
+    }
+
+    pub fn set_panefleet_last_tab_source(&mut self, source: OpenDialogSource) {
+        self.kind = CloseSessionConfirmationKind::PaneFleetLastTab;
+        self.dont_show_again = false;
         self.open_confirmation_source = Some(source);
     }
 
@@ -100,16 +116,30 @@ impl View for CloseSessionConfirmationDialog {
             .finish();
 
         let dont_show_again_value = self.dont_show_again;
+        let kind = self.kind;
+        let (title, description, confirm_label) = match kind {
+            CloseSessionConfirmationKind::SharedSession => (
+                "Close session?",
+                "You are about to close a session that is currently being shared. Closing it will end sharing for everyone.",
+                "Close session",
+            ),
+            CloseSessionConfirmationKind::PaneFleetLastTab => (
+                "Close the last tab?",
+                "PaneFleet will keep this workspace open and replace the tab with a new Terminal.",
+                "Close tab",
+            ),
+        };
         let close_session_button = appearance
             .ui_builder()
             .button(ButtonVariant::Accent, self.confirm_mouse_state.clone())
-            .with_centered_text_label("Close session".into())
+            .with_centered_text_label(confirm_label.into())
             .with_style(button_style)
             .build()
             .with_cursor(Cursor::PointingHand)
             .on_click(move |ctx, _, _| {
                 ctx.dispatch_typed_action(CloseSessionConfirmationAction::CloseSession {
                     dont_show_again: dont_show_again_value,
+                    kind,
                 })
             })
             .finish();
@@ -128,11 +158,8 @@ impl View for CloseSessionConfirmationDialog {
 
         let dialog = Container::new(
             Dialog::new(
-                "Close session?".into(),
-                Some(
-                    "You are about to close a session that is currently being shared. Closing it will end sharing for everyone."
-                        .into(),
-                ),
+                title.into(),
+                Some(description.into()),
                 UiComponentStyles {
                     width: Some(460.),
                     padding: Some(Coords::uniform(24.)),
@@ -143,7 +170,7 @@ impl View for CloseSessionConfirmationDialog {
             .with_bottom_row_child(cancel_button)
             .with_bottom_row_child(close_session_button)
             .build()
-            .finish()
+            .finish(),
         )
         .with_margin_top(35.)
         .finish();
@@ -172,6 +199,7 @@ impl View for CloseSessionConfirmationDialog {
 pub enum CloseSessionConfirmationEvent {
     CloseSession {
         dont_show_again: bool,
+        kind: CloseSessionConfirmationKind,
         open_confirmation_source: OpenDialogSource,
     },
     Cancel,
@@ -179,7 +207,10 @@ pub enum CloseSessionConfirmationEvent {
 
 #[derive(Debug)]
 pub enum CloseSessionConfirmationAction {
-    CloseSession { dont_show_again: bool },
+    CloseSession {
+        dont_show_again: bool,
+        kind: CloseSessionConfirmationKind,
+    },
     Cancel,
     ToggleDontShowAgain,
 }
@@ -193,7 +224,10 @@ impl TypedActionView for CloseSessionConfirmationDialog {
         ctx: &mut ViewContext<Self>,
     ) {
         match action {
-            CloseSessionConfirmationAction::CloseSession { dont_show_again } => {
+            CloseSessionConfirmationAction::CloseSession {
+                dont_show_again,
+                kind,
+            } => {
                 let Some(open_confirmation_source) = self.open_confirmation_source else {
                     // Should not be possible.
                     report_error!(
@@ -203,6 +237,7 @@ impl TypedActionView for CloseSessionConfirmationDialog {
                 };
                 ctx.emit(CloseSessionConfirmationEvent::CloseSession {
                     dont_show_again: *dont_show_again,
+                    kind: *kind,
                     open_confirmation_source,
                 });
             }

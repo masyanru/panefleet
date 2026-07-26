@@ -37,9 +37,7 @@ use std::path::{Path, PathBuf};
 #[cfg(target_os = "macos")]
 use std::process;
 use std::sync::{Arc, Mutex, mpsc};
-use std::time::{Duration, Instant};
-#[cfg(target_os = "macos")]
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use ::settings::{Setting, ToggleableSetting};
 use ai::index::full_source_code_embedding::manager::CodebaseIndexManager;
@@ -150,6 +148,9 @@ use super::lightbox_view::{LightboxParams, LightboxView, LightboxViewEvent};
 use super::native_modal::{NativeModal, NativeModalEvent};
 use super::one_time_modal_model::OneTimeModalEvent;
 use super::panefleet_agents::{PaneFleetAgentDefinition, PaneFleetAgentDefinitions};
+use super::panefleet_fleet_events::{
+    PaneFleetFleetEvent, PaneFleetFleetEventKind, PaneFleetFleetEventStore,
+};
 use super::panefleet_notifications::PaneFleetNotificationPreferences;
 use super::panefleet_preferences::git_branch_for_workspace;
 use super::panefleet_state::{
@@ -1100,7 +1101,10 @@ pub struct Workspace {
     panefleet_agent_restore_states: HashMap<EntityId, PaneFleetAgentRestoreState>,
     panefleet_working_agent_sessions: HashSet<EntityId>,
     panefleet_agent_turn_started_at: HashMap<EntityId, Instant>,
+    panefleet_fleet_events: PaneFleetFleetEventStore,
+    panefleet_fleet_last_event_kinds: HashMap<EntityId, PaneFleetFleetEventKind>,
     panefleet_fleet_row_mouse_states: RefCell<HashMap<EntityId, MouseStateHandle>>,
+    panefleet_fleet_event_mouse_states: RefCell<HashMap<Uuid, MouseStateHandle>>,
     panefleet_fleet_workspace_mouse_states: RefCell<HashMap<PathBuf, MouseStateHandle>>,
     panefleet_fleet_dashboard_scroll_state: ClippedScrollStateHandle,
     panefleet_fleet_activity_frame: usize,
@@ -3488,6 +3492,8 @@ impl Workspace {
         {
             log::warn!("Failed to write PaneFleet agent definitions: {error}");
         }
+        let panefleet_fleet_events =
+            PaneFleetFleetEventStore::load_or_default(&PaneFleetFleetEventStore::path());
 
         let mut ws = Self {
             tabs: Vec::new(),
@@ -3504,7 +3510,10 @@ impl Workspace {
             panefleet_agent_restore_states: HashMap::new(),
             panefleet_working_agent_sessions: HashSet::new(),
             panefleet_agent_turn_started_at: HashMap::new(),
+            panefleet_fleet_events,
+            panefleet_fleet_last_event_kinds: HashMap::new(),
             panefleet_fleet_row_mouse_states: RefCell::new(HashMap::new()),
+            panefleet_fleet_event_mouse_states: RefCell::new(HashMap::new()),
             panefleet_fleet_workspace_mouse_states: RefCell::new(HashMap::new()),
             panefleet_fleet_dashboard_scroll_state: Default::default(),
             panefleet_fleet_activity_frame: 0,
@@ -4175,14 +4184,18 @@ impl Workspace {
         })
     }
 
-    fn update_panefleet_agent_completion_sound(
+    fn update_panefleet_agent_lifecycle(
         &mut self,
         event: &CLIAgentSessionsModelEvent,
         pane_group_id: EntityId,
+        ctx: &AppContext,
     ) {
+        let terminal_view_id = event.terminal_view_id();
+        let mut fleet_event = None;
         match event {
             CLIAgentSessionsModelEvent::StatusChanged {
                 terminal_view_id,
+                agent,
                 status: CLIAgentSessionStatus::InProgress,
                 session_context,
                 ..
@@ -4200,13 +4213,38 @@ impl Workspace {
                 {
                     self.panefleet_agent_turn_started_at
                         .insert(*terminal_view_id, Instant::now());
+                    fleet_event = Some((*agent, PaneFleetFleetEventKind::Started));
+                } else if self.panefleet_fleet_last_event_kinds.get(terminal_view_id)
+                    == Some(&PaneFleetFleetEventKind::NeedsInput)
+                {
+                    fleet_event = Some((*agent, PaneFleetFleetEventKind::Started));
                 }
             }
             CLIAgentSessionsModelEvent::StatusChanged {
                 terminal_view_id,
-                status: CLIAgentSessionStatus::Success | CLIAgentSessionStatus::Failed { .. },
+                agent,
+                status: CLIAgentSessionStatus::Blocked { .. },
                 ..
             } => {
+                if self
+                    .panefleet_working_agent_sessions
+                    .contains(terminal_view_id)
+                    && self.panefleet_fleet_last_event_kinds.get(terminal_view_id)
+                        != Some(&PaneFleetFleetEventKind::NeedsInput)
+                {
+                    fleet_event = Some((*agent, PaneFleetFleetEventKind::NeedsInput));
+                }
+            }
+            CLIAgentSessionsModelEvent::StatusChanged {
+                terminal_view_id,
+                agent,
+                status,
+                ..
+            } if matches!(
+                status,
+                CLIAgentSessionStatus::Success | CLIAgentSessionStatus::Failed { .. }
+            ) =>
+            {
                 if self
                     .panefleet_working_agent_sessions
                     .remove(terminal_view_id)
@@ -4215,6 +4253,14 @@ impl Workspace {
                         &PaneFleetNotificationPreferences::path(),
                     )
                     .play_agent_completion_sound();
+                    fleet_event = Some((
+                        *agent,
+                        if matches!(status, CLIAgentSessionStatus::Success) {
+                            PaneFleetFleetEventKind::Completed
+                        } else {
+                            PaneFleetFleetEventKind::Failed
+                        },
+                    ));
                 }
             }
             CLIAgentSessionsModelEvent::Ended {
@@ -4224,8 +4270,36 @@ impl Workspace {
                     .remove(terminal_view_id);
                 self.panefleet_agent_turn_started_at
                     .remove(terminal_view_id);
+                self.panefleet_fleet_last_event_kinds
+                    .remove(terminal_view_id);
+                self.panefleet_fleet_events
+                    .clear_terminal_target(*terminal_view_id);
             }
             _ => {}
+        }
+
+        let Some((agent, kind)) = fleet_event else {
+            return;
+        };
+        let Some(workspace_path) =
+            self.panefleet_project_path_for_terminal_view(terminal_view_id, ctx)
+        else {
+            return;
+        };
+
+        self.panefleet_fleet_events.record(PaneFleetFleetEvent::new(
+            workspace_path,
+            agent,
+            kind,
+            terminal_view_id,
+        ));
+        self.panefleet_fleet_last_event_kinds
+            .insert(terminal_view_id, kind);
+        if let Err(error) = self
+            .panefleet_fleet_events
+            .write_atomic(&PaneFleetFleetEventStore::path())
+        {
+            log::warn!("Failed to write PaneFleet fleet events: {error}");
         }
     }
 
@@ -4251,7 +4325,7 @@ impl Workspace {
             && let Some(pane_group_id) =
                 self.panefleet_pane_group_id_for_terminal_view(event.terminal_view_id(), ctx)
         {
-            self.update_panefleet_agent_completion_sound(event, pane_group_id);
+            self.update_panefleet_agent_lifecycle(event, pane_group_id, ctx);
 
             let observed_session = CLIAgentSessionsModel::as_ref(ctx)
                 .session(event.terminal_view_id())
@@ -23267,6 +23341,134 @@ impl Workspace {
         grid.finish()
     }
 
+    fn format_panefleet_event_age(occurred_at_unix_ms: u64) -> String {
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        Self::format_panefleet_event_age_at(now_ms, occurred_at_unix_ms)
+    }
+
+    fn format_panefleet_event_age_at(now_ms: u64, occurred_at_unix_ms: u64) -> String {
+        let elapsed_seconds = now_ms.saturating_sub(occurred_at_unix_ms) / 1_000;
+        match elapsed_seconds {
+            0..=4 => "just now".to_string(),
+            5..=59 => format!("{elapsed_seconds}s ago"),
+            60..=3_599 => format!("{}m ago", elapsed_seconds / 60),
+            3_600..=86_399 => format!("{}h ago", elapsed_seconds / 3_600),
+            _ => format!("{}d ago", elapsed_seconds / 86_400),
+        }
+    }
+
+    fn render_panefleet_fleet_event_row(
+        &self,
+        event: PaneFleetFleetEvent,
+        appearance: &Appearance,
+    ) -> Box<dyn Element> {
+        let theme = appearance.theme();
+        let font_family = appearance.ui_font_family();
+        let main_text = theme.main_text_color(theme.background());
+        let sub_text = theme.sub_text_color(theme.background());
+        let (description, status_fill) = match event.kind {
+            PaneFleetFleetEventKind::Started => ("started working", theme.accent()),
+            PaneFleetFleetEventKind::NeedsInput => ("needs input", Fill::warn()),
+            PaneFleetFleetEventKind::Completed => ("completed a turn", Fill::success()),
+            PaneFleetFleetEventKind::Failed => ("turn failed", Fill::error()),
+        };
+        let workspace_name = event
+            .workspace_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .filter(|name| !name.is_empty())
+            .unwrap_or("Workspace")
+            .to_string();
+        let elapsed = Self::format_panefleet_event_age(event.occurred_at_unix_ms);
+        let mouse_state = self
+            .panefleet_fleet_event_mouse_states
+            .borrow_mut()
+            .entry(event.id)
+            .or_default()
+            .clone();
+        let agent = event.agent;
+        let terminal_view_id = event.terminal_view_id;
+        let workspace_path = event.workspace_path;
+
+        Hoverable::new(mouse_state, move |state| {
+            let identity = Flex::row()
+                .with_main_axis_size(MainAxisSize::Max)
+                .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                .with_spacing(8.)
+                .with_child(
+                    Text::new_inline(elapsed.clone(), font_family, 10.)
+                        .with_color(sub_text.into())
+                        .finish(),
+                )
+                .with_child(
+                    ConstrainedBox::new(
+                        agent
+                            .icon()
+                            .unwrap_or(Icon::Terminal)
+                            .to_warpui_icon(main_text)
+                            .finish(),
+                    )
+                    .with_width(15.)
+                    .with_height(15.)
+                    .finish(),
+                )
+                .with_child(
+                    Text::new_inline(agent.display_name(), font_family, 11.)
+                        .with_color(main_text.into())
+                        .finish(),
+                )
+                .with_child(
+                    Expanded::new(
+                        1.,
+                        Text::new_inline(description, font_family, 11.)
+                            .with_color(sub_text.into())
+                            .finish(),
+                    )
+                    .finish(),
+                )
+                .with_child(
+                    ConstrainedBox::new(
+                        Container::new(Empty::new().finish())
+                            .with_background(status_fill)
+                            .with_corner_radius(CornerRadius::with_all(Radius::Percentage(50.)))
+                            .finish(),
+                    )
+                    .with_width(6.)
+                    .with_height(6.)
+                    .finish(),
+                )
+                .with_child(
+                    Text::new_inline(workspace_name.clone(), font_family, 10.)
+                        .with_color(sub_text.into())
+                        .with_clip(ClipConfig::ellipsis())
+                        .finish(),
+                )
+                .finish();
+            let mut container = Container::new(identity)
+                .with_padding(Padding::uniform(10.).with_left(12.).with_right(12.));
+            if state.is_hovered() {
+                container = container.with_background(internal_colors::fg_overlay_1(theme));
+            }
+            container.finish()
+        })
+        .on_click(move |ctx, _, _| {
+            if let Some(terminal_view_id) = terminal_view_id {
+                ctx.dispatch_typed_action(WorkspaceAction::FocusTerminalViewInWorkspace {
+                    terminal_view_id,
+                });
+            } else {
+                ctx.dispatch_typed_action(WorkspaceAction::OpenPaneFleetWorkspace {
+                    path: workspace_path.clone(),
+                });
+            }
+        })
+        .with_cursor(Cursor::PointingHand)
+        .finish()
+    }
+
     fn render_panefleet_fleet_dashboard(
         &self,
         appearance: &Appearance,
@@ -23292,9 +23494,19 @@ impl Workspace {
                 )
             })
             .count();
-        let done = rows
-            .iter()
-            .filter(|row| row.status == PaneFleetFleetStatus::Done)
+        let today = chrono::Local::now().date_naive();
+        let done = self
+            .panefleet_fleet_events
+            .recent()
+            .filter(|event| event.kind == PaneFleetFleetEventKind::Completed)
+            .filter(|event| {
+                i64::try_from(event.occurred_at_unix_ms)
+                    .ok()
+                    .and_then(chrono::DateTime::from_timestamp_millis)
+                    .is_some_and(|timestamp| {
+                        timestamp.with_timezone(&chrono::Local).date_naive() == today
+                    })
+            })
             .count();
 
         let close = self
@@ -23383,7 +23595,7 @@ impl Workspace {
                 Expanded::new(
                     1.,
                     self.render_panefleet_fleet_stat(
-                        "Completed sessions",
+                        "Completed today",
                         done,
                         Fill::success(),
                         false,
@@ -23431,11 +23643,17 @@ impl Workspace {
         };
 
         let mut activity = Flex::column().with_main_axis_size(MainAxisSize::Min);
-        if rows.is_empty() {
+        let recent_events = self
+            .panefleet_fleet_events
+            .recent()
+            .take(MAX_ACTIVITY_ROWS)
+            .cloned()
+            .collect::<Vec<_>>();
+        if recent_events.is_empty() {
             activity.add_child(
                 Container::new(
                     Text::new_inline(
-                        "Agent activity will appear here after a CLI session is detected.",
+                        "Agent activity will appear here after the first real CLI-agent turn.",
                         font_family,
                         11.,
                     )
@@ -23446,9 +23664,9 @@ impl Workspace {
                 .finish(),
             );
         } else {
-            for row in rows.iter().take(MAX_ACTIVITY_ROWS).cloned() {
+            for event in recent_events {
                 activity.add_child(
-                    Container::new(self.render_panefleet_fleet_row(row, appearance))
+                    Container::new(self.render_panefleet_fleet_event_row(event, appearance))
                         .with_border(Border::bottom(1.).with_border_fill(theme.outline()))
                         .finish(),
                 );
@@ -23472,7 +23690,7 @@ impl Workspace {
                                 .finish(),
                             )
                             .with_child(
-                                Text::new_inline("Current activity", font_family, 12.)
+                                Text::new_inline("Recent activity", font_family, 12.)
                                     .with_color(main_text.into())
                                     .with_style(Properties {
                                         weight: Weight::Semibold,

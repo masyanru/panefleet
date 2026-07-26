@@ -56,6 +56,8 @@ agents side by side.
   reopening an empty terminal with the old title.
 - **Agent activity indicators** that distinguish an active turn from an idle
   CLI process.
+- **Fleet Dashboard** with every open workspace, live agent state, and a local
+  recent-activity timeline for real agent turns.
 - **Agent completion sounds** with three subtle macOS cues and no notification
   on CLI startup or session restore.
 - **Update notifications** backed by public GitHub Releases, with a manual
@@ -109,7 +111,9 @@ PaneFleet is currently local-first:
 - Warp authentication, cloud agents, session sharing, and settings sync are
   disabled.
 - PaneFleet has no account system, subscription service, or cloud sync backend.
-- Workspace and agent metadata are stored locally.
+- Workspace, agent, and Fleet lifecycle metadata are stored locally.
+- The Fleet event history stores event type, agent, workspace path, and time.
+  It does not store prompts, responses, or tool arguments.
 
 The CLI agents and commands launched inside the terminal may still connect to
 their own providers or any network destination available to them. Their network

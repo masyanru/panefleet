@@ -2925,6 +2925,35 @@ fn panefleet_fleet_elapsed_uses_compact_units() {
 }
 
 #[test]
+fn panefleet_fleet_event_age_is_human_readable_and_saturating() {
+    let now = 10 * 86_400_000;
+    assert_eq!(
+        Workspace::format_panefleet_event_age_at(now, now),
+        "just now"
+    );
+    assert_eq!(
+        Workspace::format_panefleet_event_age_at(now, now - 42_000),
+        "42s ago"
+    );
+    assert_eq!(
+        Workspace::format_panefleet_event_age_at(now, now - 12 * 60_000),
+        "12m ago"
+    );
+    assert_eq!(
+        Workspace::format_panefleet_event_age_at(now, now - 3 * 3_600_000),
+        "3h ago"
+    );
+    assert_eq!(
+        Workspace::format_panefleet_event_age_at(now, now - 2 * 86_400_000),
+        "2d ago"
+    );
+    assert_eq!(
+        Workspace::format_panefleet_event_age_at(now, now + 1_000),
+        "just now"
+    );
+}
+
+#[test]
 fn panefleet_fleet_workspace_status_prioritizes_attention_over_activity() {
     assert_eq!(
         Workspace::aggregate_panefleet_fleet_status([]),

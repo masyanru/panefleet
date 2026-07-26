@@ -13,6 +13,10 @@
 </p>
 
 <p align="center">
+  <code>brew install --cask masyanru/panefleet/panefleet</code>
+</p>
+
+<p align="center">
   <img src="docs/images/panefleet-workbench.png" width="1200" alt="PaneFleet workbench" />
 </p>
 
@@ -132,13 +136,14 @@ PaneFleet is an early development prototype, not a finished distribution.
 
 Use it on non-critical workspaces and keep normal Git backups.
 
-## Download for macOS
+## Install on macOS
 
 The current alpha is available for Apple Silicon Macs (`arm64`):
 
 ### Homebrew
 
-Install PaneFleet from the official tap:
+Install PaneFleet from the
+[official project tap](https://github.com/masyanru/homebrew-panefleet):
 
 ```bash
 brew install --cask masyanru/panefleet/panefleet
@@ -149,6 +154,12 @@ Future releases can be installed with:
 ```bash
 brew update
 brew upgrade --cask panefleet
+```
+
+Uninstall it with:
+
+```bash
+brew uninstall --cask panefleet
 ```
 
 ### Direct download

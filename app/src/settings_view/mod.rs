@@ -1375,7 +1375,9 @@ impl SettingsView {
             SettingsPage::new(environments_page_handle.clone()),
         ]);
 
-        if !panefleet_enabled {
+        if panefleet_enabled {
+            settings_pages.push(SettingsPage::new(about_page_handle));
+        } else {
             settings_pages.extend([
                 SettingsPage::new(privacy_page_handle),
                 SettingsPage::new(about_page_handle),
@@ -1405,6 +1407,7 @@ impl SettingsView {
                 SettingsNavItem::Page(SettingsSection::Appearance),
                 SettingsNavItem::Page(SettingsSection::Features),
                 SettingsNavItem::Page(SettingsSection::Keybindings),
+                SettingsNavItem::Page(SettingsSection::About),
             ]
         } else {
             vec![

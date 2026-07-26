@@ -307,6 +307,7 @@ use crate::pane_group::{
     ExecutionProfileEditorPane, NetworkLogPane, NewTerminalOptions, PaneGroup, PaneId, PanesLayout,
     TabBarHoverIndex, TerminalPaneId, WorkingDirectoriesModel,
 };
+use crate::panefleet_update::{PaneFleetUpdateChecker, PaneFleetUpdateEvent};
 use crate::persistence::ModelEvent;
 use crate::projects::ProjectManagementModel;
 use crate::prompt::editor_modal::{
@@ -724,6 +725,8 @@ enum TabConfigsMenuOpenSource {
 /// This enumerates the different kinds of banners we show to the user.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum WorkspaceBanner {
+    /// A newer PaneFleet release is available on GitHub.
+    PaneFleetUpdateAvailable,
     /// to display the banner when we are in AutoupdateStage::UpdateReady and the
     /// user's current version has been deprecated
     VersionDeprecated,
@@ -749,6 +752,7 @@ impl WorkspaceBanner {
     /// not be dismissible
     fn is_dismissible(&self) -> bool {
         match self {
+            Self::PaneFleetUpdateAvailable => true,
             Self::UnableToUpdateToNewVersion => true,
             Self::UnableToLaunchNewVersion => true,
             Self::VersionDeprecated => false,
@@ -889,6 +893,8 @@ struct FileUploadSessions {
 /// Controls the color palette used for a workspace banner.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum BannerSeverity {
+    /// Informational banners use an ansi-blended blue background.
+    Info,
     /// Warning banners use an ansi-blended yellow background.
     Warning,
     /// Error banners use an ansi-blended red background.
@@ -3197,6 +3203,14 @@ impl Workspace {
                 ctx.notify();
             }
         });
+        ctx.subscribe_to_model(
+            &PaneFleetUpdateChecker::handle(ctx),
+            |_view, _handle, event, ctx| {
+                if matches!(event, PaneFleetUpdateEvent::Changed) {
+                    ctx.notify();
+                }
+            },
+        );
 
         ctx.subscribe_to_model(
             &BlocklistAIHistoryModel::handle(ctx),
@@ -23241,6 +23255,7 @@ impl Workspace {
         let banner_fields = self
             .render_reauth_banner_element()
             .or_else(|| self.render_settings_error_banner(app))
+            .or_else(|| self.render_panefleet_update_banner_element(app))
             .or_else(|| self.render_autoupdate_banner_element(app));
 
         #[cfg(enable_crash_recovery)]
@@ -23306,6 +23321,39 @@ impl Workspace {
             button: Some(WorkspaceBannerButtonDetails {
                 text: "Sign in".into(),
                 action: WorkspaceAction::Reauth,
+                variant: BannerButtonVariant::Outlined,
+                icon: None,
+                more_info_button_action: None,
+            }),
+        })
+    }
+
+    fn render_panefleet_update_banner_element(
+        &self,
+        app: &AppContext,
+    ) -> Option<WorkspaceBannerFields> {
+        if !FeatureFlag::PaneFleetWorkbench.is_enabled() {
+            return None;
+        }
+
+        let release = PaneFleetUpdateChecker::as_ref(app).available_release_for_banner()?;
+        Some(WorkspaceBannerFields {
+            banner_type: WorkspaceBanner::PaneFleetUpdateAvailable,
+            severity: BannerSeverity::Info,
+            heading: Some(format!("PaneFleet {} is available.", release.tag_name)),
+            description: "Download it from GitHub Releases when you're ready.".to_owned(),
+            secondary_button: Some(WorkspaceBannerButtonDetails {
+                text: "Later".to_owned(),
+                action: WorkspaceAction::DismissWorkspaceBanner(
+                    WorkspaceBanner::PaneFleetUpdateAvailable,
+                ),
+                variant: BannerButtonVariant::Naked,
+                icon: None,
+                more_info_button_action: None,
+            }),
+            button: Some(WorkspaceBannerButtonDetails {
+                text: "View release".to_owned(),
+                action: WorkspaceAction::OpenLink(release.html_url.clone()),
                 variant: BannerButtonVariant::Outlined,
                 icon: None,
                 more_info_button_action: None,
@@ -23427,6 +23475,7 @@ impl Workspace {
     ) -> Box<dyn Element> {
         let theme = appearance.theme();
         let bg_color = match fields.severity {
+            BannerSeverity::Info => theme.ansi_fg_blue(),
             BannerSeverity::Warning => theme.ansi_fg_yellow(),
             BannerSeverity::Error => theme.ansi_fg_red(),
         };
@@ -23642,6 +23691,11 @@ impl Workspace {
         banner_type: &WorkspaceBanner,
     ) {
         match banner_type {
+            WorkspaceBanner::PaneFleetUpdateAvailable => {
+                PaneFleetUpdateChecker::handle(ctx).update(ctx, |checker, ctx| {
+                    checker.dismiss_available_update(ctx);
+                });
+            }
             WorkspaceBanner::UnableToUpdateToNewVersion => {
                 self.autoupdate_unable_to_update_banner_dismissed = true;
             }
@@ -25469,6 +25523,11 @@ impl TypedActionView for Workspace {
             ToggleErrorUnderlining => self.toggle_error_underlining(ctx),
             ToggleSyntaxHighlighting => self.toggle_syntax_highlighting(ctx),
             CheckForUpdate => self.manual_check_for_update(ctx),
+            CheckPaneFleetForUpdates => {
+                PaneFleetUpdateChecker::handle(ctx).update(ctx, |checker, ctx| {
+                    checker.manually_check_for_update(ctx);
+                });
+            }
             SetA11yVerbosityLevel(verbosity) => self.set_a11y_verbosity(*verbosity, ctx),
             ToggleNotifications => self.toggle_notifications(ctx),
             ToggleTabColor { color, tab_index } => self.toggle_tab_color(*tab_index, *color, ctx),

@@ -52,6 +52,7 @@ mod network;
 mod notebooks;
 mod notification;
 mod palette;
+mod panefleet_update;
 mod persistence;
 mod platform;
 #[cfg(feature = "plugin_host")]
@@ -2340,6 +2341,7 @@ pub(crate) fn initialize_app(
     }
 
     AutoupdateState::register(ctx, server_api.clone());
+    ctx.add_singleton_model(panefleet_update::PaneFleetUpdateChecker::new);
 
     ctx.add_singleton_model(LocalWorkflows::new);
 

@@ -33,7 +33,7 @@ PANEFLEET_CHECKSUM="${PANEFLEET_ARCHIVE}.sha256"
 
 echo "Building PaneFleet release bundle..."
 cd "${PANEFLEET_REPO_ROOT}/app"
-cargo bundle --release --bin panefleet
+GIT_RELEASE_TAG="${PANEFLEET_VERSION}" cargo bundle --release --bin panefleet
 cd "${PANEFLEET_REPO_ROOT}"
 
 if [[ ! -d "${PANEFLEET_APP}" ]]; then

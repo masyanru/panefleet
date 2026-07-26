@@ -327,6 +327,7 @@ pub enum WorkspaceAction {
     ToggleErrorUnderlining,
     ToggleSyntaxHighlighting,
     CheckForUpdate,
+    CheckPaneFleetForUpdates,
     ExportAllWarpDriveObjects,
     SetA11yVerbosityLevel(AccessibilityVerbosity),
     ToggleNotifications,
@@ -1048,6 +1049,7 @@ impl WorkspaceAction {
             | SelectNewSessionMenuItem(_)
             | ToggleTabBarOverflowMenu
             | CheckForUpdate
+            | CheckPaneFleetForUpdates
             | SetA11yVerbosityLevel(_)
             | ToggleNotifications
             | DispatchToSettingsTab { .. }

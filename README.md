@@ -54,6 +54,8 @@ agents side by side.
   CLI process.
 - **Agent completion sounds** with three subtle macOS cues and no notification
   on CLI startup or session restore.
+- **Update notifications** backed by public GitHub Releases, with a manual
+  check in Settings → About.
 - **Project explorer** in the right context sidebar, alongside Changes and
   Review.
 - **File actions** for creating files and folders, refreshing the tree, and
@@ -167,8 +169,21 @@ PaneFleet GitHub release; verify the accompanying `.sha256` checksum when
 possible.
 
 The release is ad-hoc signed but cannot be notarized until the project's Apple
-Developer enrollment is approved. An Intel build and automatic updates are not
-available yet.
+Developer enrollment is approved. An Intel build and automatic installation of
+updates are not available yet.
+
+### Update notifications
+
+PaneFleet checks the public
+[GitHub Releases](https://github.com/masyanru/panefleet/releases) feed shortly
+after launch and then once every 24 hours while the app is running. When a newer
+compatible macOS release is available, PaneFleet shows a dismissible banner
+with a link to its release page. A dismissed version stays hidden, but a later
+version will be shown.
+
+You can also run the check manually from **Settings → About → Check for
+updates**. The checker never downloads, replaces, or launches an update by
+itself.
 
 ## Build on macOS
 

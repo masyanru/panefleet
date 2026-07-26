@@ -259,6 +259,7 @@ rust-embed = { version = "8.7.0", features = ["include-exclude"] }
 rustc-hash = "2.1.1"
 rustls = "0.23.39"
 schemars = { version = "1", features = ["chrono04"] }
+semver = "1.0"
 sentry = { version = "0.47.0", default-features = false, features = [
   "anyhow",
   "backtrace",

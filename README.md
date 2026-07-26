@@ -136,6 +136,23 @@ Use it on non-critical workspaces and keep normal Git backups.
 
 The current alpha is available for Apple Silicon Macs (`arm64`):
 
+### Homebrew
+
+Install PaneFleet from the official tap:
+
+```bash
+brew install --cask masyanru/panefleet/panefleet
+```
+
+Future releases can be installed with:
+
+```bash
+brew update
+brew upgrade --cask panefleet
+```
+
+### Direct download
+
 [**Download PaneFleet v0.1.0-alpha.2 for Apple Silicon**](https://github.com/masyanru/panefleet/releases/download/v0.1.0-alpha.2/PaneFleet-v0.1.0-alpha.2-macos-arm64.zip)
 
 1. Download `PaneFleet-…-macos-arm64.zip` and its `.sha256` file.

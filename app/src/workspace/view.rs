@@ -25105,6 +25105,17 @@ impl Workspace {
             .finish()
     }
 
+    fn should_render_panefleet_launcher_bar(&self, app: &AppContext) -> bool {
+        FeatureFlag::PaneFleetWorkbench.is_enabled()
+            && !self
+                .current_workspace_state
+                .is_panefleet_fleet_dashboard_open
+            && !self.current_workspace_state.is_agent_management_view_open
+            && Self::should_enable_file_tree_and_global_search_for_pane_group(
+                self.active_tab_pane_group().as_ref(app),
+            )
+    }
+
     fn render_panefleet_agent_restore_banner(
         &self,
         appearance: &Appearance,
@@ -25185,11 +25196,13 @@ impl Workspace {
             None => active_content,
         };
         let terminal_content = if FeatureFlag::PaneFleetWorkbench.is_enabled() {
-            let mut content = Flex::column()
-                .with_main_axis_size(MainAxisSize::Max)
-                .with_child(self.render_panefleet_launcher_bar(appearance, app));
-            if let Some(restore_banner) = self.render_panefleet_agent_restore_banner(appearance) {
-                content.add_child(restore_banner);
+            let mut content = Flex::column().with_main_axis_size(MainAxisSize::Max);
+            if self.should_render_panefleet_launcher_bar(app) {
+                content.add_child(self.render_panefleet_launcher_bar(appearance, app));
+                if let Some(restore_banner) = self.render_panefleet_agent_restore_banner(appearance)
+                {
+                    content.add_child(restore_banner);
+                }
             }
             content
                 .with_child(Shrinkable::new(1., terminal_content).finish())

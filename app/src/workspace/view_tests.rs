@@ -2822,6 +2822,7 @@ fn panefleet_does_not_open_workspace_panels_for_settings_tab() {
                 ),
                 false
             );
+            assert!(!workspace.should_render_panefleet_launcher_bar(ctx));
             assert_eq!(
                 workspace
                     .active_tab_pane_group()
@@ -2855,6 +2856,34 @@ fn panefleet_does_not_open_workspace_panels_for_settings_tab() {
                     .right_panel_open,
                 false
             );
+        });
+    });
+}
+
+#[test]
+fn panefleet_only_renders_launcher_inside_a_workspace_surface() {
+    let _panefleet_guard = FeatureFlag::PaneFleetWorkbench.override_enabled(true);
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        app.add_singleton_model(|ctx| ProjectManagementModel::new(Vec::new(), None, ctx));
+
+        let workspace = mock_workspace(&mut app);
+        workspace.update(&mut app, |workspace, ctx| {
+            assert!(workspace.should_render_panefleet_launcher_bar(ctx));
+
+            workspace
+                .current_workspace_state
+                .is_panefleet_fleet_dashboard_open = true;
+            assert!(!workspace.should_render_panefleet_launcher_bar(ctx));
+
+            workspace
+                .current_workspace_state
+                .is_panefleet_fleet_dashboard_open = false;
+            workspace
+                .current_workspace_state
+                .is_agent_management_view_open = true;
+            assert!(!workspace.should_render_panefleet_launcher_bar(ctx));
         });
     });
 }

@@ -449,6 +449,13 @@ pub enum WorkspaceAction {
     ShowHeaderToolbarContextMenu {
         position: Vector2F,
     },
+    ClosePaneFleetEnvironment {
+        path: PathBuf,
+    },
+    RequestRemovePaneFleetWorktree {
+        path: PathBuf,
+        delete_branch: bool,
+    },
     Reauth,
     SignupAnonymousUser,
     SignInAnonymousWebUser,
@@ -1166,6 +1173,8 @@ impl WorkspaceAction {
             | OpenMCPServerCollection
             | FocusTerminalViewInWorkspace { .. }
             | OpenPaneFleetWorkspace { .. }
+            | ClosePaneFleetEnvironment { .. }
+            | RequestRemovePaneFleetWorktree { .. }
             | TogglePaneFleetFleetOverview
             | TogglePaneFleetFleetDashboard
             | FocusPane(..)

@@ -48,6 +48,9 @@ agents side by side.
 - **Project workspaces** in a persistent left sidebar.
 - **Grouped Git worktree environments** under one project workspace, each with
   an independently checked-out branch, tabs, agents, and Git context.
+- **Safe worktree cleanup** from the environment menu: dirty worktrees are
+  blocked, branches are kept by default, and optional branch deletion uses
+  Git's non-forcing safety checks.
 - **Workspace-scoped tabs**: changing projects changes the complete set of open
   terminal and agent tabs.
 - **Agent launcher bar** for Terminal, Codex, Claude, OpenCode, and custom agent

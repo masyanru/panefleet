@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::Duration;
 
+use pathfinder_geometry::vector::Vector2F;
 use warp_core::features::FeatureFlag;
 use warp_core::send_telemetry_from_ctx;
 use warp_core::ui::Icon;
@@ -12,9 +13,10 @@ use warpui::assets::asset_cache::AssetSource;
 use warpui::r#async::Timer;
 use warpui::elements::{
     Align, Border, CacheOption, ChildView, ConstrainedBox, Container, CornerRadius,
-    CrossAxisAlignment, DragBarSide, Element, Empty, Fill as ElementFill, Flex, Hoverable, Image,
-    MainAxisAlignment, MainAxisSize, MouseStateHandle, Padding, ParentElement, Radius, Resizable,
-    ResizableStateHandle, Shrinkable, Text, resizable_state_handle,
+    CrossAxisAlignment, DispatchEventResult, DragBarSide, Element, Empty, EventHandler,
+    Fill as ElementFill, Flex, Hoverable, Image, MainAxisAlignment, MainAxisSize, MouseStateHandle,
+    Padding, ParentElement, Radius, Resizable, ResizableStateHandle, Shrinkable, Text,
+    resizable_state_handle,
 };
 use warpui::fonts::Weight;
 use warpui::platform::Cursor;
@@ -175,6 +177,7 @@ pub enum LeftPanelAction {
     OpenPaneFleetFleetDashboard,
     SwitchPaneFleetProject { path: PathBuf },
     ClosePaneFleetProject { path: PathBuf },
+    ShowPaneFleetEnvironmentContextMenu { path: PathBuf, position: Vector2F },
     SignIn,
 }
 
@@ -232,6 +235,10 @@ pub enum LeftPanelEvent {
     },
     ClosePaneFleetProject {
         path: PathBuf,
+    },
+    ShowPaneFleetEnvironmentContextMenu {
+        path: PathBuf,
+        position: Vector2F,
     },
     ShowDeleteConfirmationDialog {
         conversation_id: AIConversationId,
@@ -1450,6 +1457,7 @@ impl LeftPanelView {
         let path = environment.path.clone();
         let path_for_row = path.clone();
         let path_for_close = path.clone();
+        let path_for_context_menu = path.clone();
         let title = environment
             .branch
             .clone()
@@ -1479,86 +1487,99 @@ impl LeftPanelView {
         let close_mouse_state = mouse_states.close.clone();
 
         Container::new(
-            Hoverable::new(mouse_states.row.clone(), move |state| {
-                let mut labels = Flex::column()
-                    .with_main_axis_size(MainAxisSize::Min)
-                    .with_child(
-                        Text::new_inline(title.clone(), font_family, 11.)
-                            .with_color(main_text.into())
+            EventHandler::new(
+                Hoverable::new(mouse_states.row.clone(), move |state| {
+                    let mut labels = Flex::column()
+                        .with_main_axis_size(MainAxisSize::Min)
+                        .with_child(
+                            Text::new_inline(title.clone(), font_family, 11.)
+                                .with_color(main_text.into())
+                                .finish(),
+                        );
+                    if let Some(path_label) = path_label.clone() {
+                        labels.add_child(
+                            Text::new_inline(path_label, font_family, 9.)
+                                .with_color(sub_text.into())
+                                .finish(),
+                        );
+                    }
+                    let mut content = Flex::row()
+                        .with_main_axis_size(MainAxisSize::Max)
+                        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                        .with_spacing(7.)
+                        .with_child(
+                            ConstrainedBox::new(Icon::GitBranch.to_warpui_icon(sub_text).finish())
+                                .with_width(14.)
+                                .with_height(14.)
+                                .finish(),
+                        )
+                        .with_child(Shrinkable::new(1., labels.finish()).finish());
+                    if let Some(activity_indicator) = activity_indicator {
+                        content.add_child(activity_indicator);
+                    }
+                    if state.is_hovered() {
+                        content.add_child(
+                            Hoverable::new(close_mouse_state.clone(), move |button_state| {
+                                let mut close = Container::new(
+                                    ConstrainedBox::new(Icon::X.to_warpui_icon(sub_text).finish())
+                                        .with_width(11.)
+                                        .with_height(11.)
+                                        .finish(),
+                                )
+                                .with_padding(Padding::uniform(2.))
+                                .with_corner_radius(CornerRadius::with_all(Radius::Pixels(4.)));
+                                if button_state.is_hovered() {
+                                    close =
+                                        close.with_background(internal_colors::fg_overlay_3(theme));
+                                }
+                                close.finish()
+                            })
+                            .with_cursor(Cursor::PointingHand)
+                            .on_click({
+                                let path = path_for_close.clone();
+                                move |ctx, _, _| {
+                                    ctx.dispatch_typed_action(
+                                        LeftPanelAction::ClosePaneFleetProject {
+                                            path: path.clone(),
+                                        },
+                                    );
+                                }
+                            })
                             .finish(),
-                    );
-                if let Some(path_label) = path_label.clone() {
-                    labels.add_child(
-                        Text::new_inline(path_label, font_family, 9.)
-                            .with_color(sub_text.into())
-                            .finish(),
-                    );
-                }
-                let mut content = Flex::row()
-                    .with_main_axis_size(MainAxisSize::Max)
-                    .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                    .with_spacing(7.)
-                    .with_child(
-                        ConstrainedBox::new(Icon::GitBranch.to_warpui_icon(sub_text).finish())
-                            .with_width(14.)
-                            .with_height(14.)
-                            .finish(),
-                    )
-                    .with_child(Shrinkable::new(1., labels.finish()).finish());
-                if let Some(activity_indicator) = activity_indicator {
-                    content.add_child(activity_indicator);
-                }
-                if state.is_hovered() {
-                    content.add_child(
-                        Hoverable::new(close_mouse_state.clone(), move |button_state| {
-                            let mut close = Container::new(
-                                ConstrainedBox::new(Icon::X.to_warpui_icon(sub_text).finish())
-                                    .with_width(11.)
-                                    .with_height(11.)
-                                    .finish(),
-                            )
-                            .with_padding(Padding::uniform(2.))
-                            .with_corner_radius(CornerRadius::with_all(Radius::Pixels(4.)));
-                            if button_state.is_hovered() {
-                                close = close.with_background(internal_colors::fg_overlay_3(theme));
-                            }
-                            close.finish()
-                        })
-                        .with_cursor(Cursor::PointingHand)
-                        .on_click({
-                            let path = path_for_close.clone();
-                            move |ctx, _, _| {
-                                ctx.dispatch_typed_action(LeftPanelAction::ClosePaneFleetProject {
-                                    path: path.clone(),
-                                });
-                            }
-                        })
-                        .finish(),
-                    );
-                }
+                        );
+                    }
 
-                let mut row = Container::new(content.finish())
-                    .with_padding(Padding::uniform(6.).with_left(8.))
-                    .with_corner_radius(CornerRadius::with_all(Radius::Pixels(4.)))
-                    .with_border(Border::all(1.).with_border_fill(if is_selected {
-                        internal_colors::fg_overlay_3(theme).into()
-                    } else {
-                        ElementFill::None
-                    }));
-                if is_selected {
-                    row = row.with_background(internal_colors::fg_overlay_2(theme));
-                } else if state.is_hovered() {
-                    row = row.with_background(internal_colors::fg_overlay_1(theme));
-                }
-                row.finish()
-            })
-            .with_defer_events_to_children()
-            .on_click(move |ctx, _, _| {
-                ctx.dispatch_typed_action(LeftPanelAction::SwitchPaneFleetProject {
-                    path: path_for_row.clone(),
+                    let mut row = Container::new(content.finish())
+                        .with_padding(Padding::uniform(6.).with_left(8.))
+                        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(4.)))
+                        .with_border(Border::all(1.).with_border_fill(if is_selected {
+                            internal_colors::fg_overlay_3(theme).into()
+                        } else {
+                            ElementFill::None
+                        }));
+                    if is_selected {
+                        row = row.with_background(internal_colors::fg_overlay_2(theme));
+                    } else if state.is_hovered() {
+                        row = row.with_background(internal_colors::fg_overlay_1(theme));
+                    }
+                    row.finish()
+                })
+                .with_defer_events_to_children()
+                .on_click(move |ctx, _, _| {
+                    ctx.dispatch_typed_action(LeftPanelAction::SwitchPaneFleetProject {
+                        path: path_for_row.clone(),
+                    });
+                })
+                .with_cursor(Cursor::PointingHand)
+                .finish(),
+            )
+            .on_right_mouse_down(move |ctx, _, position| {
+                ctx.dispatch_typed_action(LeftPanelAction::ShowPaneFleetEnvironmentContextMenu {
+                    path: path_for_context_menu.clone(),
+                    position,
                 });
+                DispatchEventResult::StopPropagation
             })
-            .with_cursor(Cursor::PointingHand)
             .finish(),
         )
         .with_margin_left(18.)
@@ -1608,136 +1629,150 @@ impl LeftPanelView {
             .flatten();
         let workspace_icon = workspace_icon_for_path(&project_path);
         let path_for_row = project_path.clone();
+        let path_for_context_menu = project_path.clone();
         let path_for_close = project_path;
         let close_mouse_state = mouse_states.close.clone();
 
-        Hoverable::new(mouse_states.row.clone(), move |state| {
-            let icon: Box<dyn Element> = match workspace_icon {
-                PaneFleetWorkspaceIcon::Github => {
-                    Icon::Github.to_warpui_icon(sub_text_color).finish()
-                }
-                PaneFleetWorkspaceIcon::Git => {
-                    Icon::GitBranch.to_warpui_icon(sub_text_color).finish()
-                }
-                PaneFleetWorkspaceIcon::PaneFleet => Image::new(
-                    AssetSource::Bundled {
-                        path: "bundled/png/panefleet-64.png",
-                    },
-                    CacheOption::BySize,
-                )
-                .finish(),
-            };
-            let icon = ConstrainedBox::new(icon)
-                .with_width(24.)
-                .with_height(24.)
-                .finish();
-
-            let mut labels = Flex::column()
-                .with_main_axis_size(MainAxisSize::Min)
-                .with_child(
-                    Text::new_inline(title.clone(), font_family, 12.)
-                        .with_color(main_text_color.into())
-                        .finish(),
-                );
-            if workspace_path.is_some() || git_branch.is_some() {
-                let mut metadata = Flex::row()
-                    .with_main_axis_size(MainAxisSize::Min)
-                    .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                    .with_spacing(4.);
-                if let Some(path) = workspace_path.clone() {
-                    metadata.add_child(
-                        Shrinkable::new(
-                            1.,
-                            Text::new_inline(path, font_family, 10.)
-                                .with_color(sub_text_color.into())
-                                .finish(),
-                        )
-                        .finish(),
-                    );
-                }
-                if let Some(branch) = git_branch.clone() {
-                    metadata.add_child(
-                        ConstrainedBox::new(
-                            Icon::GitBranch.to_warpui_icon(sub_text_color).finish(),
-                        )
-                        .with_width(10.)
-                        .with_height(10.)
-                        .finish(),
-                    );
-                    metadata.add_child(
-                        Shrinkable::new(
-                            1.,
-                            Text::new_inline(branch, font_family, 10.)
-                                .with_color(sub_text_color.into())
-                                .finish(),
-                        )
-                        .finish(),
-                    );
-                }
-                labels.add_child(metadata.finish());
-            }
-
-            let mut content = Flex::row()
-                .with_main_axis_size(MainAxisSize::Max)
-                .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                .with_spacing(8.)
-                .with_child(icon)
-                .with_child(Shrinkable::new(1., labels.finish()).finish());
-
-            if let Some(activity_indicator) = activity_indicator {
-                content.add_child(activity_indicator);
-            }
-
-            if state.is_hovered() {
-                let close_button = Hoverable::new(close_mouse_state.clone(), move |button_state| {
-                    let mut close = Container::new(
-                        ConstrainedBox::new(Icon::X.to_warpui_icon(sub_text_color).finish())
-                            .with_width(12.)
-                            .with_height(12.)
-                            .finish(),
+        EventHandler::new(
+            Hoverable::new(mouse_states.row.clone(), move |state| {
+                let icon: Box<dyn Element> = match workspace_icon {
+                    PaneFleetWorkspaceIcon::Github => {
+                        Icon::Github.to_warpui_icon(sub_text_color).finish()
+                    }
+                    PaneFleetWorkspaceIcon::Git => {
+                        Icon::GitBranch.to_warpui_icon(sub_text_color).finish()
+                    }
+                    PaneFleetWorkspaceIcon::PaneFleet => Image::new(
+                        AssetSource::Bundled {
+                            path: "bundled/png/panefleet-64.png",
+                        },
+                        CacheOption::BySize,
                     )
-                    .with_padding(Padding::uniform(2.))
-                    .with_corner_radius(CornerRadius::with_all(Radius::Pixels(4.)));
-                    if button_state.is_hovered() {
-                        close = close.with_background(internal_colors::fg_overlay_3(theme));
-                    }
-                    close.finish()
-                })
-                .with_cursor(Cursor::PointingHand)
-                .on_click({
-                    let path = path_for_close.clone();
-                    move |ctx, _, _| {
-                        ctx.dispatch_typed_action(LeftPanelAction::ClosePaneFleetProject {
-                            path: path.clone(),
-                        });
-                    }
-                })
-                .finish();
-                content.add_child(close_button);
-            }
+                    .finish(),
+                };
+                let icon = ConstrainedBox::new(icon)
+                    .with_width(24.)
+                    .with_height(24.)
+                    .finish();
 
-            let mut row = Container::new(content.finish())
-                .with_padding(Padding::uniform(8.))
-                .with_corner_radius(CornerRadius::with_all(Radius::Pixels(4.)))
-                .with_border(Border::all(1.).with_border_fill(if is_selected {
-                    internal_colors::fg_overlay_3(theme).into()
-                } else {
-                    ElementFill::None
-                }));
-            if is_selected {
-                row = row.with_background(internal_colors::fg_overlay_2(theme));
-            } else if state.is_hovered() {
-                row = row.with_background(internal_colors::fg_overlay_1(theme));
-            }
-            row.finish()
-        })
-        .with_defer_events_to_children()
-        .on_click(move |ctx, _, _| {
-            ctx.dispatch_typed_action(LeftPanelAction::SwitchPaneFleetProject {
-                path: path_for_row.clone(),
+                let mut labels = Flex::column()
+                    .with_main_axis_size(MainAxisSize::Min)
+                    .with_child(
+                        Text::new_inline(title.clone(), font_family, 12.)
+                            .with_color(main_text_color.into())
+                            .finish(),
+                    );
+                if workspace_path.is_some() || git_branch.is_some() {
+                    let mut metadata = Flex::row()
+                        .with_main_axis_size(MainAxisSize::Min)
+                        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                        .with_spacing(4.);
+                    if let Some(path) = workspace_path.clone() {
+                        metadata.add_child(
+                            Shrinkable::new(
+                                1.,
+                                Text::new_inline(path, font_family, 10.)
+                                    .with_color(sub_text_color.into())
+                                    .finish(),
+                            )
+                            .finish(),
+                        );
+                    }
+                    if let Some(branch) = git_branch.clone() {
+                        metadata.add_child(
+                            ConstrainedBox::new(
+                                Icon::GitBranch.to_warpui_icon(sub_text_color).finish(),
+                            )
+                            .with_width(10.)
+                            .with_height(10.)
+                            .finish(),
+                        );
+                        metadata.add_child(
+                            Shrinkable::new(
+                                1.,
+                                Text::new_inline(branch, font_family, 10.)
+                                    .with_color(sub_text_color.into())
+                                    .finish(),
+                            )
+                            .finish(),
+                        );
+                    }
+                    labels.add_child(metadata.finish());
+                }
+
+                let mut content = Flex::row()
+                    .with_main_axis_size(MainAxisSize::Max)
+                    .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                    .with_spacing(8.)
+                    .with_child(icon)
+                    .with_child(Shrinkable::new(1., labels.finish()).finish());
+
+                if let Some(activity_indicator) = activity_indicator {
+                    content.add_child(activity_indicator);
+                }
+
+                if state.is_hovered() {
+                    let close_button =
+                        Hoverable::new(close_mouse_state.clone(), move |button_state| {
+                            let mut close = Container::new(
+                                ConstrainedBox::new(
+                                    Icon::X.to_warpui_icon(sub_text_color).finish(),
+                                )
+                                .with_width(12.)
+                                .with_height(12.)
+                                .finish(),
+                            )
+                            .with_padding(Padding::uniform(2.))
+                            .with_corner_radius(CornerRadius::with_all(Radius::Pixels(4.)));
+                            if button_state.is_hovered() {
+                                close = close.with_background(internal_colors::fg_overlay_3(theme));
+                            }
+                            close.finish()
+                        })
+                        .with_cursor(Cursor::PointingHand)
+                        .on_click({
+                            let path = path_for_close.clone();
+                            move |ctx, _, _| {
+                                ctx.dispatch_typed_action(LeftPanelAction::ClosePaneFleetProject {
+                                    path: path.clone(),
+                                });
+                            }
+                        })
+                        .finish();
+                    content.add_child(close_button);
+                }
+
+                let mut row = Container::new(content.finish())
+                    .with_padding(Padding::uniform(8.))
+                    .with_corner_radius(CornerRadius::with_all(Radius::Pixels(4.)))
+                    .with_border(Border::all(1.).with_border_fill(if is_selected {
+                        internal_colors::fg_overlay_3(theme).into()
+                    } else {
+                        ElementFill::None
+                    }));
+                if is_selected {
+                    row = row.with_background(internal_colors::fg_overlay_2(theme));
+                } else if state.is_hovered() {
+                    row = row.with_background(internal_colors::fg_overlay_1(theme));
+                }
+                row.finish()
+            })
+            .with_defer_events_to_children()
+            .on_click(move |ctx, _, _| {
+                ctx.dispatch_typed_action(LeftPanelAction::SwitchPaneFleetProject {
+                    path: path_for_row.clone(),
+                });
+            })
+            .with_cursor(Cursor::PointingHand)
+            .finish(),
+        )
+        .on_right_mouse_down(move |ctx, _, position| {
+            ctx.dispatch_typed_action(LeftPanelAction::ShowPaneFleetEnvironmentContextMenu {
+                path: path_for_context_menu.clone(),
+                position,
             });
+            DispatchEventResult::StopPropagation
         })
-        .with_cursor(Cursor::PointingHand)
         .finish()
     }
 
@@ -1899,6 +1934,7 @@ impl LeftPanelView {
                 LeftPanelAction::OpenPaneFleetFleetDashboard => false,
                 LeftPanelAction::SwitchPaneFleetProject { .. } => false,
                 LeftPanelAction::ClosePaneFleetProject { .. } => false,
+                LeftPanelAction::ShowPaneFleetEnvironmentContextMenu { .. } => false,
                 LeftPanelAction::SignIn => false,
             };
         }
@@ -2053,6 +2089,12 @@ impl LeftPanelView {
             }
             LeftPanelAction::ClosePaneFleetProject { path } => {
                 ctx.emit(LeftPanelEvent::ClosePaneFleetProject { path: path.clone() });
+            }
+            LeftPanelAction::ShowPaneFleetEnvironmentContextMenu { path, position } => {
+                ctx.emit(LeftPanelEvent::ShowPaneFleetEnvironmentContextMenu {
+                    path: path.clone(),
+                    position: *position,
+                });
             }
             LeftPanelAction::SignIn => {
                 ctx.emit(LeftPanelEvent::SignInRequested);

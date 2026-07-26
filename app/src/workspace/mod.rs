@@ -22,6 +22,7 @@ pub(crate) mod panefleet_notifications;
 pub(crate) mod panefleet_preferences;
 mod panefleet_state;
 mod panefleet_workspace_groups;
+mod panefleet_worktree_removal_dialog;
 mod panefleet_worktrees;
 mod registry;
 pub mod rewind_confirmation_dialog;
@@ -90,6 +91,7 @@ pub fn init(app: &mut AppContext) {
 
     modal::init(app);
     native_modal::init(app);
+    panefleet_worktree_removal_dialog::init(app);
     lightbox_view::init(app);
     rewind_confirmation_dialog::init(app);
     delete_conversation_confirmation_dialog::init(app);

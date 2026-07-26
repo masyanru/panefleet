@@ -164,7 +164,13 @@ use super::panefleet_state::{
     panefleet_agent_launch_command, write_panefleet_state_atomic,
 };
 use super::panefleet_workspace_groups::group_panefleet_workspaces;
-use super::panefleet_worktrees::create_panefleet_worktree;
+use super::panefleet_worktree_removal_dialog::{
+    PaneFleetWorktreeRemovalDialog, PaneFleetWorktreeRemovalDialogEvent,
+    PaneFleetWorktreeRemovalDialogSource,
+};
+use super::panefleet_worktrees::{
+    create_panefleet_worktree, inspect_panefleet_worktree_removal, remove_panefleet_worktree,
+};
 use super::rewind_confirmation_dialog::{
     RewindConfirmationDialog, RewindConfirmationEvent, RewindDialogSource,
 };
@@ -1200,6 +1206,10 @@ pub struct Workspace {
     header_toolbar_editor_modal: ViewHandle<HeaderToolbarEditorModal>,
     header_toolbar_context_menu: ViewHandle<Menu<WorkspaceAction>>,
     show_header_toolbar_context_menu: Option<Vector2F>,
+    panefleet_environment_context_menu: ViewHandle<Menu<WorkspaceAction>>,
+    show_panefleet_environment_context_menu: Option<Vector2F>,
+    panefleet_worktree_removal_dialog: ViewHandle<PaneFleetWorktreeRemovalDialog>,
+    panefleet_worktree_removal_dialog_open: bool,
     theme_creator_modal: ViewHandle<ThemeCreatorModal>,
     theme_deletion_modal: ViewHandle<ThemeDeletionModal>,
     suggested_agent_mode_workflow_modal: ViewHandle<SuggestedAgentModeWorkflowModal>,
@@ -2053,6 +2063,16 @@ impl Workspace {
         );
 
         delete_conversation_confirmation_dialog
+    }
+
+    fn build_panefleet_worktree_removal_dialog(
+        ctx: &mut ViewContext<Self>,
+    ) -> ViewHandle<PaneFleetWorktreeRemovalDialog> {
+        let dialog = ctx.add_typed_action_view(PaneFleetWorktreeRemovalDialog::new);
+        ctx.subscribe_to_view(&dialog, |me, _, event, ctx| {
+            me.handle_panefleet_worktree_removal_dialog_event(event, ctx);
+        });
+        dialog
     }
 
     fn build_native_modal_view(ctx: &mut ViewContext<Self>) -> ViewHandle<NativeModal> {
@@ -3152,6 +3172,9 @@ impl Workspace {
         let rewind_confirmation_dialog = Self::build_rewind_confirmation_dialog(ctx);
         let delete_conversation_confirmation_dialog =
             Self::build_delete_conversation_confirmation_dialog(ctx);
+        let panefleet_worktree_removal_dialog = Self::build_panefleet_worktree_removal_dialog(ctx);
+        let panefleet_environment_context_menu =
+            Self::build_panefleet_environment_context_menu(ctx);
         let command_search_view =
             ctx.add_typed_action_view(|ctx| CommandSearchView::new(ai_client.clone(), ctx));
         ctx.subscribe_to_view(&command_search_view, |me, _, event, ctx| {
@@ -3577,6 +3600,8 @@ impl Workspace {
             close_session_confirmation_dialog,
             rewind_confirmation_dialog,
             delete_conversation_confirmation_dialog,
+            panefleet_worktree_removal_dialog,
+            panefleet_worktree_removal_dialog_open: false,
             resource_center_view,
             command_search_view,
             autoupdate_unable_to_update_banner_dismissed: false,
@@ -3606,6 +3631,8 @@ impl Workspace {
             header_toolbar_editor_modal: Self::build_header_toolbar_editor_modal(ctx),
             header_toolbar_context_menu: Self::build_header_toolbar_context_menu(ctx),
             show_header_toolbar_context_menu: None,
+            panefleet_environment_context_menu,
+            show_panefleet_environment_context_menu: None,
             is_user_menu_open: false,
             tab_bar_pinned_by_popup: false,
             user_menu,
@@ -6941,6 +6968,19 @@ impl Workspace {
         menu
     }
 
+    fn build_panefleet_environment_context_menu(
+        ctx: &mut ViewContext<Self>,
+    ) -> ViewHandle<Menu<WorkspaceAction>> {
+        let menu = ctx.add_typed_action_view(|_| Menu::new().with_drop_shadow());
+        ctx.subscribe_to_view(&menu, |me, _, event, ctx| {
+            if let MenuEvent::Close { .. } = event {
+                me.show_panefleet_environment_context_menu = None;
+                ctx.notify();
+            }
+        });
+        menu
+    }
+
     fn show_header_toolbar_context_menu(
         &mut self,
         position: Vector2F,
@@ -6959,6 +6999,165 @@ impl Workspace {
         self.show_header_toolbar_context_menu = Some(position);
         ctx.focus(&self.header_toolbar_context_menu);
         ctx.notify();
+    }
+
+    fn show_panefleet_environment_context_menu(
+        &mut self,
+        path: PathBuf,
+        position: Vector2F,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let mut items = vec![
+            MenuItemFields::new("Open Environment")
+                .with_on_select_action(WorkspaceAction::OpenPaneFleetWorkspace {
+                    path: path.clone(),
+                })
+                .into_item(),
+            MenuItemFields::new("Reveal in Finder")
+                .with_on_select_action(WorkspaceAction::OpenInExplorer { path: path.clone() })
+                .into_item(),
+            MenuItem::Separator,
+            MenuItemFields::new("Close Environment")
+                .with_on_select_action(WorkspaceAction::ClosePaneFleetEnvironment {
+                    path: path.clone(),
+                })
+                .into_item(),
+        ];
+        if matches!(
+            self.panefleet_workspace_sources.get(&path),
+            Some(PaneFleetWorkspaceSource::IsolatedWorktree { managed: true, .. })
+        ) {
+            items.push(MenuItem::Separator);
+            items.push(
+                MenuItemFields::new("Remove Worktree…")
+                    .with_on_select_action(WorkspaceAction::RequestRemovePaneFleetWorktree {
+                        path: path.clone(),
+                        delete_branch: false,
+                    })
+                    .into_item(),
+            );
+            items.push(
+                MenuItemFields::new("Remove Worktree and Delete Branch…")
+                    .with_on_select_action(WorkspaceAction::RequestRemovePaneFleetWorktree {
+                        path,
+                        delete_branch: true,
+                    })
+                    .into_item(),
+            );
+        }
+        self.panefleet_environment_context_menu
+            .update(ctx, |menu, ctx| {
+                menu.set_width(300.);
+                menu.set_items(items, ctx);
+            });
+        self.show_panefleet_environment_context_menu = Some(position);
+        ctx.focus(&self.panefleet_environment_context_menu);
+        ctx.notify();
+    }
+
+    fn request_remove_panefleet_worktree(
+        &mut self,
+        path: &Path,
+        delete_branch: bool,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        self.show_panefleet_environment_context_menu = None;
+        let Some(PaneFleetWorkspaceSource::IsolatedWorktree {
+            source_repository,
+            branch,
+            managed,
+        }) = self.panefleet_workspace_sources.get(path).cloned()
+        else {
+            self.show_panefleet_error_toast(
+                "Only Git worktree environments can be removed".to_string(),
+                ctx,
+            );
+            return;
+        };
+        if !managed {
+            self.show_panefleet_error_toast(
+                "This folder is externally managed. PaneFleet can only forget it".to_string(),
+                ctx,
+            );
+            return;
+        }
+        let inspection = match inspect_panefleet_worktree_removal(&source_repository, path, &branch)
+        {
+            Ok(inspection) => inspection,
+            Err(error) => {
+                self.show_panefleet_error_toast(format!("Cannot remove worktree: {error:#}"), ctx);
+                return;
+            }
+        };
+        self.panefleet_worktree_removal_dialog
+            .update(ctx, |dialog, ctx| {
+                dialog.set_source(
+                    PaneFleetWorktreeRemovalDialogSource {
+                        inspection,
+                        delete_branch,
+                    },
+                    ctx,
+                );
+            });
+        self.panefleet_worktree_removal_dialog_open = true;
+        ctx.focus(&self.panefleet_worktree_removal_dialog);
+        ctx.notify();
+    }
+
+    fn execute_remove_panefleet_worktree(
+        &mut self,
+        source: PaneFleetWorktreeRemovalDialogSource,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        self.panefleet_worktree_removal_dialog_open = false;
+        let path = source.inspection.path.clone();
+        let workspace_source = self.panefleet_workspace_sources.get(&path).cloned();
+        self.close_panefleet_project(&path, ctx);
+
+        match remove_panefleet_worktree(&source.inspection, source.delete_branch) {
+            Ok(outcome) => {
+                if let Some(error) = outcome.branch_delete_error {
+                    self.toast_stack.update(ctx, |toast_stack, ctx| {
+                        toast_stack.add_persistent_toast(
+                            DismissibleToast::default(format!(
+                                "Worktree removed, but branch '{}' was kept: {error}",
+                                source.inspection.branch
+                            )),
+                            ctx,
+                        );
+                    });
+                } else {
+                    let message = if source.delete_branch {
+                        format!("Removed worktree and branch '{}'", source.inspection.branch)
+                    } else {
+                        format!(
+                            "Removed worktree; branch '{}' was kept",
+                            source.inspection.branch
+                        )
+                    };
+                    self.toast_stack.update(ctx, |toast_stack, ctx| {
+                        toast_stack.add_ephemeral_toast(DismissibleToast::success(message), ctx);
+                    });
+                }
+            }
+            Err(error) => {
+                if let Some(workspace_source) = workspace_source {
+                    self.open_panefleet_workspace(path, workspace_source, ctx);
+                }
+                self.show_panefleet_error_toast(
+                    format!("Could not remove worktree: {error:#}"),
+                    ctx,
+                );
+            }
+        }
+        ctx.focus(&self.left_panel_view);
+        ctx.notify();
+    }
+
+    fn show_panefleet_error_toast(&self, message: String, ctx: &mut ViewContext<Self>) {
+        self.toast_stack.update(ctx, |toast_stack, ctx| {
+            toast_stack.add_persistent_toast(DismissibleToast::error(message), ctx);
+        });
     }
 
     fn open_header_toolbar_editor(&mut self, ctx: &mut ViewContext<Self>) {
@@ -7265,6 +7464,9 @@ impl Workspace {
             }
             LeftPanelEvent::ClosePaneFleetProject { path } => {
                 self.close_panefleet_project(path, ctx);
+            }
+            LeftPanelEvent::ShowPaneFleetEnvironmentContextMenu { path, position } => {
+                self.show_panefleet_environment_context_menu(path.clone(), *position, ctx);
             }
             LeftPanelEvent::ShowDeleteConfirmationDialog {
                 conversation_id,
@@ -12953,6 +13155,23 @@ impl Workspace {
         }
     }
 
+    fn handle_panefleet_worktree_removal_dialog_event(
+        &mut self,
+        event: &PaneFleetWorktreeRemovalDialogEvent,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        match event {
+            PaneFleetWorktreeRemovalDialogEvent::Cancel => {
+                self.panefleet_worktree_removal_dialog_open = false;
+                ctx.focus(&self.left_panel_view);
+                ctx.notify();
+            }
+            PaneFleetWorktreeRemovalDialogEvent::Confirm { source } => {
+                self.execute_remove_panefleet_worktree(source.clone(), ctx);
+            }
+        }
+    }
+
     pub fn handle_network_status_event(
         &mut self,
         _handle: ModelHandle<NetworkStatus>,
@@ -16116,6 +16335,8 @@ impl Workspace {
     /// Close all overlays in this workspace and the active pane group.
     fn close_all_overlays(&mut self, ctx: &mut ViewContext<Self>) {
         self.current_workspace_state.close_all_modals();
+        self.show_panefleet_environment_context_menu = None;
+        self.panefleet_worktree_removal_dialog_open = false;
         self.close_tab_bar_overflow_menu(ctx);
         self.close_all_chip_menus(ctx);
 
@@ -28825,6 +29046,20 @@ impl TypedActionView for Workspace {
                     self.switch_panefleet_project(path.clone(), true, ctx);
                 }
             }
+            ClosePaneFleetEnvironment { path } => {
+                if FeatureFlag::PaneFleetWorkbench.is_enabled() {
+                    self.show_panefleet_environment_context_menu = None;
+                    self.close_panefleet_project(path, ctx);
+                }
+            }
+            RequestRemovePaneFleetWorktree {
+                path,
+                delete_branch,
+            } => {
+                if FeatureFlag::PaneFleetWorkbench.is_enabled() {
+                    self.request_remove_panefleet_worktree(path, *delete_branch, ctx);
+                }
+            }
             TogglePaneFleetFleetOverview => {
                 if FeatureFlag::PaneFleetWorkbench.is_enabled() {
                     let opening = !self
@@ -30174,6 +30409,18 @@ impl View for Workspace {
             );
         }
 
+        if let Some(position) = self.show_panefleet_environment_context_menu {
+            stack.add_positioned_overlay_child(
+                ChildView::new(&self.panefleet_environment_context_menu).finish(),
+                OffsetPositioning::offset_from_parent(
+                    position,
+                    ParentOffsetBounds::WindowByPosition,
+                    ParentAnchor::TopLeft,
+                    ChildAnchor::TopLeft,
+                ),
+            );
+        }
+
         match tab_bar_mode {
             ShowTabBar::Stacked => (), // The tab bar was rendered in the content column.
             ShowTabBar::Hidden => {
@@ -30925,6 +31172,18 @@ impl View for Workspace {
         {
             stack.add_positioned_overlay_child(
                 ChildView::new(&self.delete_conversation_confirmation_dialog).finish(),
+                OffsetPositioning::offset_from_parent(
+                    Vector2F::zero(),
+                    ParentOffsetBounds::WindowByPosition,
+                    ParentAnchor::Center,
+                    ChildAnchor::Center,
+                ),
+            );
+        }
+
+        if self.panefleet_worktree_removal_dialog_open {
+            stack.add_positioned_overlay_child(
+                ChildView::new(&self.panefleet_worktree_removal_dialog).finish(),
                 OffsetPositioning::offset_from_parent(
                     Vector2F::zero(),
                     ParentOffsetBounds::WindowByPosition,

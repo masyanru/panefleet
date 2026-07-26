@@ -92,6 +92,16 @@ Application Window
 - если внутри есть работающий агент, перед крестиком показывается индикатор
   активности.
 
+Контекстное меню environment:
+
+- `Open Environment` переключает tabs и Context Sidebar на environment;
+- `Reveal in Finder` открывает его локальную папку;
+- `Close Environment` закрывает UI и процессы, но не удаляет файлы;
+- для managed worktree доступны отдельные `Remove Worktree…` и
+  `Remove Worktree and Delete Branch…`;
+- внешняя прилинкованная папка удаляется только из PaneFleet: физическое
+  удаление доступно лишь для managed worktree.
+
 ### 2.2 Индикатор работающих агентов
 
 Для активной работы используется маленькая анимация из трёх точек:
@@ -569,8 +579,13 @@ Restoring  → InProgress → Blocked → InProgress → Success
 - [x] Проверять конфликт ветки, занятый путь и незакоммиченные изменения до
       создания managed worktree.
 - [x] При закрытии environment не удалять worktree или Git-ветку автоматически.
-- [ ] Добавить отдельное подтверждаемое действие очистки с проверкой dirty state,
+- [x] Добавить отдельное подтверждаемое действие очистки с проверкой dirty state,
       которое никогда не удаляет Git-ветку неявно.
+- [x] Блокировать cleanup при modified/untracked файлах, закрывать процессы
+      environment перед удалением и удалять worktree через `git worktree
+      remove`, а не через рекурсивное удаление папки.
+- [x] Оставлять ветку по умолчанию; явное удаление ветки выполнять только через
+      безопасный `git branch -d`, сохраняя unmerged-ветку при отказе Git.
 - [x] Гарантировать, что агенты двух isolated environment не получают одинаковый
       working directory.
 - [ ] После изоляции добавить CLI-specific activity adapters для Codex и

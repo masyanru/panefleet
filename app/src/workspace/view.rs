@@ -23512,14 +23512,18 @@ impl Workspace {
             }
 
             let mut metadata = Flex::row()
-                .with_main_axis_size(MainAxisSize::Min)
+                .with_main_axis_size(MainAxisSize::Max)
                 .with_cross_axis_alignment(CrossAxisAlignment::Center)
                 .with_spacing(5.)
                 .with_child(
-                    Text::new_inline(path_label.clone(), font_family, 10.)
-                        .with_color(sub_text.into())
-                        .with_clip(ClipConfig::ellipsis())
-                        .finish(),
+                    Shrinkable::new(
+                        1.,
+                        Text::new_inline(path_label.clone(), font_family, 10.)
+                            .with_color(sub_text.into())
+                            .with_clip(ClipConfig::ellipsis())
+                            .finish(),
+                    )
+                    .finish(),
                 );
             if let Some(branch) = &branch {
                 metadata.add_child(
@@ -23529,64 +23533,91 @@ impl Workspace {
                         .finish(),
                 );
                 metadata.add_child(
-                    Text::new_inline(branch.clone(), font_family, 10.)
-                        .with_color(sub_text.into())
-                        .with_clip(ClipConfig::ellipsis())
-                        .finish(),
-                );
-            }
-
-            let mut container = Container::new(
-                Flex::row()
-                    .with_main_axis_size(MainAxisSize::Max)
-                    .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                    .with_spacing(9.)
-                    .with_child(
-                        ConstrainedBox::new(Icon::GitBranch.to_warpui_icon(sub_text).finish())
-                            .with_width(18.)
-                            .with_height(18.)
-                            .finish(),
-                    )
-                    .with_child(
-                        Expanded::new(
-                            1.,
-                            Flex::column()
-                                .with_main_axis_size(MainAxisSize::Min)
-                                .with_spacing(3.)
-                                .with_child(
-                                    Text::new_inline(title.clone(), font_family, 13.)
-                                        .with_color(main_text.into())
-                                        .with_style(Properties {
-                                            weight: Weight::Semibold,
-                                            ..Default::default()
-                                        })
-                                        .finish(),
-                                )
-                                .with_child(metadata.finish())
-                                .finish(),
-                        )
-                        .finish(),
-                    )
-                    .with_child(
-                        Text::new_inline(
-                            format!(
-                                "{session_count} session{}",
-                                if session_count == 1 { "" } else { "s" }
-                            ),
-                            font_family,
-                            10.,
-                        )
-                        .with_color(sub_text.into())
-                        .finish(),
-                    )
-                    .with_child(signal.finish())
-                    .with_child(
-                        ConstrainedBox::new(Icon::ChevronRight.to_warpui_icon(sub_text).finish())
-                            .with_width(13.)
-                            .with_height(13.)
+                    Shrinkable::new(
+                        0.6,
+                        Text::new_inline(branch.clone(), font_family, 10.)
+                            .with_color(sub_text.into())
+                            .with_clip(ClipConfig::ellipsis())
                             .finish(),
                     )
                     .finish(),
+                );
+            }
+
+            let trailing = Flex::row()
+                .with_main_axis_size(MainAxisSize::Min)
+                .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                .with_spacing(5.)
+                .with_child(
+                    Text::new_inline(
+                        format!(
+                            "{session_count} session{}",
+                            if session_count == 1 { "" } else { "s" }
+                        ),
+                        font_family,
+                        10.,
+                    )
+                    .with_color(sub_text.into())
+                    .finish(),
+                )
+                .with_child(signal.finish())
+                .with_child(
+                    ConstrainedBox::new(Icon::ChevronRight.to_warpui_icon(sub_text).finish())
+                        .with_width(13.)
+                        .with_height(13.)
+                        .finish(),
+                )
+                .finish();
+
+            let identity = Flex::row()
+                .with_main_axis_size(MainAxisSize::Max)
+                .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                .with_spacing(9.)
+                .with_child(
+                    ConstrainedBox::new(Icon::GitBranch.to_warpui_icon(sub_text).finish())
+                        .with_width(18.)
+                        .with_height(18.)
+                        .finish(),
+                )
+                .with_child(
+                    Shrinkable::new(
+                        1.,
+                        Flex::column()
+                            .with_main_axis_size(MainAxisSize::Min)
+                            .with_spacing(3.)
+                            .with_child(
+                                Text::new_inline(title.clone(), font_family, 13.)
+                                    .with_color(main_text.into())
+                                    .with_style(Properties {
+                                        weight: Weight::Semibold,
+                                        ..Default::default()
+                                    })
+                                    .with_clip(ClipConfig::ellipsis())
+                                    .finish(),
+                            )
+                            .with_child(metadata.finish())
+                            .finish(),
+                    )
+                    .finish(),
+                )
+                .finish();
+
+            let mut container = Container::new(
+                Clipped::new(
+                    Shrinkable::new(
+                        1.,
+                        Flex::row()
+                            .with_main_axis_size(MainAxisSize::Max)
+                            .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
+                            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                            .with_spacing(9.)
+                            .with_child(Shrinkable::new(1., identity).finish())
+                            .with_child(trailing)
+                            .finish(),
+                    )
+                    .finish(),
+                )
+                .finish(),
             )
             .with_padding(Padding::uniform(12.).with_left(14.).with_right(14.));
             if state.is_hovered() {

@@ -148,6 +148,7 @@ use super::lightbox_view::{LightboxParams, LightboxView, LightboxViewEvent};
 use super::native_modal::{NativeModal, NativeModalEvent};
 use super::one_time_modal_model::OneTimeModalEvent;
 use super::panefleet_agents::{PaneFleetAgentDefinition, PaneFleetAgentDefinitions};
+use super::panefleet_claude::{PaneFleetClaudeActivity, classify_claude_tool};
 use super::panefleet_fleet_events::{
     PaneFleetFleetEvent, PaneFleetFleetEventKind, PaneFleetFleetEventStore,
 };
@@ -390,6 +391,7 @@ use crate::tab_configs::telemetry::{NewWorktreeConfigOpenSource, WorktreeBranchN
 use crate::tab_configs::{
     NewWorktreeModal, NewWorktreeModalEvent, TabConfigParamsModal, TabConfigParamsModalEvent,
 };
+use crate::terminal::CLIAgent;
 use crate::terminal::alt_screen_reporting::AltScreenReporting;
 use crate::terminal::available_shells::AvailableShell;
 #[cfg(target_os = "windows")]
@@ -4313,6 +4315,7 @@ impl Workspace {
             CLIAgentSessionsModelEvent::Started { .. }
                 | CLIAgentSessionsModelEvent::StatusChanged { .. }
                 | CLIAgentSessionsModelEvent::Ended { .. }
+                | CLIAgentSessionsModelEvent::ToolUsed { .. }
                 | CLIAgentSessionsModelEvent::SessionUpdated { .. }
         ) && self
             .workspace_contains_terminal_view(event.terminal_view_id(), ctx);
@@ -4326,6 +4329,7 @@ impl Workspace {
                 self.panefleet_pane_group_id_for_terminal_view(event.terminal_view_id(), ctx)
         {
             self.update_panefleet_agent_lifecycle(event, pane_group_id, ctx);
+            self.record_panefleet_claude_activity(event, ctx);
 
             let observed_session = CLIAgentSessionsModel::as_ref(ctx)
                 .session(event.terminal_view_id())
@@ -4417,6 +4421,48 @@ impl Workspace {
         self.sync_panefleet_workspace_activities(ctx);
         if affects_workspace {
             ctx.notify();
+        }
+    }
+
+    fn record_panefleet_claude_activity(
+        &mut self,
+        event: &CLIAgentSessionsModelEvent,
+        ctx: &AppContext,
+    ) {
+        let CLIAgentSessionsModelEvent::ToolUsed {
+            terminal_view_id,
+            agent: CLIAgent::Claude,
+            tool_name,
+        } = event
+        else {
+            return;
+        };
+        let Some(activity) = classify_claude_tool(tool_name) else {
+            return;
+        };
+        let Some(workspace_path) =
+            self.panefleet_project_path_for_terminal_view(*terminal_view_id, ctx)
+        else {
+            return;
+        };
+        let (kind, label) = match activity {
+            PaneFleetClaudeActivity::Tool { name } => {
+                (PaneFleetFleetEventKind::ToolUsed, Some(name))
+            }
+            PaneFleetClaudeActivity::Skill { name } => (PaneFleetFleetEventKind::SkillUsed, name),
+            PaneFleetClaudeActivity::Subagent { name } => {
+                (PaneFleetFleetEventKind::SubagentStarted, name)
+            }
+        };
+        self.panefleet_fleet_events.record(
+            PaneFleetFleetEvent::new(workspace_path, CLIAgent::Claude, kind, *terminal_view_id)
+                .with_label(label),
+        );
+        if let Err(error) = self
+            .panefleet_fleet_events
+            .write_atomic(&PaneFleetFleetEventStore::path())
+        {
+            log::warn!("Failed to write PaneFleet Claude activity: {error}");
         }
     }
 
@@ -22987,6 +23033,13 @@ impl Workspace {
         let task = row.task;
         let elapsed = row.elapsed.map(Self::format_panefleet_elapsed);
         let activity_frame = self.panefleet_fleet_activity_frame;
+        let activity_badges = self
+            .panefleet_fleet_events
+            .recent()
+            .filter(|event| event.terminal_view_id == Some(terminal_view_id))
+            .filter_map(Self::panefleet_fleet_activity_badge)
+            .take(3)
+            .collect::<Vec<_>>();
 
         Hoverable::new(mouse_state, move |state| {
             let mut status_indicator = Flex::row()
@@ -23064,23 +23117,49 @@ impl Workspace {
                 );
             }
 
-            let mut body = Container::new(
-                Flex::column()
+            let mut content = Flex::column()
+                .with_main_axis_size(MainAxisSize::Min)
+                .with_spacing(6.)
+                .with_child(identity.finish())
+                .with_child(
+                    Text::new_inline(task.clone(), font_family, 11.)
+                        .with_color(sub_text.into())
+                        .with_clip(ClipConfig::ellipsis())
+                        .finish(),
+                );
+            if !activity_badges.is_empty() {
+                let mut badges = Flex::row()
                     .with_main_axis_size(MainAxisSize::Min)
-                    .with_spacing(6.)
-                    .with_child(identity.finish())
-                    .with_child(
-                        Text::new_inline(task.clone(), font_family, 11.)
-                            .with_color(sub_text.into())
-                            .with_clip(ClipConfig::ellipsis())
-                            .finish(),
-                    )
-                    .finish(),
-            )
-            .with_padding(Padding::uniform(10.).with_left(12.).with_right(12.))
-            .with_background(theme.surface_1())
-            .with_border(Border::all(1.).with_border_fill(theme.outline()))
-            .with_corner_radius(CornerRadius::with_all(Radius::Pixels(6.)));
+                    .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                    .with_spacing(5.);
+                for badge in &activity_badges {
+                    badges.add_child(
+                        Container::new(
+                            Text::new_inline(badge.clone(), font_family, 9.)
+                                .with_color(sub_text.into())
+                                .finish(),
+                        )
+                        .with_padding(
+                            Padding::uniform(3.)
+                                .with_left(6.)
+                                .with_right(6.)
+                                .with_top(2.)
+                                .with_bottom(2.),
+                        )
+                        .with_background(internal_colors::fg_overlay_1(theme))
+                        .with_border(Border::all(1.).with_border_fill(theme.outline()))
+                        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(4.)))
+                        .finish(),
+                    );
+                }
+                content.add_child(badges.finish());
+            }
+
+            let mut body = Container::new(content.finish())
+                .with_padding(Padding::uniform(10.).with_left(12.).with_right(12.))
+                .with_background(theme.surface_1())
+                .with_border(Border::all(1.).with_border_fill(theme.outline()))
+                .with_corner_radius(CornerRadius::with_all(Radius::Pixels(6.)));
             if state.is_hovered() {
                 body = body
                     .with_background(internal_colors::fg_overlay_1(theme))
@@ -23095,6 +23174,37 @@ impl Workspace {
         })
         .with_cursor(Cursor::PointingHand)
         .finish()
+    }
+
+    fn panefleet_fleet_activity_badge(event: &PaneFleetFleetEvent) -> Option<String> {
+        fn compact(label: &str) -> String {
+            const MAX_CHARS: usize = 24;
+            if label.chars().count() <= MAX_CHARS {
+                return label.to_string();
+            }
+            let mut label = label.chars().take(MAX_CHARS - 1).collect::<String>();
+            label.push('…');
+            label
+        }
+
+        match event.kind {
+            PaneFleetFleetEventKind::ToolUsed => Some(match event.label.as_deref() {
+                Some(label) => format!("tool · {}", compact(label)),
+                None => "tool".to_string(),
+            }),
+            PaneFleetFleetEventKind::SkillUsed => Some(match event.label.as_deref() {
+                Some(label) => format!("skill · {}", compact(label)),
+                None => "skill".to_string(),
+            }),
+            PaneFleetFleetEventKind::SubagentStarted => Some(match event.label.as_deref() {
+                Some(label) => format!("subagent · {}", compact(label)),
+                None => "subagent".to_string(),
+            }),
+            PaneFleetFleetEventKind::Started
+            | PaneFleetFleetEventKind::NeedsInput
+            | PaneFleetFleetEventKind::Completed
+            | PaneFleetFleetEventKind::Failed => None,
+        }
     }
 
     fn render_panefleet_fleet_workspace_card(
@@ -23370,10 +23480,34 @@ impl Workspace {
         let main_text = theme.main_text_color(theme.background());
         let sub_text = theme.sub_text_color(theme.background());
         let (description, status_fill) = match event.kind {
-            PaneFleetFleetEventKind::Started => ("started working", theme.accent()),
-            PaneFleetFleetEventKind::NeedsInput => ("needs input", Fill::warn()),
-            PaneFleetFleetEventKind::Completed => ("completed a turn", Fill::success()),
-            PaneFleetFleetEventKind::Failed => ("turn failed", Fill::error()),
+            PaneFleetFleetEventKind::Started => ("started working".to_string(), theme.accent()),
+            PaneFleetFleetEventKind::NeedsInput => ("needs input".to_string(), Fill::warn()),
+            PaneFleetFleetEventKind::Completed => ("completed a turn".to_string(), Fill::success()),
+            PaneFleetFleetEventKind::Failed => ("turn failed".to_string(), Fill::error()),
+            PaneFleetFleetEventKind::ToolUsed => (
+                event
+                    .label
+                    .as_deref()
+                    .map(|label| format!("used {label}"))
+                    .unwrap_or_else(|| "used a tool".to_string()),
+                theme.accent(),
+            ),
+            PaneFleetFleetEventKind::SkillUsed => (
+                event
+                    .label
+                    .as_deref()
+                    .map(|label| format!("used skill {label}"))
+                    .unwrap_or_else(|| "used a skill".to_string()),
+                theme.accent(),
+            ),
+            PaneFleetFleetEventKind::SubagentStarted => (
+                event
+                    .label
+                    .as_deref()
+                    .map(|label| format!("spawned subagent {label}"))
+                    .unwrap_or_else(|| "spawned a subagent".to_string()),
+                theme.accent(),
+            ),
         };
         let workspace_name = event
             .workspace_path
@@ -23423,7 +23557,7 @@ impl Workspace {
                 .with_child(
                     Expanded::new(
                         1.,
-                        Text::new_inline(description, font_family, 11.)
+                        Text::new_inline(description.clone(), font_family, 11.)
                             .with_color(sub_text.into())
                             .finish(),
                     )

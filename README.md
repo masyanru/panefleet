@@ -58,6 +58,8 @@ agents side by side.
   CLI process.
 - **Fleet Dashboard** with every open workspace, live agent state, and a local
   recent-activity timeline for real agent turns.
+- **Structured Claude activity** in Fleet: completed tools, skill calls, and
+  subagent launches from Claude Code hooks, without parsing terminal text.
 - **Agent completion sounds** with three subtle macOS cues and no notification
   on CLI startup or session restore.
 - **Update notifications** backed by public GitHub Releases, with a manual
@@ -112,8 +114,9 @@ PaneFleet is currently local-first:
   disabled.
 - PaneFleet has no account system, subscription service, or cloud sync backend.
 - Workspace, agent, and Fleet lifecycle metadata are stored locally.
-- The Fleet event history stores event type, agent, workspace path, and time.
-  It does not store prompts, responses, or tool arguments.
+- The Fleet event history stores event type, agent, workspace path, time, and
+  an optional compact tool identifier. It does not store prompts, responses,
+  tool arguments, tool output, or transcript contents.
 
 The CLI agents and commands launched inside the terminal may still connect to
 their own providers or any network destination available to them. Their network

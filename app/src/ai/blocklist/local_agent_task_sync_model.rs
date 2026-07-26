@@ -206,6 +206,7 @@ impl LocalAgentTaskSyncModel {
             CLIAgentSessionsModelEvent::Started { .. }
             | CLIAgentSessionsModelEvent::InputSessionChanged { .. }
             | CLIAgentSessionsModelEvent::Ended { .. }
+            | CLIAgentSessionsModelEvent::ToolUsed { .. }
             | CLIAgentSessionsModelEvent::SessionUpdated { .. } => {}
         }
     }

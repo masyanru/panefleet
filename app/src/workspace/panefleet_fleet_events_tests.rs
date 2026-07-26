@@ -16,8 +16,52 @@ fn event(index: usize) -> PaneFleetFleetEvent {
         workspace_path: format!("/tmp/project-{index}").into(),
         agent: CLIAgent::Codex,
         kind: PaneFleetFleetEventKind::Started,
+        label: None,
         terminal_view_id: None,
     }
+}
+
+#[test]
+fn loads_version_one_events_without_activity_metadata() {
+    let directory = tempdir().expect("tempdir");
+    let path = directory.path().join("fleet-events.json");
+    fs::write(
+        &path,
+        r#"{
+          "version": 1,
+          "events": [{
+            "id": "46ba095a-0585-479f-86e0-1a402a136faa",
+            "occurred_at_unix_ms": 42,
+            "workspace_path": "/tmp/project",
+            "agent": "Claude",
+            "kind": "started"
+          }]
+        }"#,
+    )
+    .expect("write version one event store");
+
+    let loaded = PaneFleetFleetEventStore::load_or_default(&path);
+    let loaded_event = loaded.recent().next().expect("loaded event");
+    assert_eq!(loaded.version, PANEFLEET_FLEET_EVENTS_VERSION);
+    assert_eq!(loaded_event.label, None);
+}
+
+#[test]
+fn persists_only_compact_claude_activity_metadata() {
+    let directory = tempdir().expect("tempdir");
+    let path = directory.path().join("fleet-events.json");
+    let mut claude_event = event(42);
+    claude_event.agent = CLIAgent::Claude;
+    claude_event.kind = PaneFleetFleetEventKind::ToolUsed;
+    claude_event.label = Some("Read".to_string());
+    let mut store = PaneFleetFleetEventStore::default();
+    store.record(claude_event);
+
+    store.write_atomic(&path).expect("write event store");
+    let json = fs::read_to_string(&path).expect("read event store");
+    assert!(json.contains(r#""label": "Read""#));
+    assert!(!json.contains("tool_input"));
+    assert!(!json.contains("terminal_view_id"));
 }
 
 #[test]

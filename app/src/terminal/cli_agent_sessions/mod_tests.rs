@@ -184,6 +184,75 @@ fn idle_prompt_emits_session_updated_for_resume_confirmation() {
 }
 
 #[test]
+fn rich_tool_complete_emits_tool_used_without_copying_tool_input() {
+    App::test((), |mut app| async move {
+        let model = app.add_model(|_| CLIAgentSessionsModel::new());
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let captured_events = events.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_model(&model, move |_, event, _| {
+                captured_events.borrow_mut().push(event.clone());
+            });
+        });
+
+        let terminal_view_id = EntityId::new();
+        model.update(&mut app, |model, ctx| {
+            model.set_session(
+                terminal_view_id,
+                CLIAgentSession {
+                    agent: CLIAgent::Claude,
+                    status: CLIAgentSessionStatus::InProgress,
+                    session_context: CLIAgentSessionContext::default(),
+                    input_state: CLIAgentInputState::Closed,
+                    should_auto_toggle_input: false,
+                    listener: None,
+                    plugin_version: None,
+                    remote_host: None,
+                    draft_text: None,
+                    custom_command_prefix: None,
+                    received_rich_notification: false,
+                },
+                ctx,
+            );
+        });
+        events.borrow_mut().clear();
+
+        let event = CLIAgentEvent {
+            source: CLIAgentEventSource::RichPlugin,
+            v: 1,
+            agent: CLIAgent::Claude,
+            event: CLIAgentEventType::ToolComplete,
+            session_id: Some("session".to_string()),
+            cwd: Some("/tmp/project".to_string()),
+            project: Some("project".to_string()),
+            payload: CLIAgentEventPayload {
+                tool_name: Some("  Read  ".to_string()),
+                tool_input_preview: Some("/private/source.rs".to_string()),
+                ..Default::default()
+            },
+        };
+        model.update(&mut app, |model, ctx| {
+            model.update_from_event(terminal_view_id, &event, ctx);
+        });
+
+        let tool_events = events
+            .borrow()
+            .iter()
+            .filter_map(|event| match event {
+                super::CLIAgentSessionsModelEvent::ToolUsed {
+                    terminal_view_id: event_terminal_view_id,
+                    agent: CLIAgent::Claude,
+                    tool_name,
+                } if *event_terminal_view_id == terminal_view_id => Some(tool_name.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(tool_events, vec!["Read"]);
+        assert!(!format!("{:?}", events.borrow().as_slice()).contains("/private/source.rs"));
+    });
+}
+
+#[test]
 fn parse_session_start_notification() {
     let body = r#"{"v":1,"agent":"claude","event":"session_start","session_id":"abc","cwd":"/tmp","project":"tmp","plugin_version":"1.1.0"}"#;
     let notif = parse_event(Some("warp://cli-agent"), body).unwrap();

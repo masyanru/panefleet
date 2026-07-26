@@ -286,6 +286,15 @@ pub enum CLIAgentSessionsModelEvent {
         terminal_view_id: EntityId,
         agent: CLIAgent,
     },
+    /// A rich CLI-agent integration reported that a tool finished.
+    ///
+    /// Only the compact tool identifier is surfaced. Tool inputs and outputs
+    /// stay inside the provider session and are never copied into this event.
+    ToolUsed {
+        terminal_view_id: EntityId,
+        agent: CLIAgent,
+        tool_name: String,
+    },
     /// The agent session has been updated. Subscribers may use this as a trigger for best-effort
     /// saving of state derived from the agent's session.
     SessionUpdated {
@@ -307,6 +316,9 @@ impl CLIAgentSessionsModelEvent {
                 terminal_view_id, ..
             }
             | CLIAgentSessionsModelEvent::Ended {
+                terminal_view_id, ..
+            }
+            | CLIAgentSessionsModelEvent::ToolUsed {
                 terminal_view_id, ..
             }
             | CLIAgentSessionsModelEvent::SessionUpdated {
@@ -449,6 +461,19 @@ impl CLIAgentSessionsModel {
         }
 
         let event_type = &event.event;
+        let tool_name = if event.source == CLIAgentEventSource::RichPlugin
+            && matches!(event_type, CLIAgentEventType::ToolComplete)
+        {
+            event
+                .payload
+                .tool_name
+                .as_deref()
+                .map(str::trim)
+                .filter(|tool_name| !tool_name.is_empty())
+                .map(str::to_owned)
+        } else {
+            None
+        };
         if let Some(new_status) = session.apply_event(event) {
             let agent = session.agent;
             ctx.emit(CLIAgentSessionsModelEvent::StatusChanged {
@@ -456,6 +481,14 @@ impl CLIAgentSessionsModel {
                 agent,
                 status: new_status,
                 session_context: Box::new(session.session_context.clone()),
+            });
+        }
+
+        if let Some(tool_name) = tool_name {
+            ctx.emit(CLIAgentSessionsModelEvent::ToolUsed {
+                terminal_view_id,
+                agent: session.agent,
+                tool_name,
             });
         }
 

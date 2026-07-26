@@ -9,7 +9,7 @@ use warpui::EntityId;
 
 use crate::terminal::CLIAgent;
 
-pub(crate) const PANEFLEET_FLEET_EVENTS_VERSION: u32 = 1;
+pub(crate) const PANEFLEET_FLEET_EVENTS_VERSION: u32 = 2;
 const MAX_FLEET_EVENTS: usize = 500;
 
 fn current_version() -> u32 {
@@ -23,6 +23,9 @@ pub(crate) enum PaneFleetFleetEventKind {
     NeedsInput,
     Completed,
     Failed,
+    ToolUsed,
+    SkillUsed,
+    SubagentStarted,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -32,6 +35,10 @@ pub(crate) struct PaneFleetFleetEvent {
     pub workspace_path: PathBuf,
     pub agent: CLIAgent,
     pub kind: PaneFleetFleetEventKind,
+    /// A compact provider-supplied identifier, such as a Claude tool name.
+    /// Tool inputs and outputs are deliberately never persisted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
     /// Runtime-only navigation target. Entity IDs are process-local and must never be persisted.
     #[serde(skip)]
     pub terminal_view_id: Option<EntityId>,
@@ -50,8 +57,14 @@ impl PaneFleetFleetEvent {
             workspace_path,
             agent,
             kind,
+            label: None,
             terminal_view_id: Some(terminal_view_id),
         }
+    }
+
+    pub fn with_label(mut self, label: Option<String>) -> Self {
+        self.label = label;
+        self
     }
 }
 
@@ -83,6 +96,7 @@ impl PaneFleetFleetEventStore {
             .and_then(|contents| serde_json::from_slice::<Self>(&contents).ok())
             .filter(|store| store.version <= PANEFLEET_FLEET_EVENTS_VERSION)
             .map(|mut store| {
+                store.version = PANEFLEET_FLEET_EVENTS_VERSION;
                 store.events.truncate_from_start(MAX_FLEET_EVENTS);
                 store
             })

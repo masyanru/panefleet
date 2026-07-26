@@ -212,22 +212,27 @@ Dashboard дополнительно показывает:
 - клик по агенту закрывает dashboard и фокусирует точную CLI-сессию;
 - клик по обычной горизонтальной вкладке закрывает dashboard.
 
-Dashboard не показывает выдуманные progress percentages, skills, tool calls или
-подагентов. Текущая временная лента получает из `CLIAgentSessionsModel` только
-проверяемые события: начало реального turn, ожидание ввода, успешное завершение
-и ошибку. События сохраняются локально в
-`panefleet-fleet-events.json` (не более 500 последних событий).
+Dashboard не показывает выдуманные progress percentages. Временная лента
+получает из `CLIAgentSessionsModel` проверяемые lifecycle-события: начало
+реального turn, ожидание ввода, успешное завершение и ошибку. Для Claude
+CLI-specific adapter дополнительно принимает структурированные `PostToolUse`
+события и показывает tool calls, вызов skill и запуск подагента. События
+сохраняются локально в `panefleet-fleet-events.json` (не более 500 последних
+событий).
 
 Event store намеренно не сохраняет prompt, response, tool input или содержимое
-сессии. В записи находятся только тип события, CLI-агент, путь workspace и
-время. Process-local `terminal_view_id` используется для точной навигации лишь
-до перезапуска приложения и не сериализуется; загруженное историческое событие
+сессии. В записи находятся только тип события, CLI-агент, путь workspace,
+время и, если провайдер его прислал, компактный идентификатор инструмента.
+Process-local `terminal_view_id` используется для точной навигации лишь до
+перезапуска приложения и не сериализуется; загруженное историческое событие
 ведёт в соответствующий workspace.
 
-Подагенты, skills и tool calls появятся в Dashboard только через
-CLI-specific adapters, когда конкретный CLI предоставляет для них надёжные
-структурированные события. Имена таких сущностей можно будет хранить, но не их
-аргументы или содержимое.
+Текущая версия Claude hook протокола передаёт для `PostToolUse` только
+`tool_name`. Поэтому `Skill` и `Agent`/`Task` надёжно классифицируются как skill
+и подагент, но их конкретные имена не угадываются. Dashboard показывает
+`used a skill` и `spawned a subagent`; обычные и MCP-инструменты показываются по
+имени. Поддержка конкретных имён требует будущего расширения структурированного
+протокола, а не анализа отрисованного текста терминала.
 
 Анимация обновляется только пока открыт Fleet UI и есть хотя бы один реальный
 работающий turn.
@@ -401,6 +406,14 @@ validate_resume_state(provider_session_id, cwd)
 - **Terminal**: восстанавливается обычным snapshot-механизмом Warp без Agent
   Definition.
 
+Claude activity adapter переиспользует rich integration protocol Warp:
+
+- `PostToolUse` приходит как `ToolComplete` с безопасным `tool_name`;
+- `Skill` классифицируется как skill activity;
+- `Agent` и прежнее имя `Task` классифицируются как subagent activity;
+- остальные имена, включая `mcp__…`, классифицируются как tool activity;
+- tool input, output, prompt и transcript не копируются в Fleet events.
+
 Существующие `ClaudeHarness` и `CodexHarness` в Warp уже содержат рабочую
 логику resume и должны быть переиспользованы, а не продублированы строковыми
 shell-командами.
@@ -503,6 +516,9 @@ Restoring  → InProgress → Blocked → InProgress → Success
 - [x] Добавить трёхточечную анимацию.
 - [ ] Добавить Reduce Motion fallback.
 - [x] Добавить Blocked/Failed состояния и tooltips.
+- [x] Подключить структурированные Claude tool/skill/subagent events к Fleet.
+- [ ] Расширить Claude hook protocol конкретными именами skill и подагента.
+- [ ] Добавить CLI-specific activity adapters для Codex и OpenCode.
 
 ### P3 — notifications
 

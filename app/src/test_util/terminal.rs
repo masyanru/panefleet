@@ -42,6 +42,7 @@ use crate::cloud_object::model::persistence::CloudModel;
 use crate::code_review::git_repo_model::GitRepoModels;
 use crate::context_chips::prompt::Prompt;
 use crate::network::NetworkStatus;
+use crate::panefleet_update::PaneFleetUpdateChecker;
 use crate::pricing::PricingInfoModel;
 use crate::search::files::model::FileSearchModel;
 use crate::server::cloud_objects::listener::Listener;
@@ -88,6 +89,7 @@ pub fn initialize_app_for_terminal_view(app: &mut App) {
     });
     app.add_singleton_model(|ctx| ChangelogModel::new(ServerApiProvider::as_ref(ctx).get()));
     app.add_singleton_model(|_| NetworkStatus::new());
+    app.add_singleton_model(PaneFleetUpdateChecker::new_for_test);
     app.add_singleton_model(|_| SystemStats::new());
     app.add_singleton_model(|_| Prompt::mock());
     app.add_singleton_model(SyncQueue::mock);

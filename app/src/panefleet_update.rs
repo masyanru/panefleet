@@ -115,6 +115,17 @@ impl PaneFleetUpdateChecker {
         checker
     }
 
+    #[cfg(test)]
+    pub fn new_for_test(_ctx: &mut ModelContext<Self>) -> Self {
+        Self {
+            client: Arc::new(http_client::Client::new()),
+            status: PaneFleetUpdateStatus::Idle,
+            persisted: PersistedUpdateState::default(),
+            state_path: PathBuf::new(),
+            timer_scheduled: false,
+        }
+    }
+
     pub fn status(&self) -> &PaneFleetUpdateStatus {
         &self.status
     }

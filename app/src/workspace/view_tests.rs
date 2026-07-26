@@ -2855,6 +2855,76 @@ fn panefleet_does_not_open_workspace_panels_for_settings_tab() {
 }
 
 #[test]
+fn panefleet_fleet_status_only_marks_real_turns_as_working() {
+    assert_eq!(
+        Workspace::panefleet_fleet_status(&CLIAgentSessionStatus::InProgress, None),
+        PaneFleetFleetStatus::Ready
+    );
+    assert_eq!(
+        Workspace::panefleet_fleet_status(&CLIAgentSessionStatus::InProgress, Some("   ")),
+        PaneFleetFleetStatus::Ready
+    );
+    assert_eq!(
+        Workspace::panefleet_fleet_status(
+            &CLIAgentSessionStatus::InProgress,
+            Some("Review this branch")
+        ),
+        PaneFleetFleetStatus::Working
+    );
+    assert_eq!(
+        Workspace::panefleet_fleet_status(
+            &CLIAgentSessionStatus::Blocked {
+                message: Some("permission".to_string())
+            },
+            Some("Review this branch")
+        ),
+        PaneFleetFleetStatus::Blocked
+    );
+    assert_eq!(
+        Workspace::panefleet_fleet_status(
+            &CLIAgentSessionStatus::Failed {
+                error_type: None,
+                message: None
+            },
+            None
+        ),
+        PaneFleetFleetStatus::Failed
+    );
+    assert_eq!(
+        Workspace::panefleet_fleet_status(&CLIAgentSessionStatus::Success, None),
+        PaneFleetFleetStatus::Done
+    );
+}
+
+#[test]
+fn panefleet_fleet_task_text_is_single_line_and_bounded() {
+    assert_eq!(
+        Workspace::compact_panefleet_task_text("  review\n  the   current branch  "),
+        "review the current branch"
+    );
+    let long = "a".repeat(120);
+    let compact = Workspace::compact_panefleet_task_text(&long);
+    assert_eq!(compact.chars().count(), 96);
+    assert!(compact.ends_with('…'));
+}
+
+#[test]
+fn panefleet_fleet_elapsed_uses_compact_units() {
+    assert_eq!(
+        Workspace::format_panefleet_elapsed(Duration::from_secs(7)),
+        "7s"
+    );
+    assert_eq!(
+        Workspace::format_panefleet_elapsed(Duration::from_secs(125)),
+        "2m"
+    );
+    assert_eq!(
+        Workspace::format_panefleet_elapsed(Duration::from_secs(7380)),
+        "2h 3m"
+    );
+}
+
+#[test]
 fn test_left_panel_window_scoped_reconciles_between_terminal_tabs_when_enabled() {
     let _conversation_list_guard =
         FeatureFlag::AgentViewConversationListView.override_enabled(false);

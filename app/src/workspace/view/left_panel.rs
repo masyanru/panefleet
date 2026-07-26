@@ -101,6 +101,7 @@ struct PaneFleetWorkspaceRowMouseStates {
 
 struct PaneFleetMouseStateHandles {
     add_project: MouseStateHandle,
+    fleet_dashboard: MouseStateHandle,
     project_rows: Vec<PaneFleetWorkspaceRowMouseStates>,
 }
 
@@ -108,6 +109,7 @@ impl Default for PaneFleetMouseStateHandles {
     fn default() -> Self {
         Self {
             add_project: Default::default(),
+            fleet_dashboard: Default::default(),
             project_rows: (0..PANEFLEET_PROJECT_LIMIT)
                 .map(|_| PaneFleetWorkspaceRowMouseStates::default())
                 .collect(),
@@ -147,6 +149,7 @@ pub enum LeftPanelAction {
     GlobalSearch { entry_focus: GlobalSearchEntryFocus },
     WarpDrive,
     ConversationListView,
+    OpenPaneFleetFleetDashboard,
     SwitchPaneFleetProject { path: PathBuf },
     ClosePaneFleetProject { path: PathBuf },
     SignIn,
@@ -200,6 +203,7 @@ pub enum LeftPanelEvent {
         line_col: Option<LineAndColumnArg>,
     },
     NewConversationInNewTab,
+    OpenPaneFleetFleetDashboard,
     SwitchPaneFleetProject {
         path: PathBuf,
     },
@@ -292,6 +296,7 @@ pub struct LeftPanelView {
     toolbelt_buttons: Vec<ToolbeltButtonConfig>,
     active_pane_group: Option<WeakViewHandle<PaneGroup>>,
     panefleet_active_project: Option<PathBuf>,
+    panefleet_fleet_dashboard_open: bool,
     panefleet_workspace_activities: HashMap<PathBuf, PaneFleetWorkspaceActivity>,
     panefleet_preferences: PaneFleetWorkspacePreferences,
     panefleet_activity_frame: usize,
@@ -554,6 +559,7 @@ impl LeftPanelView {
             toolbelt_buttons,
             active_pane_group: None,
             panefleet_active_project: None,
+            panefleet_fleet_dashboard_open: false,
             panefleet_workspace_activities: HashMap::new(),
             panefleet_preferences: PaneFleetWorkspacePreferences::load_or_default(
                 &PaneFleetWorkspacePreferences::path(),
@@ -591,6 +597,17 @@ impl LeftPanelView {
     pub fn set_agent_management_view_open(&mut self, is_open: bool, ctx: &mut ViewContext<Self>) {
         self.is_agent_management_view_open = is_open;
         ctx.notify();
+    }
+
+    pub(super) fn set_panefleet_fleet_dashboard_open(
+        &mut self,
+        is_open: bool,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        if self.panefleet_fleet_dashboard_open != is_open {
+            self.panefleet_fleet_dashboard_open = is_open;
+            ctx.notify();
+        }
     }
 
     pub fn set_panel_position(
@@ -1435,6 +1452,68 @@ impl LeftPanelView {
             .with_main_axis_size(MainAxisSize::Min)
             .with_spacing(4.);
 
+        let theme = appearance.theme();
+        let font_family = appearance.ui_font_family();
+        let main_text = theme.main_text_color(theme.background());
+        let sub_text = theme.sub_text_color(theme.background());
+        let is_dashboard_open = self.panefleet_fleet_dashboard_open;
+        let dashboard = Hoverable::new(
+            self.panefleet_mouse_state_handles.fleet_dashboard.clone(),
+            move |state| {
+                let labels = Flex::column()
+                    .with_main_axis_size(MainAxisSize::Min)
+                    .with_child(
+                        Text::new_inline("Fleet Dashboard", font_family, 12.)
+                            .with_color(main_text.into())
+                            .finish(),
+                    )
+                    .with_child(
+                        Text::new_inline("All CLI agent sessions", font_family, 10.)
+                            .with_color(sub_text.into())
+                            .finish(),
+                    )
+                    .finish();
+                let row = Flex::row()
+                    .with_main_axis_size(MainAxisSize::Max)
+                    .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                    .with_spacing(8.)
+                    .with_child(
+                        ConstrainedBox::new(Icon::Users.to_warpui_icon(sub_text).finish())
+                            .with_width(24.)
+                            .with_height(24.)
+                            .finish(),
+                    )
+                    .with_child(Shrinkable::new(1., labels).finish())
+                    .finish();
+                let mut container = Container::new(row)
+                    .with_padding(Padding::uniform(8.))
+                    .with_corner_radius(CornerRadius::with_all(Radius::Pixels(4.)))
+                    .with_border(Border::all(1.).with_border_fill(if is_dashboard_open {
+                        internal_colors::fg_overlay_3(theme).into()
+                    } else {
+                        ElementFill::None
+                    }));
+                if is_dashboard_open {
+                    container = container.with_background(internal_colors::fg_overlay_2(theme));
+                } else if state.is_hovered() {
+                    container = container.with_background(internal_colors::fg_overlay_1(theme));
+                }
+                container.finish()
+            },
+        )
+        .on_click(|ctx, _, _| {
+            ctx.dispatch_typed_action(LeftPanelAction::OpenPaneFleetFleetDashboard);
+        })
+        .with_cursor(Cursor::PointingHand)
+        .finish();
+        content.add_child(
+            Container::new(dashboard)
+                .with_margin_bottom(4.)
+                .with_border(Border::bottom(1.).with_border_fill(theme.outline()))
+                .with_padding(Padding::uniform(0.).with_bottom(8.))
+                .finish(),
+        );
+
         let mut projects = ProjectManagementModel::as_ref(app)
             .all_projects()
             .map(|project| (project.path.clone(), project.added_ts))
@@ -1474,6 +1553,7 @@ impl LeftPanelView {
                 LeftPanelAction::ConversationListView => {
                     self.active_view.get() == ToolPanelView::ConversationListView
                 }
+                LeftPanelAction::OpenPaneFleetFleetDashboard => false,
                 LeftPanelAction::SwitchPaneFleetProject { .. } => false,
                 LeftPanelAction::ClosePaneFleetProject { .. } => false,
                 LeftPanelAction::SignIn => false,
@@ -1621,6 +1701,9 @@ impl LeftPanelView {
                 if self.active_view_availability(ctx) == ToolPanelAvailability::Available {
                     send_telemetry_from_ctx!(TelemetryEvent::ConversationListViewOpened, ctx);
                 }
+            }
+            LeftPanelAction::OpenPaneFleetFleetDashboard => {
+                ctx.emit(LeftPanelEvent::OpenPaneFleetFleetDashboard);
             }
             LeftPanelAction::SwitchPaneFleetProject { path } => {
                 ctx.emit(LeftPanelEvent::SwitchPaneFleetProject { path: path.clone() });

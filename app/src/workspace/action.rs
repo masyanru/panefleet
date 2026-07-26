@@ -557,6 +557,10 @@ pub enum WorkspaceAction {
     FocusTerminalViewInWorkspace {
         terminal_view_id: EntityId,
     },
+    /// Show or hide PaneFleet's cross-workspace CLI-agent overview.
+    TogglePaneFleetFleetOverview,
+    /// Show or hide PaneFleet's full cross-workspace CLI-agent dashboard.
+    TogglePaneFleetFleetDashboard,
     /// Focus a specific pane by its locator (pane_group_id and pane_id).
     FocusPane(PaneViewLocator),
     /// Start a new AI conversation in a terminal view. This sets the pending query state
@@ -1157,6 +1161,8 @@ impl WorkspaceAction {
             | OpenAIFactCollection
             | OpenMCPServerCollection
             | FocusTerminalViewInWorkspace { .. }
+            | TogglePaneFleetFleetOverview
+            | TogglePaneFleetFleetDashboard
             | FocusPane(..)
             | ShiftSelectTabRange { .. }
             | ToggleTabMultiSelection { .. }

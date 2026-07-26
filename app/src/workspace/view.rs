@@ -37,7 +37,7 @@ use std::path::{Path, PathBuf};
 #[cfg(target_os = "macos")]
 use std::process;
 use std::sync::{Arc, Mutex, mpsc};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 #[cfg(target_os = "macos")]
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -88,6 +88,7 @@ use warp_util::standardized_path::StandardizedPath;
 use warpui::accessibility::{
     AccessibilityContent, AccessibilityVerbosity, ActionAccessibilityContent, WarpA11yRole,
 };
+use warpui::r#async::Timer;
 use warpui::clipboard::ClipboardContent;
 #[cfg(target_family = "wasm")]
 use warpui::elements::Percentage;
@@ -646,6 +647,7 @@ pub const TOGGLE_COMMAND_PALETTE_KEYBINDING_NAME: &str = "workspace:toggle_comma
 
 const USER_AVATAR_BUTTON_POSITION_ID: &str = "workspace:user_avatar_button";
 const NOTIFICATIONS_MAILBOX_POSITION_ID: &str = "workspace:notifications_mailbox";
+const PANEFLEET_FLEET_OVERVIEW_POSITION_ID: &str = "workspace:panefleet_fleet_overview";
 pub(crate) const JUMP_TO_LATEST_TOAST_BINDING_NAME: &str = "workspace:jump_to_latest_toast";
 pub(crate) const TOGGLE_NOTIFICATION_MAILBOX_BINDING_NAME: &str =
     "workspace:toggle_notification_mailbox";
@@ -979,6 +981,24 @@ struct PaneFleetProjectTabState {
     tab_groups: HashMap<TabGroupId, TabGroup>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum PaneFleetFleetStatus {
+    Working,
+    Blocked,
+    Failed,
+    Ready,
+    Done,
+}
+
+struct PaneFleetFleetRow {
+    terminal_view_id: EntityId,
+    workspace_name: String,
+    agent: crate::terminal::CLIAgent,
+    status: PaneFleetFleetStatus,
+    task: String,
+    elapsed: Option<Duration>,
+}
+
 enum PaneFleetAgentRestoreState {
     Restoring {
         agent: crate::terminal::CLIAgent,
@@ -1067,6 +1087,9 @@ pub struct Workspace {
     panefleet_tab_sessions: HashMap<EntityId, PaneFleetPersistedAgentSession>,
     panefleet_agent_restore_states: HashMap<EntityId, PaneFleetAgentRestoreState>,
     panefleet_working_agent_sessions: HashSet<EntityId>,
+    panefleet_agent_turn_started_at: HashMap<EntityId, Instant>,
+    panefleet_fleet_row_mouse_states: RefCell<HashMap<EntityId, MouseStateHandle>>,
+    panefleet_fleet_activity_frame: usize,
     panefleet_agent_definitions: PaneFleetAgentDefinitions,
     panefleet_restoring_state: bool,
     tab_rename_editor: ViewHandle<EditorView>,
@@ -3466,6 +3489,9 @@ impl Workspace {
             panefleet_tab_sessions: HashMap::new(),
             panefleet_agent_restore_states: HashMap::new(),
             panefleet_working_agent_sessions: HashSet::new(),
+            panefleet_agent_turn_started_at: HashMap::new(),
+            panefleet_fleet_row_mouse_states: RefCell::new(HashMap::new()),
+            panefleet_fleet_activity_frame: 0,
             panefleet_agent_definitions,
             panefleet_restoring_state: false,
             tab_rename_editor: Self::tab_rename_editor(ctx),
@@ -3616,6 +3642,9 @@ impl Workspace {
         // any) read from `GlobalResourceHandles`. Subsequent updates are
         // pushed by `subscribe_to_settings_errors` and `dismiss_workspace_banner`.
         ws.sync_settings_error_state_into_settings_pane(ctx);
+        if FeatureFlag::PaneFleetWorkbench.is_enabled() {
+            ws.tick_panefleet_fleet_activity(ctx);
+        }
 
         let weak_handle = ctx.handle();
         WorkspaceRegistry::handle(ctx).update(ctx, |registry, _| {
@@ -3778,6 +3807,34 @@ impl Workspace {
             })
     }
 
+    fn panefleet_project_path_for_terminal_view(
+        &self,
+        terminal_view_id: EntityId,
+        ctx: &AppContext,
+    ) -> Option<PathBuf> {
+        if self.tabs.iter().any(|tab| {
+            tab.pane_group
+                .as_ref(ctx)
+                .contains_terminal_view(terminal_view_id, ctx)
+        }) {
+            return self.current_panefleet_project_path(ctx);
+        }
+
+        self.panefleet_project_tabs
+            .iter()
+            .find_map(|(path, state)| {
+                state
+                    .tabs
+                    .iter()
+                    .any(|tab| {
+                        tab.pane_group
+                            .as_ref(ctx)
+                            .contains_terminal_view(terminal_view_id, ctx)
+                    })
+                    .then(|| path.clone())
+            })
+    }
+
     fn workspace_contains_terminal_view(
         &self,
         terminal_view_id: EntityId,
@@ -3849,6 +3906,139 @@ impl Workspace {
         }
     }
 
+    fn panefleet_fleet_status(
+        status: &CLIAgentSessionStatus,
+        query: Option<&str>,
+    ) -> PaneFleetFleetStatus {
+        match status {
+            CLIAgentSessionStatus::InProgress
+                if query.is_some_and(|query| !query.trim().is_empty()) =>
+            {
+                PaneFleetFleetStatus::Working
+            }
+            CLIAgentSessionStatus::InProgress => PaneFleetFleetStatus::Ready,
+            CLIAgentSessionStatus::Blocked { .. } => PaneFleetFleetStatus::Blocked,
+            CLIAgentSessionStatus::Failed { .. } => PaneFleetFleetStatus::Failed,
+            CLIAgentSessionStatus::Success => PaneFleetFleetStatus::Done,
+        }
+    }
+
+    fn compact_panefleet_task_text(text: &str) -> String {
+        const MAX_CHARS: usize = 96;
+        let compact = text.split_whitespace().join(" ");
+        if compact.chars().count() <= MAX_CHARS {
+            return compact;
+        }
+        let mut truncated = compact.chars().take(MAX_CHARS - 1).collect::<String>();
+        truncated.push('…');
+        truncated
+    }
+
+    fn format_panefleet_elapsed(elapsed: Duration) -> String {
+        let seconds = elapsed.as_secs();
+        if seconds < 60 {
+            format!("{seconds}s")
+        } else if seconds < 3600 {
+            format!("{}m", seconds / 60)
+        } else {
+            format!("{}h {}m", seconds / 3600, (seconds % 3600) / 60)
+        }
+    }
+
+    fn panefleet_fleet_rows_for_tabs(
+        &self,
+        path: &Path,
+        tabs: &[TabData],
+        ctx: &AppContext,
+        rows: &mut Vec<PaneFleetFleetRow>,
+    ) {
+        let workspace_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .filter(|name| !name.is_empty())
+            .unwrap_or("Workspace")
+            .to_string();
+        let sessions = CLIAgentSessionsModel::as_ref(ctx);
+
+        for terminal in tabs
+            .iter()
+            .flat_map(|tab| tab.pane_group.as_ref(ctx).terminal_views(ctx).into_iter())
+        {
+            let Some(session) = sessions.session(terminal.id()) else {
+                continue;
+            };
+            let status = Self::panefleet_fleet_status(
+                &session.status,
+                session.session_context.query.as_deref(),
+            );
+            let task = session
+                .session_context
+                .display_title()
+                .map(|text| Self::compact_panefleet_task_text(&text))
+                .filter(|text| !text.is_empty())
+                .unwrap_or_else(|| match status {
+                    PaneFleetFleetStatus::Working => "Working…".to_string(),
+                    PaneFleetFleetStatus::Blocked => "Waiting for input".to_string(),
+                    PaneFleetFleetStatus::Failed => "Agent run failed".to_string(),
+                    PaneFleetFleetStatus::Ready => "Ready for a task".to_string(),
+                    PaneFleetFleetStatus::Done => "Last task completed".to_string(),
+                });
+            rows.push(PaneFleetFleetRow {
+                terminal_view_id: terminal.id(),
+                workspace_name: workspace_name.clone(),
+                agent: session.agent,
+                status,
+                task,
+                elapsed: self
+                    .panefleet_agent_turn_started_at
+                    .get(&terminal.id())
+                    .map(Instant::elapsed),
+            });
+        }
+    }
+
+    fn panefleet_fleet_rows(&self, ctx: &AppContext) -> Vec<PaneFleetFleetRow> {
+        let mut rows = Vec::new();
+        for (path, state) in &self.panefleet_project_tabs {
+            self.panefleet_fleet_rows_for_tabs(path, &state.tabs, ctx, &mut rows);
+        }
+        if let Some(path) = self.current_panefleet_project_path(ctx) {
+            self.panefleet_fleet_rows_for_tabs(&path, &self.tabs, ctx, &mut rows);
+        }
+        rows.sort_by(|left, right| {
+            left.status
+                .cmp(&right.status)
+                .then_with(|| left.workspace_name.cmp(&right.workspace_name))
+                .then_with(|| left.agent.display_name().cmp(right.agent.display_name()))
+        });
+        rows
+    }
+
+    fn tick_panefleet_fleet_activity(&self, ctx: &mut ViewContext<Self>) {
+        ctx.spawn(
+            async move { Timer::after(Duration::from_millis(360)).await },
+            |workspace, _, ctx| {
+                workspace.panefleet_fleet_activity_frame =
+                    (workspace.panefleet_fleet_activity_frame + 1) % 3;
+                let fleet_ui_open = workspace
+                    .current_workspace_state
+                    .is_panefleet_fleet_overview_open
+                    || workspace
+                        .current_workspace_state
+                        .is_panefleet_fleet_dashboard_open;
+                if fleet_ui_open
+                    && workspace
+                        .panefleet_fleet_rows(ctx)
+                        .iter()
+                        .any(|row| row.status == PaneFleetFleetStatus::Working)
+                {
+                    ctx.notify();
+                }
+                workspace.tick_panefleet_fleet_activity(ctx);
+            },
+        );
+    }
+
     fn sync_panefleet_workspace_activities(&self, ctx: &mut ViewContext<Self>) {
         if !FeatureFlag::PaneFleetWorkbench.is_enabled() {
             return;
@@ -3914,8 +4104,13 @@ impl Workspace {
                     .panefleet_agent_restore_states
                     .contains_key(&pane_group_id) =>
             {
-                self.panefleet_working_agent_sessions
-                    .insert(*terminal_view_id);
+                if self
+                    .panefleet_working_agent_sessions
+                    .insert(*terminal_view_id)
+                {
+                    self.panefleet_agent_turn_started_at
+                        .insert(*terminal_view_id, Instant::now());
+                }
             }
             CLIAgentSessionsModelEvent::StatusChanged {
                 terminal_view_id,
@@ -3936,6 +4131,8 @@ impl Workspace {
                 terminal_view_id, ..
             } => {
                 self.panefleet_working_agent_sessions
+                    .remove(terminal_view_id);
+                self.panefleet_agent_turn_started_at
                     .remove(terminal_view_id);
             }
             _ => {}
@@ -6765,6 +6962,9 @@ impl Workspace {
             }
             LeftPanelEvent::NewConversationInNewTab => {
                 self.add_terminal_tab_with_new_agent_view(ctx);
+            }
+            LeftPanelEvent::OpenPaneFleetFleetDashboard => {
+                self.handle_action(&WorkspaceAction::TogglePaneFleetFleetDashboard, ctx);
             }
             LeftPanelEvent::SwitchPaneFleetProject { path } => {
                 self.switch_panefleet_project(path.clone(), true, ctx);
@@ -22131,6 +22331,675 @@ impl Workspace {
         .finish()
     }
 
+    fn render_panefleet_fleet_overview_button(
+        &self,
+        appearance: &Appearance,
+        ctx: &AppContext,
+    ) -> Box<dyn Element> {
+        let rows = self.panefleet_fleet_rows(ctx);
+        let active_count = rows
+            .iter()
+            .filter(|row| row.status == PaneFleetFleetStatus::Working)
+            .count();
+        let needs_attention = rows.iter().any(|row| {
+            matches!(
+                row.status,
+                PaneFleetFleetStatus::Blocked | PaneFleetFleetStatus::Failed
+            )
+        });
+        let button = self
+            .render_tab_bar_icon_button(
+                appearance,
+                icons::Icon::Users,
+                &self.mouse_states.panefleet_fleet_overview,
+                WorkspaceAction::TogglePaneFleetFleetOverview,
+                "Fleet overview".to_string(),
+                None,
+                self.current_workspace_state
+                    .is_panefleet_fleet_overview_open,
+                false,
+            )
+            .finish();
+
+        let button = if active_count > 0 || needs_attention {
+            let indicator_fill = if needs_attention {
+                Fill::warn()
+            } else {
+                appearance.theme().accent()
+            };
+            let indicator = Container::new(
+                ConstrainedBox::new(
+                    Rect::new()
+                        .with_background(indicator_fill)
+                        .with_corner_radius(CornerRadius::with_all(Radius::Percentage(50.)))
+                        .finish(),
+                )
+                .with_width(6.)
+                .with_height(6.)
+                .finish(),
+            )
+            .finish();
+            let mut stack = Stack::new();
+            stack.add_child(button);
+            stack.add_positioned_child(
+                indicator,
+                OffsetPositioning::offset_from_parent(
+                    Vector2F::zero(),
+                    ParentOffsetBounds::WindowByPosition,
+                    ParentAnchor::TopRight,
+                    ChildAnchor::TopRight,
+                ),
+            );
+            stack.finish()
+        } else {
+            button
+        };
+
+        SavePosition::new(
+            Container::new(Align::new(button).finish()).finish(),
+            PANEFLEET_FLEET_OVERVIEW_POSITION_ID,
+        )
+        .finish()
+    }
+
+    fn panefleet_fleet_status_label(status: PaneFleetFleetStatus) -> &'static str {
+        match status {
+            PaneFleetFleetStatus::Working => "Working",
+            PaneFleetFleetStatus::Blocked => "Needs input",
+            PaneFleetFleetStatus::Failed => "Failed",
+            PaneFleetFleetStatus::Ready => "Ready",
+            PaneFleetFleetStatus::Done => "Done",
+        }
+    }
+
+    fn render_panefleet_fleet_row(
+        &self,
+        row: PaneFleetFleetRow,
+        appearance: &Appearance,
+    ) -> Box<dyn Element> {
+        let theme = appearance.theme();
+        let font_family = appearance.ui_font_family();
+        let main_text = theme.main_text_color(theme.background());
+        let sub_text = theme.sub_text_color(theme.background());
+        let status_label = Self::panefleet_fleet_status_label(row.status);
+        let status_fill = match row.status {
+            PaneFleetFleetStatus::Working => theme.accent(),
+            PaneFleetFleetStatus::Blocked => Fill::warn(),
+            PaneFleetFleetStatus::Failed => Fill::error(),
+            PaneFleetFleetStatus::Ready => sub_text,
+            PaneFleetFleetStatus::Done => Fill::success(),
+        };
+        let mouse_state = self
+            .panefleet_fleet_row_mouse_states
+            .borrow_mut()
+            .entry(row.terminal_view_id)
+            .or_default()
+            .clone();
+        let agent = row.agent;
+        let row_status = row.status;
+        let workspace_name = row.workspace_name;
+        let task = row.task;
+        let elapsed = row.elapsed.map(Self::format_panefleet_elapsed);
+        let terminal_view_id = row.terminal_view_id;
+        let activity_frame = self.panefleet_fleet_activity_frame;
+        Hoverable::new(mouse_state, move |state| {
+            let agent_icon = agent
+                .icon()
+                .unwrap_or(Icon::Terminal)
+                .to_warpui_icon(main_text)
+                .finish();
+            let identity = Flex::row()
+                .with_main_axis_size(MainAxisSize::Max)
+                .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                .with_spacing(8.)
+                .with_child(
+                    ConstrainedBox::new(agent_icon)
+                        .with_width(16.)
+                        .with_height(16.)
+                        .finish(),
+                )
+                .with_child(
+                    Text::new_inline(agent.display_name(), font_family, 12.)
+                        .with_color(main_text.into())
+                        .finish(),
+                )
+                .with_child(
+                    Text::new_inline(format!("· {workspace_name}"), font_family, 11.)
+                        .with_color(sub_text.into())
+                        .with_clip(ClipConfig::ellipsis())
+                        .finish(),
+                )
+                .finish();
+            let status_indicator: Box<dyn Element> = if row_status == PaneFleetFleetStatus::Working
+            {
+                let mut dots = Flex::row()
+                    .with_main_axis_size(MainAxisSize::Min)
+                    .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                    .with_spacing(3.);
+                for index in 0..3 {
+                    dots.add_child(
+                        ConstrainedBox::new(
+                            Container::new(Empty::new().finish())
+                                .with_background(if index == activity_frame {
+                                    status_fill
+                                } else {
+                                    internal_colors::fg_overlay_3(theme).into()
+                                })
+                                .with_corner_radius(CornerRadius::with_all(Radius::Percentage(50.)))
+                                .finish(),
+                        )
+                        .with_width(4.)
+                        .with_height(4.)
+                        .finish(),
+                    );
+                }
+                dots.finish()
+            } else {
+                ConstrainedBox::new(
+                    Container::new(Empty::new().finish())
+                        .with_background(status_fill)
+                        .with_corner_radius(CornerRadius::with_all(Radius::Percentage(50.)))
+                        .finish(),
+                )
+                .with_width(6.)
+                .with_height(6.)
+                .finish()
+            };
+            let mut status = Flex::row()
+                .with_main_axis_size(MainAxisSize::Min)
+                .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                .with_spacing(5.)
+                .with_child(status_indicator)
+                .with_child(
+                    Text::new_inline(status_label, font_family, 10.)
+                        .with_color(sub_text.into())
+                        .finish(),
+                );
+            if let Some(elapsed) = &elapsed {
+                status.add_child(
+                    Text::new_inline(elapsed.clone(), font_family, 10.)
+                        .with_color(sub_text.into())
+                        .finish(),
+                );
+            }
+            let content = Flex::column()
+                .with_main_axis_size(MainAxisSize::Min)
+                .with_spacing(6.)
+                .with_child(identity)
+                .with_child(
+                    Flex::row()
+                        .with_main_axis_size(MainAxisSize::Max)
+                        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                        .with_spacing(10.)
+                        .with_child(
+                            Expanded::new(
+                                1.,
+                                Text::new_inline(task.clone(), font_family, 11.)
+                                    .with_color(sub_text.into())
+                                    .with_clip(ClipConfig::ellipsis())
+                                    .finish(),
+                            )
+                            .finish(),
+                        )
+                        .with_child(status.finish())
+                        .finish(),
+                )
+                .finish();
+            let mut container = Container::new(content)
+                .with_padding(Padding::uniform(10.).with_left(12.).with_right(12.));
+            if state.is_hovered() {
+                container = container.with_background(internal_colors::fg_overlay_1(theme));
+            }
+            container.finish()
+        })
+        .on_click(move |ctx, _, _| {
+            ctx.dispatch_typed_action(WorkspaceAction::FocusTerminalViewInWorkspace {
+                terminal_view_id,
+            });
+        })
+        .with_cursor(Cursor::PointingHand)
+        .finish()
+    }
+
+    fn render_panefleet_fleet_overview(
+        &self,
+        appearance: &Appearance,
+        ctx: &AppContext,
+    ) -> Box<dyn Element> {
+        const MAX_VISIBLE_ROWS: usize = 9;
+        let theme = appearance.theme();
+        let font_family = appearance.ui_font_family();
+        let rows = self.panefleet_fleet_rows(ctx);
+        let total = rows.len();
+        let active_count = rows
+            .iter()
+            .filter(|row| row.status == PaneFleetFleetStatus::Working)
+            .count();
+        let attention_count = rows
+            .iter()
+            .filter(|row| {
+                matches!(
+                    row.status,
+                    PaneFleetFleetStatus::Blocked | PaneFleetFleetStatus::Failed
+                )
+            })
+            .count();
+
+        let close = self
+            .render_tab_bar_icon_button(
+                appearance,
+                icons::Icon::X,
+                &self.mouse_states.panefleet_fleet_overview_close,
+                WorkspaceAction::TogglePaneFleetFleetOverview,
+                "Close fleet overview".to_string(),
+                None,
+                false,
+                false,
+            )
+            .finish();
+        let summary = if attention_count > 0 {
+            format!("{active_count} working · {attention_count} need attention")
+        } else {
+            format!("{active_count} working · {total} sessions")
+        };
+        let header = Flex::row()
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_child(
+                Expanded::new(
+                    1.,
+                    Flex::column()
+                        .with_main_axis_size(MainAxisSize::Min)
+                        .with_spacing(3.)
+                        .with_child(
+                            Text::new_inline("Fleet overview", font_family, 14.)
+                                .with_color(theme.main_text_color(theme.background()).into())
+                                .finish(),
+                        )
+                        .with_child(
+                            Text::new_inline(summary, font_family, 10.)
+                                .with_color(theme.sub_text_color(theme.background()).into())
+                                .finish(),
+                        )
+                        .finish(),
+                )
+                .finish(),
+            )
+            .with_child(close)
+            .finish();
+
+        let mut content = Flex::column()
+            .with_main_axis_size(MainAxisSize::Min)
+            .with_child(
+                Container::new(header)
+                    .with_padding(Padding::uniform(12.).with_left(14.))
+                    .with_border(Border::bottom(1.).with_border_fill(theme.outline()))
+                    .finish(),
+            );
+
+        if total == 0 {
+            content.add_child(
+                Container::new(
+                    Flex::column()
+                        .with_main_axis_size(MainAxisSize::Min)
+                        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                        .with_spacing(6.)
+                        .with_child(
+                            Icon::Users
+                                .to_warpui_icon(theme.sub_text_color(theme.background()))
+                                .finish(),
+                        )
+                        .with_child(
+                            Text::new_inline("No CLI agent sessions yet", font_family, 12.)
+                                .with_color(theme.main_text_color(theme.background()).into())
+                                .finish(),
+                        )
+                        .with_child(
+                            Text::new_inline(
+                                "Launch an agent from the workspace bar.",
+                                font_family,
+                                10.,
+                            )
+                            .with_color(theme.sub_text_color(theme.background()).into())
+                            .finish(),
+                        )
+                        .finish(),
+                )
+                .with_uniform_padding(24.)
+                .finish(),
+            );
+        } else {
+            for row in rows.into_iter().take(MAX_VISIBLE_ROWS) {
+                content.add_child(
+                    Container::new(self.render_panefleet_fleet_row(row, appearance))
+                        .with_border(Border::bottom(1.).with_border_fill(theme.outline()))
+                        .finish(),
+                );
+            }
+            if total > MAX_VISIBLE_ROWS {
+                content.add_child(
+                    Container::new(
+                        Text::new_inline(
+                            format!("{} more sessions", total - MAX_VISIBLE_ROWS),
+                            font_family,
+                            10.,
+                        )
+                        .with_color(theme.sub_text_color(theme.background()).into())
+                        .finish(),
+                    )
+                    .with_uniform_padding(10.)
+                    .finish(),
+                );
+            }
+        }
+
+        ConstrainedBox::new(
+            Container::new(content.finish())
+                .with_background(theme.surface_2())
+                .with_border(Border::all(1.).with_border_fill(theme.outline()))
+                .with_corner_radius(CornerRadius::with_all(Radius::Pixels(8.)))
+                .finish(),
+        )
+        .with_width(420.)
+        .finish()
+    }
+
+    fn render_panefleet_fleet_stat(
+        &self,
+        label: &'static str,
+        value: usize,
+        fill: Fill,
+        animated: bool,
+        appearance: &Appearance,
+    ) -> Box<dyn Element> {
+        let theme = appearance.theme();
+        let font_family = appearance.ui_font_family();
+        let mut value_row = Flex::row()
+            .with_main_axis_size(MainAxisSize::Min)
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_spacing(7.);
+        if animated && value > 0 {
+            for index in 0..3 {
+                value_row.add_child(
+                    ConstrainedBox::new(
+                        Container::new(Empty::new().finish())
+                            .with_background(if index == self.panefleet_fleet_activity_frame {
+                                fill
+                            } else {
+                                internal_colors::fg_overlay_3(theme).into()
+                            })
+                            .with_corner_radius(CornerRadius::with_all(Radius::Percentage(50.)))
+                            .finish(),
+                    )
+                    .with_width(5.)
+                    .with_height(5.)
+                    .finish(),
+                );
+            }
+        } else {
+            value_row.add_child(
+                ConstrainedBox::new(
+                    Container::new(Empty::new().finish())
+                        .with_background(fill)
+                        .with_corner_radius(CornerRadius::with_all(Radius::Percentage(50.)))
+                        .finish(),
+                )
+                .with_width(7.)
+                .with_height(7.)
+                .finish(),
+            );
+        }
+        value_row.add_child(
+            Text::new_inline(value.to_string(), font_family, 22.)
+                .with_color(theme.main_text_color(theme.background()).into())
+                .finish(),
+        );
+
+        Container::new(
+            Flex::column()
+                .with_main_axis_size(MainAxisSize::Min)
+                .with_spacing(5.)
+                .with_child(value_row.finish())
+                .with_child(
+                    Text::new_inline(label, font_family, 10.)
+                        .with_color(theme.sub_text_color(theme.background()).into())
+                        .finish(),
+                )
+                .finish(),
+        )
+        .with_padding(Padding::uniform(12.).with_left(14.))
+        .with_background(theme.surface_1())
+        .with_border(Border::all(1.).with_border_fill(theme.outline()))
+        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(6.)))
+        .finish()
+    }
+
+    fn render_panefleet_fleet_dashboard(
+        &self,
+        appearance: &Appearance,
+        ctx: &AppContext,
+    ) -> Box<dyn Element> {
+        const MAX_VISIBLE_ROWS: usize = 14;
+        let theme = appearance.theme();
+        let font_family = appearance.ui_font_family();
+        let rows = self.panefleet_fleet_rows(ctx);
+        let total = rows.len();
+        let working = rows
+            .iter()
+            .filter(|row| row.status == PaneFleetFleetStatus::Working)
+            .count();
+        let attention = rows
+            .iter()
+            .filter(|row| {
+                matches!(
+                    row.status,
+                    PaneFleetFleetStatus::Blocked | PaneFleetFleetStatus::Failed
+                )
+            })
+            .count();
+        let done = rows
+            .iter()
+            .filter(|row| row.status == PaneFleetFleetStatus::Done)
+            .count();
+        let workspace_count = rows
+            .iter()
+            .map(|row| row.workspace_name.as_str())
+            .collect::<HashSet<_>>()
+            .len();
+        let mut agent_counts = rows.iter().fold(HashMap::new(), |mut counts, row| {
+            *counts.entry(row.agent.display_name()).or_insert(0usize) += 1;
+            counts
+        });
+        let agent_mix = agent_counts
+            .drain()
+            .sorted_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(right.0)))
+            .map(|(agent, count)| format!("{agent} {count}"))
+            .join("  ·  ");
+
+        let close = self
+            .render_tab_bar_icon_button(
+                appearance,
+                icons::Icon::X,
+                &self.mouse_states.panefleet_fleet_dashboard_close,
+                WorkspaceAction::TogglePaneFleetFleetDashboard,
+                "Close Fleet Dashboard".to_string(),
+                None,
+                false,
+                false,
+            )
+            .finish();
+        let header = Flex::row()
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_child(
+                Expanded::new(
+                    1.,
+                    Flex::column()
+                        .with_main_axis_size(MainAxisSize::Min)
+                        .with_spacing(4.)
+                        .with_child(
+                            Text::new_inline("Fleet Dashboard", font_family, 18.)
+                                .with_color(theme.main_text_color(theme.background()).into())
+                                .finish(),
+                        )
+                        .with_child(
+                            Text::new_inline(
+                                "Live CLI-agent activity across every workspace",
+                                font_family,
+                                11.,
+                            )
+                            .with_color(theme.sub_text_color(theme.background()).into())
+                            .finish(),
+                        )
+                        .finish(),
+                )
+                .finish(),
+            )
+            .with_child(close)
+            .finish();
+        let stats = Flex::row()
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_spacing(8.)
+            .with_child(
+                Expanded::new(
+                    1.,
+                    self.render_panefleet_fleet_stat(
+                        "Working",
+                        working,
+                        theme.accent(),
+                        true,
+                        appearance,
+                    ),
+                )
+                .finish(),
+            )
+            .with_child(
+                Expanded::new(
+                    1.,
+                    self.render_panefleet_fleet_stat(
+                        "Needs attention",
+                        attention,
+                        Fill::warn(),
+                        false,
+                        appearance,
+                    ),
+                )
+                .finish(),
+            )
+            .with_child(
+                Expanded::new(
+                    1.,
+                    self.render_panefleet_fleet_stat(
+                        "Completed",
+                        done,
+                        Fill::success(),
+                        false,
+                        appearance,
+                    ),
+                )
+                .finish(),
+            )
+            .with_child(
+                Expanded::new(
+                    1.,
+                    self.render_panefleet_fleet_stat(
+                        "Workspaces",
+                        workspace_count,
+                        theme.sub_text_color(theme.background()),
+                        false,
+                        appearance,
+                    ),
+                )
+                .finish(),
+            )
+            .finish();
+
+        let mut content = Flex::column()
+            .with_main_axis_size(MainAxisSize::Min)
+            .with_child(
+                Container::new(header)
+                    .with_padding(Padding::uniform(16.).with_left(18.))
+                    .with_border(Border::bottom(1.).with_border_fill(theme.outline()))
+                    .finish(),
+            )
+            .with_child(
+                Container::new(stats)
+                    .with_padding(Padding::uniform(12.).with_left(16.).with_right(16.))
+                    .finish(),
+            );
+
+        if total == 0 {
+            content.add_child(
+                Container::new(
+                    Text::new_inline(
+                        "No CLI-agent sessions yet. Launch one from a workspace.",
+                        font_family,
+                        12.,
+                    )
+                    .with_color(theme.sub_text_color(theme.background()).into())
+                    .finish(),
+                )
+                .with_uniform_padding(24.)
+                .finish(),
+            );
+        } else {
+            content.add_child(
+                Container::new(
+                    Text::new_inline("Sessions", font_family, 11.)
+                        .with_color(theme.sub_text_color(theme.background()).into())
+                        .finish(),
+                )
+                .with_padding(Padding::uniform(8.).with_left(18.))
+                .with_border(Border::bottom(1.).with_border_fill(theme.outline()))
+                .finish(),
+            );
+            for row in rows.into_iter().take(MAX_VISIBLE_ROWS) {
+                content.add_child(
+                    Container::new(self.render_panefleet_fleet_row(row, appearance))
+                        .with_border(Border::bottom(1.).with_border_fill(theme.outline()))
+                        .finish(),
+                );
+            }
+            if total > MAX_VISIBLE_ROWS {
+                content.add_child(
+                    Container::new(
+                        Text::new_inline(
+                            format!("{} more sessions", total - MAX_VISIBLE_ROWS),
+                            font_family,
+                            10.,
+                        )
+                        .with_color(theme.sub_text_color(theme.background()).into())
+                        .finish(),
+                    )
+                    .with_uniform_padding(10.)
+                    .finish(),
+                );
+            }
+            if !agent_mix.is_empty() {
+                content.add_child(
+                    Container::new(
+                        Text::new_inline(format!("Agent mix  ·  {agent_mix}"), font_family, 10.)
+                            .with_color(theme.sub_text_color(theme.background()).into())
+                            .with_clip(ClipConfig::ellipsis())
+                            .finish(),
+                    )
+                    .with_padding(Padding::uniform(10.).with_left(18.))
+                    .finish(),
+                );
+            }
+        }
+
+        ConstrainedBox::new(
+            Container::new(content.finish())
+                .with_background(theme.surface_2())
+                .with_border(Border::all(1.).with_border_fill(theme.outline()))
+                .with_corner_radius(CornerRadius::with_all(Radius::Pixels(10.)))
+                .finish(),
+        )
+        .with_width(760.)
+        .finish()
+    }
+
     /// Adds the configurable right-side toolbar items plus the fixed controls
     /// (update pill, offline indicator, avatar, etc.) that are not configurable.
     fn add_configurable_right_side_tab_bar_controls(
@@ -22163,6 +23032,14 @@ impl Workspace {
             if let Some(button) = self.render_header_toolbar_button(&item, appearance, ctx) {
                 target.add_child(button);
             }
+        }
+
+        if FeatureFlag::PaneFleetWorkbench.is_enabled() {
+            target.add_child(
+                Container::new(self.render_panefleet_fleet_overview_button(appearance, ctx))
+                    .with_margin_left(TAB_BAR_PADDING_LEFT)
+                    .finish(),
+            );
         }
 
         // Legacy AI assistant button (non-agent-mode only)
@@ -26536,8 +27413,67 @@ impl TypedActionView for Workspace {
                 ctx.notify();
             }
             FocusTerminalViewInWorkspace { terminal_view_id } => {
+                if FeatureFlag::PaneFleetWorkbench.is_enabled()
+                    && let Some(path) =
+                        self.panefleet_project_path_for_terminal_view(*terminal_view_id, ctx)
+                    && self.current_panefleet_project_path(ctx).as_ref() != Some(&path)
+                {
+                    self.switch_panefleet_project(path, false, ctx);
+                }
+                self.current_workspace_state
+                    .is_panefleet_fleet_overview_open = false;
+                self.current_workspace_state
+                    .is_panefleet_fleet_dashboard_open = false;
+                self.left_panel_view.update(ctx, |left_panel, ctx| {
+                    left_panel.set_panefleet_fleet_dashboard_open(false, ctx);
+                });
+                self.tab_bar_pinned_by_popup = false;
                 if !self.focus_terminal_view_locally(*terminal_view_id, ctx) {
                     self.focus_terminal_view_in_other_window(*terminal_view_id, ctx);
+                }
+            }
+            TogglePaneFleetFleetOverview => {
+                if FeatureFlag::PaneFleetWorkbench.is_enabled() {
+                    let opening = !self
+                        .current_workspace_state
+                        .is_panefleet_fleet_overview_open;
+                    self.current_workspace_state
+                        .is_panefleet_fleet_overview_open = opening;
+                    if opening {
+                        self.current_workspace_state.is_notification_mailbox_open = false;
+                        self.current_workspace_state
+                            .is_panefleet_fleet_dashboard_open = false;
+                        self.left_panel_view.update(ctx, |left_panel, ctx| {
+                            left_panel.set_panefleet_fleet_dashboard_open(false, ctx);
+                        });
+                        self.is_user_menu_open = false;
+                    }
+                    self.tab_bar_pinned_by_popup = opening && self.tab_bar_mode(ctx).has_tab_bar();
+                    if !opening {
+                        self.focus_active_tab(ctx);
+                    }
+                    ctx.notify();
+                }
+            }
+            TogglePaneFleetFleetDashboard => {
+                if FeatureFlag::PaneFleetWorkbench.is_enabled() {
+                    let opening = !self
+                        .current_workspace_state
+                        .is_panefleet_fleet_dashboard_open;
+                    self.current_workspace_state
+                        .is_panefleet_fleet_dashboard_open = opening;
+                    self.current_workspace_state
+                        .is_panefleet_fleet_overview_open = false;
+                    self.current_workspace_state.is_notification_mailbox_open = false;
+                    self.is_user_menu_open = false;
+                    self.tab_bar_pinned_by_popup = false;
+                    self.left_panel_view.update(ctx, |left_panel, ctx| {
+                        left_panel.set_panefleet_fleet_dashboard_open(opening, ctx);
+                    });
+                    if !opening {
+                        self.focus_active_tab(ctx);
+                    }
+                    ctx.notify();
                 }
             }
             FocusPane(locator) => {
@@ -28640,6 +29576,37 @@ impl View for Workspace {
                     PositionedElementOffsetBounds::WindowByPosition,
                     PositionedElementAnchor::BottomRight,
                     ChildAnchor::TopRight,
+                ),
+            );
+        }
+
+        if self
+            .current_workspace_state
+            .is_panefleet_fleet_overview_open
+        {
+            stack.add_positioned_overlay_child(
+                self.render_panefleet_fleet_overview(appearance, app),
+                OffsetPositioning::offset_from_save_position_element(
+                    PANEFLEET_FLEET_OVERVIEW_POSITION_ID,
+                    Vector2F::zero(),
+                    PositionedElementOffsetBounds::WindowByPosition,
+                    PositionedElementAnchor::BottomRight,
+                    ChildAnchor::TopRight,
+                ),
+            );
+        }
+
+        if self
+            .current_workspace_state
+            .is_panefleet_fleet_dashboard_open
+        {
+            stack.add_positioned_overlay_child(
+                self.render_panefleet_fleet_dashboard(appearance, app),
+                OffsetPositioning::offset_from_parent(
+                    Vector2F::zero(),
+                    ParentOffsetBounds::WindowByPosition,
+                    ParentAnchor::Center,
+                    ChildAnchor::Center,
                 ),
             );
         }

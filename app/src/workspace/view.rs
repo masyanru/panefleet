@@ -156,9 +156,10 @@ use super::panefleet_notifications::PaneFleetNotificationPreferences;
 use super::panefleet_preferences::{PaneFleetWorkspacePreferences, git_branch_for_workspace};
 use super::panefleet_state::{
     PANEFLEET_STATE_VERSION, PaneFleetPersistedAgentSession, PaneFleetPersistedState,
-    PaneFleetPersistedTab, PaneFleetPersistedWorkspace, panefleet_agent_launch_command,
-    write_panefleet_state_atomic,
+    PaneFleetPersistedTab, PaneFleetPersistedWorkspace, PaneFleetWorkspaceSource,
+    panefleet_agent_launch_command, write_panefleet_state_atomic,
 };
+use super::panefleet_worktrees::create_panefleet_worktree;
 use super::rewind_confirmation_dialog::{
     RewindConfirmationDialog, RewindConfirmationEvent, RewindDialogSource,
 };
@@ -1098,6 +1099,7 @@ pub struct Workspace {
     horizontal_tab_group_mouse_states: RefCell<HashMap<TabGroupId, HorizontalTabGroupMouseStates>>,
     panefleet_active_project: Option<PathBuf>,
     panefleet_project_tabs: HashMap<PathBuf, PaneFleetProjectTabState>,
+    panefleet_workspace_sources: HashMap<PathBuf, PaneFleetWorkspaceSource>,
     panefleet_tab_sessions: HashMap<EntityId, PaneFleetPersistedAgentSession>,
     panefleet_agent_restore_states: HashMap<EntityId, PaneFleetAgentRestoreState>,
     panefleet_working_agent_sessions: HashSet<EntityId>,
@@ -3507,6 +3509,7 @@ impl Workspace {
             horizontal_tab_group_mouse_states: RefCell::default(),
             panefleet_active_project: None,
             panefleet_project_tabs: HashMap::new(),
+            panefleet_workspace_sources: HashMap::new(),
             panefleet_tab_sessions: HashMap::new(),
             panefleet_agent_restore_states: HashMap::new(),
             panefleet_working_agent_sessions: HashSet::new(),
@@ -9428,11 +9431,13 @@ impl Workspace {
     fn panefleet_persisted_workspace(
         path: PathBuf,
         state: &PaneFleetProjectTabState,
+        source: PaneFleetWorkspaceSource,
         tab_sessions: &HashMap<EntityId, PaneFleetPersistedAgentSession>,
         app: &AppContext,
     ) -> PaneFleetPersistedWorkspace {
         PaneFleetPersistedWorkspace {
             path,
+            source,
             active_tab_index: state.active_tab_index,
             tabs: state
                 .tabs
@@ -9457,6 +9462,10 @@ impl Workspace {
                 Self::panefleet_persisted_workspace(
                     path.clone(),
                     state,
+                    self.panefleet_workspace_sources
+                        .get(path)
+                        .cloned()
+                        .unwrap_or_default(),
                     &self.panefleet_tab_sessions,
                     app,
                 )
@@ -9464,13 +9473,17 @@ impl Workspace {
             .collect::<Vec<_>>();
         if let Some(path) = self.current_panefleet_project_path(app) {
             workspaces.push(Self::panefleet_persisted_workspace(
-                path,
+                path.clone(),
                 &PaneFleetProjectTabState {
                     tabs: self.tabs.clone(),
                     active_tab_index: self.active_tab_index,
                     tab_mru_order: self.tab_mru_order.clone(),
                     tab_groups: self.tab_groups.clone(),
                 },
+                self.panefleet_workspace_sources
+                    .get(&path)
+                    .cloned()
+                    .unwrap_or_default(),
                 &self.panefleet_tab_sessions,
                 app,
             ));
@@ -9562,12 +9575,15 @@ impl Workspace {
         };
         self.panefleet_restoring_state = true;
         self.panefleet_project_tabs.clear();
+        self.panefleet_workspace_sources.clear();
         self.panefleet_tab_sessions.clear();
         self.panefleet_agent_restore_states.clear();
         self.panefleet_working_agent_sessions.clear();
 
         let mut active_workspace = None;
         for workspace in persisted.workspaces {
+            self.panefleet_workspace_sources
+                .insert(workspace.path.clone(), workspace.source.clone());
             if workspace.path == active_project {
                 active_workspace = Some(workspace);
                 continue;
@@ -9711,6 +9727,9 @@ impl Workspace {
         if !FeatureFlag::PaneFleetWorkbench.is_enabled() {
             return;
         }
+        self.panefleet_workspace_sources
+            .entry(path.clone())
+            .or_default();
 
         let current_path = self.current_panefleet_project_path(ctx);
         if current_path.as_ref() == Some(&path) {
@@ -9862,6 +9881,7 @@ impl Workspace {
             let working_directories_model = self.working_directories_model.clone();
             Self::dispose_panefleet_project_state(state, &working_directories_model, ctx);
         }
+        self.panefleet_workspace_sources.remove(path);
         ProjectManagementModel::handle(ctx).update(ctx, |projects, ctx| {
             projects.remove_project(path, ctx);
         });
@@ -12160,8 +12180,24 @@ impl Workspace {
                 branch,
                 worktree_branch_name,
             } => {
-                self.handle_new_worktree_submit(repo, branch, worktree_branch_name.as_deref(), ctx);
-                self.close_new_worktree_modal(ctx);
+                if FeatureFlag::PaneFleetWorkbench.is_enabled() {
+                    if self.handle_panefleet_new_worktree_submit(
+                        repo,
+                        branch,
+                        worktree_branch_name.as_deref(),
+                        ctx,
+                    ) {
+                        self.close_new_worktree_modal(ctx);
+                    }
+                } else {
+                    self.handle_new_worktree_submit(
+                        repo,
+                        branch,
+                        worktree_branch_name.as_deref(),
+                        ctx,
+                    );
+                    self.close_new_worktree_modal(ctx);
+                }
             }
             NewWorktreeModalEvent::PickNewRepo => {
                 ctx.dispatch_typed_action_deferred(WorkspaceAction::OpenNewWorktreeRepoPicker);
@@ -12204,6 +12240,55 @@ impl Workspace {
         Some(warp_util::worktree_names::generate_worktree_branch_name(
             &branch_refs,
         ))
+    }
+
+    #[cfg(feature = "local_fs")]
+    fn handle_panefleet_new_worktree_submit(
+        &mut self,
+        repo: &str,
+        base_branch: &str,
+        worktree_branch_name: Option<&str>,
+        ctx: &mut ViewContext<Self>,
+    ) -> bool {
+        match create_panefleet_worktree(Path::new(repo), base_branch, worktree_branch_name) {
+            Ok(worktree) => {
+                let source = PaneFleetWorkspaceSource::IsolatedWorktree {
+                    source_repository: worktree.source_repository,
+                    branch: worktree.branch.clone(),
+                    managed: true,
+                };
+                self.open_panefleet_workspace(worktree.path, source, ctx);
+                self.toast_stack.update(ctx, |toast_stack, ctx| {
+                    toast_stack.add_ephemeral_toast(
+                        DismissibleToast::success(format!(
+                            "Created isolated workspace on '{}'",
+                            worktree.branch
+                        )),
+                        ctx,
+                    );
+                });
+                true
+            }
+            Err(error) => {
+                let message = format!("Could not create isolated workspace: {error:#}");
+                log::warn!("{message}");
+                self.toast_stack.update(ctx, |toast_stack, ctx| {
+                    toast_stack.add_persistent_toast(DismissibleToast::error(message), ctx);
+                });
+                false
+            }
+        }
+    }
+
+    #[cfg(not(feature = "local_fs"))]
+    fn handle_panefleet_new_worktree_submit(
+        &mut self,
+        _repo: &str,
+        _base_branch: &str,
+        _worktree_branch_name: Option<&str>,
+        _ctx: &mut ViewContext<Self>,
+    ) -> bool {
+        false
     }
 
     /// Generates a worktree tab config TOML, writes it to `~/.warp/tab_configs/`,
@@ -14471,7 +14556,21 @@ impl Workspace {
     }
 
     fn handle_open_repository(&mut self, path: &str, ctx: &mut ViewContext<Self>) {
-        let path_buf = PathBuf::from(path);
+        self.open_panefleet_workspace(
+            PathBuf::from(path),
+            PaneFleetWorkspaceSource::ExistingFolder,
+            ctx,
+        );
+    }
+
+    fn open_panefleet_workspace(
+        &mut self,
+        path_buf: PathBuf,
+        source: PaneFleetWorkspaceSource,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        self.panefleet_workspace_sources
+            .insert(path_buf.clone(), source);
         self.switch_panefleet_project(path_buf.clone(), false, ctx);
         ProjectManagementModel::handle(ctx).update(ctx, |projects, ctx| {
             projects.upsert_project(path_buf.clone(), ctx);

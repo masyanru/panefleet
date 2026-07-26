@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 use crate::terminal::CLIAgent;
 
-pub const PANEFLEET_STATE_VERSION: u32 = 2;
+pub const PANEFLEET_STATE_VERSION: u32 = 3;
 const CODEX_STANDALONE_COMMAND: &str = "env -u CODEX_THREAD_ID -u CODEX_CI codex";
 
 fn legacy_state_version() -> u32 {
@@ -48,9 +48,24 @@ impl PaneFleetPersistedState {
 pub(super) struct PaneFleetPersistedWorkspace {
     pub path: PathBuf,
     #[serde(default)]
+    pub source: PaneFleetWorkspaceSource,
+    #[serde(default)]
     pub active_tab_index: usize,
     #[serde(default)]
     pub tabs: Vec<PaneFleetPersistedTab>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(super) enum PaneFleetWorkspaceSource {
+    #[default]
+    ExistingFolder,
+    IsolatedWorktree {
+        source_repository: PathBuf,
+        branch: String,
+        #[serde(default)]
+        managed: bool,
+    },
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

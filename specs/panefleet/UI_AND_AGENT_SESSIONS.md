@@ -314,7 +314,9 @@ Enabled in launcher, Add agent, Delete, Restore default и Save. Пользов�
 
 - **Show workspace path** — полный корень проекта под названием;
 - **Show Git branch** — текущая ветка или короткий hash detached HEAD;
-- **Show agent activity** — анимированные и статические индикаторы агентов.
+- **Show agent activity** — анимированные и статические индикаторы агентов;
+- **Confirm closing the final tab** — запрашивать подтверждение перед закрытием
+  последней вкладки workspace.
 
 Из навигации Settings в режиме PaneFleet скрыты продуктовые разделы Warp,
 которые не относятся к локальному workbench: Warp Agent, Profiles, Knowledge,
@@ -527,23 +529,23 @@ Restoring  → InProgress → Blocked → InProgress → Success
 одной исходной репой в нескольких PaneFleet workspace на разных Git-ветках,
 не разделяя один working tree между агентами.
 
-- [ ] Добавить при создании workspace режим `Existing folder` /
-      `Isolated worktree`.
-- [ ] Для isolated workspace выбирать существующую ветку или создавать новую.
-- [ ] Создавать отдельный Git worktree и использовать его корень как `cwd` для
+- [x] Добавить отдельные действия `Existing folder` и `Isolated worktree` в
+      заголовок Project Sidebar.
+- [x] Для isolated workspace выбирать базовую ветку и создавать новую ветку.
+- [x] Создавать отдельный Git worktree и использовать его корень как `cwd` для
       всех Terminal и Agent Session этого workspace.
-- [ ] Направлять Files / Changes / Review и Git metadata на конкретный worktree,
+- [x] Направлять Files / Changes / Review и Git metadata на конкретный worktree,
       а не на исходную папку репозитория.
-- [ ] Сохранять связь `source repository → worktree path → branch → workspace`
+- [x] Сохранять связь `source repository → worktree path → branch → workspace`
       в версионированном локальном состоянии.
 - [ ] Поддержать подключение уже существующего внешнего worktree без его
       переноса под управление PaneFleet.
-- [ ] Проверять конфликт ветки, занятый worktree и незакоммиченные изменения до
-      создания, переключения или удаления.
-- [ ] При закрытии workspace не удалять worktree автоматически; отдельное
-      действие очистки должно требовать подтверждение, проверять dirty state и
-      никогда не удалять Git-ветку неявно.
-- [ ] Гарантировать, что агенты двух isolated workspace не получают одинаковый
+- [x] Проверять конфликт ветки, занятый путь и незакоммиченные изменения до
+      создания managed worktree.
+- [x] При закрытии workspace не удалять worktree или Git-ветку автоматически.
+- [ ] Добавить отдельное подтверждаемое действие очистки с проверкой dirty state,
+      которое никогда не удаляет Git-ветку неявно.
+- [x] Гарантировать, что агенты двух isolated workspace не получают одинаковый
       working directory.
 - [ ] После изоляции добавить CLI-specific activity adapters для Codex и
       OpenCode.

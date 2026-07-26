@@ -4,7 +4,7 @@ use uuid::Uuid;
 
 use super::{
     PANEFLEET_STATE_VERSION, PaneFleetPersistedAgentSession, PaneFleetPersistedState,
-    PaneFleetResumeError, panefleet_agent_launch_command,
+    PaneFleetResumeError, PaneFleetWorkspaceSource, panefleet_agent_launch_command,
 };
 use crate::terminal::CLIAgent;
 
@@ -23,7 +23,40 @@ fn migrates_legacy_state_without_agent_metadata() {
 
     assert_eq!(state.version, PANEFLEET_STATE_VERSION);
     assert_eq!(state.active_project, Some(PathBuf::from("/tmp/project")));
+    assert_eq!(
+        state.workspaces[0].source,
+        PaneFleetWorkspaceSource::ExistingFolder
+    );
     assert_eq!(state.workspaces[0].tabs[0].agent_session, None);
+}
+
+#[test]
+fn round_trips_isolated_worktree_metadata() {
+    let encoded = br#"{
+        "version": 3,
+        "active_project": "/tmp/worktrees/feature",
+        "workspaces": [{
+            "path": "/tmp/worktrees/feature",
+            "source": {
+                "kind": "isolated_worktree",
+                "source_repository": "/tmp/project",
+                "branch": "feature/panefleet",
+                "managed": true
+            },
+            "tabs": []
+        }]
+    }"#;
+
+    let state = PaneFleetPersistedState::decode(encoded).unwrap();
+
+    assert_eq!(
+        state.workspaces[0].source,
+        PaneFleetWorkspaceSource::IsolatedWorktree {
+            source_repository: PathBuf::from("/tmp/project"),
+            branch: "feature/panefleet".to_string(),
+            managed: true,
+        }
+    );
 }
 
 #[test]

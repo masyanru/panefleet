@@ -21,6 +21,7 @@ pub(crate) mod panefleet_fleet_events;
 pub(crate) mod panefleet_notifications;
 pub(crate) mod panefleet_preferences;
 mod panefleet_state;
+mod panefleet_worktrees;
 mod registry;
 pub mod rewind_confirmation_dialog;
 pub mod sync_inputs;

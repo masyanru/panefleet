@@ -101,6 +101,7 @@ struct PaneFleetWorkspaceRowMouseStates {
 
 struct PaneFleetMouseStateHandles {
     add_project: MouseStateHandle,
+    add_worktree: MouseStateHandle,
     fleet_dashboard: MouseStateHandle,
     project_rows: Vec<PaneFleetWorkspaceRowMouseStates>,
 }
@@ -109,6 +110,7 @@ impl Default for PaneFleetMouseStateHandles {
     fn default() -> Self {
         Self {
             add_project: Default::default(),
+            add_worktree: Default::default(),
             fleet_dashboard: Default::default(),
             project_rows: (0..PANEFLEET_PROJECT_LIMIT)
                 .map(|_| PaneFleetWorkspaceRowMouseStates::default())
@@ -1933,12 +1935,36 @@ impl View for LeftPanelView {
                 })
                 .with_cursor(Cursor::PointingHand)
                 .finish();
+                let worktree_tooltip = appearance
+                    .ui_builder()
+                    .tool_tip("New isolated workspace".to_string())
+                    .build()
+                    .finish();
+                let add_worktree = icon_button(
+                    appearance,
+                    icons::Icon::GitBranch,
+                    false,
+                    self.panefleet_mouse_state_handles.add_worktree.clone(),
+                )
+                .with_tooltip(move || worktree_tooltip)
+                .build()
+                .on_click(|ctx, _, _| {
+                    ctx.dispatch_typed_action(WorkspaceAction::OpenNewWorktreeModal);
+                })
+                .with_cursor(Cursor::PointingHand)
+                .finish();
+                let actions = Flex::row()
+                    .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                    .with_spacing(2.)
+                    .with_child(add_project)
+                    .with_child(add_worktree)
+                    .finish();
                 Flex::row()
                     .with_main_axis_size(MainAxisSize::Max)
                     .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
                     .with_cross_axis_alignment(CrossAxisAlignment::Center)
                     .with_child(title)
-                    .with_child(add_project)
+                    .with_child(actions)
                     .finish()
             } else if let Some(row) = toolbelt_button_row {
                 row

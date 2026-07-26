@@ -46,6 +46,8 @@ agents side by side.
 ## What works today
 
 - **Project workspaces** in a persistent left sidebar.
+- **Isolated Git worktree workspaces** with a selected base branch and a new,
+  independently checked-out branch for parallel agent work.
 - **Workspace-scoped tabs**: changing projects changes the complete set of open
   terminal and agent tabs.
 - **Agent launcher bar** for Terminal, Codex, Claude, OpenCode, and custom agent

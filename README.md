@@ -136,7 +136,7 @@ Use it on non-critical workspaces and keep normal Git backups.
 
 The current alpha is available for Apple Silicon Macs (`arm64`):
 
-[**Download PaneFleet v0.1.0-alpha.1 for Apple Silicon**](https://github.com/masyanru/panefleet/releases/download/v0.1.0-alpha.1/PaneFleet-v0.1.0-alpha.1-macos-arm64.zip)
+[**Download PaneFleet v0.1.0-alpha.2 for Apple Silicon**](https://github.com/masyanru/panefleet/releases/download/v0.1.0-alpha.2/PaneFleet-v0.1.0-alpha.2-macos-arm64.zip)
 
 1. Download `PaneFleet-…-macos-arm64.zip` and its `.sha256` file.
 2. Unzip it and move `PaneFleet.app` to `/Applications`.
@@ -229,7 +229,7 @@ After installing `cargo-bundle`:
 
 ```bash
 ./script/generate-panefleet-macos-icon
-./script/package-panefleet-macos v0.1.0-alpha.1
+./script/package-panefleet-macos v0.1.0-alpha.2
 ```
 
 The release ZIP and SHA-256 checksum are written to

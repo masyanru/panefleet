@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "$(uname -s)" != "Darwin" ]]; then
+  echo "error: the PaneFleet app-bundle launcher is only available on macOS." >&2
+  exit 1
+fi
+
+if [[ $# -gt 1 || ( $# -eq 1 && "$1" != "--no-open" ) ]]; then
+  echo "usage: $0 [--no-open]" >&2
+  exit 1
+fi
+
+if ! command -v cargo-bundle >/dev/null 2>&1; then
+  echo "error: cargo-bundle is required. Run ./script/bootstrap or install cargo-bundle." >&2
+  exit 1
+fi
+
+PANEFLEET_REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PANEFLEET_TARGET_DIR="$(
+  cd "${PANEFLEET_REPO_ROOT}"
+  cargo metadata --no-deps --format-version 1 |
+    sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p'
+)"
+
+if [[ -z "${PANEFLEET_TARGET_DIR}" ]]; then
+  PANEFLEET_TARGET_DIR="${PANEFLEET_REPO_ROOT}/target"
+fi
+
+PANEFLEET_APP="${PANEFLEET_TARGET_DIR}/debug/bundle/osx/PaneFleet.app"
+
+echo "Building PaneFleet as a macOS app bundle..."
+cd "${PANEFLEET_REPO_ROOT}/app"
+cargo bundle --bin panefleet
+cd "${PANEFLEET_REPO_ROOT}"
+
+if [[ ! -d "${PANEFLEET_APP}" ]]; then
+  echo "error: expected app bundle was not created at ${PANEFLEET_APP}" >&2
+  exit 1
+fi
+
+SIGNING_CERT="$(
+  security find-identity -p codesigning -v 2>/dev/null |
+    awk '/Apple Development/ { print $2; exit }'
+)"
+
+echo "Signing the development app bundle..."
+codesign --force --deep --options runtime \
+  --sign "${SIGNING_CERT:--}" \
+  --entitlements "${PANEFLEET_REPO_ROOT}/script/Debug-Entitlements.plist" \
+  "${PANEFLEET_APP}"
+codesign --verify --deep --strict --verbose=2 "${PANEFLEET_APP}"
+
+if [[ "${1:-}" != "--no-open" ]]; then
+  echo "Opening ${PANEFLEET_APP}"
+  /usr/bin/open -n "${PANEFLEET_APP}"
+fi

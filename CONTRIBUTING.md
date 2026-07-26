@@ -20,11 +20,15 @@ toolchain pinned by `rust-toolchain.toml`.
 ```sh
 git lfs install
 ./script/bootstrap --skip-gcloud-auth
-cargo run -p warp --bin panefleet
+./script/run-panefleet-macos
 ```
 
 The bootstrap script is inherited from Warp and installs native build dependencies. The
 `--skip-gcloud-auth` flag avoids an optional upstream developer service.
+
+The launcher builds and opens a real `PaneFleet.app` bundle so macOS can attach protected
+folder permissions to PaneFleet. Running the bare executable with `cargo run` can instead
+attribute Desktop, Documents, and Downloads access to the parent terminal.
 
 ## Project principles
 
@@ -55,6 +59,7 @@ packaging changes, validate the scripts without publishing an artifact:
 ```sh
 bash -n script/generate-panefleet-macos-icon
 bash -n script/package-panefleet-macos
+bash -n script/run-panefleet-macos
 ```
 
 ## Pull requests

@@ -186,7 +186,7 @@ git clone https://github.com/masyanru/panefleet.git
 cd panefleet
 
 ./script/bootstrap --skip-gcloud-auth
-cargo run -p warp --bin panefleet
+./script/run-panefleet-macos
 ```
 
 If the development dependencies are already installed, the shorter path is:
@@ -194,11 +194,17 @@ If the development dependencies are already installed, the shorter path is:
 ```bash
 git lfs install
 git lfs pull
-cargo run -p warp --bin panefleet
+./script/run-panefleet-macos
 ```
 
 The first build is large because PaneFleet compiles the complete terminal,
 editor, and GPU UI stack.
+
+Use the app-bundle launcher instead of `cargo run` on macOS. Protected folders
+such as Desktop, Documents, and Downloads are authorized per application;
+launching the bare executable makes macOS attribute those shell processes to
+the parent terminal instead of PaneFleet. On first access, allow PaneFleet in
+**System Settings → Privacy & Security → Files & Folders**.
 
 ### Build an app bundle
 

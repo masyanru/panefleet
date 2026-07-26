@@ -518,9 +518,37 @@ Restoring  → InProgress → Blocked → InProgress → Success
 - [x] Добавить Blocked/Failed состояния и tooltips.
 - [x] Подключить структурированные Claude tool/skill/subagent events к Fleet.
 - [ ] Расширить Claude hook protocol конкретными именами skill и подагента.
-- [ ] Добавить CLI-specific activity adapters для Codex и OpenCode.
+- [ ] Добавить live-состояния Claude tool/skill/subagent и сворачивание
+      низкоуровневых tool calls в `Recent activity`.
 
-### P3 — notifications
+### P3 — workspace isolation через Git worktrees
+
+Следующий крупный этап после Claude Activity v2. Цель — параллельно работать с
+одной исходной репой в нескольких PaneFleet workspace на разных Git-ветках,
+не разделяя один working tree между агентами.
+
+- [ ] Добавить при создании workspace режим `Existing folder` /
+      `Isolated worktree`.
+- [ ] Для isolated workspace выбирать существующую ветку или создавать новую.
+- [ ] Создавать отдельный Git worktree и использовать его корень как `cwd` для
+      всех Terminal и Agent Session этого workspace.
+- [ ] Направлять Files / Changes / Review и Git metadata на конкретный worktree,
+      а не на исходную папку репозитория.
+- [ ] Сохранять связь `source repository → worktree path → branch → workspace`
+      в версионированном локальном состоянии.
+- [ ] Поддержать подключение уже существующего внешнего worktree без его
+      переноса под управление PaneFleet.
+- [ ] Проверять конфликт ветки, занятый worktree и незакоммиченные изменения до
+      создания, переключения или удаления.
+- [ ] При закрытии workspace не удалять worktree автоматически; отдельное
+      действие очистки должно требовать подтверждение, проверять dirty state и
+      никогда не удалять Git-ветку неявно.
+- [ ] Гарантировать, что агенты двух isolated workspace не получают одинаковый
+      working directory.
+- [ ] После изоляции добавить CLI-specific activity adapters для Codex и
+      OpenCode.
+
+### P4 — notifications
 
 - [x] Добавить локальные настройки звука завершения agent turn.
 - [x] Добавить три системных macOS-звука и Preview.
@@ -538,5 +566,11 @@ Restoring  → InProgress → Blocked → InProgress → Success
 - Files / Changes / Review относятся к активному workspace.
 - После полного restart все восстанавливаемые Agent Session продолжают прежние
   беседы.
+- Два workspace одной репы могут одновременно работать на разных ветках через
+  разные Git worktrees и не изменяют файлы друг друга.
+- Files / Changes / Review и все новые Agent Session используют worktree
+  выбранного workspace.
+- Закрытие workspace не удаляет его worktree или ветку без отдельного
+  подтверждённого действия.
 - Невозможность resume никогда не маскируется новой пустой сессией.
 - UI использует существующие темы, кнопки, иконки и состояния Warp.

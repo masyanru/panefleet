@@ -4044,6 +4044,16 @@ impl Workspace {
 
     fn panefleet_fleet_workspaces(&self, ctx: &AppContext) -> Vec<PaneFleetFleetWorkspace> {
         let rows = self.panefleet_fleet_rows(ctx);
+        let mut ordered_projects = ProjectManagementModel::as_ref(ctx)
+            .all_projects()
+            .map(|project| (PathBuf::from(&project.path), project.added_ts))
+            .collect::<Vec<_>>();
+        ordered_projects.sort_by(|left, right| left.1.cmp(&right.1));
+        let project_order = ordered_projects
+            .into_iter()
+            .enumerate()
+            .map(|(index, (path, _))| (path, index))
+            .collect::<HashMap<_, _>>();
         let mut sessions_by_path = rows.into_iter().fold(
             BTreeMap::<PathBuf, Vec<PaneFleetFleetRow>>::new(),
             |mut groups, row| {
@@ -4080,12 +4090,28 @@ impl Workspace {
                 }
             })
             .collect::<Vec<_>>();
-        workspaces.sort_by(|left, right| {
-            Self::panefleet_fleet_workspace_status(left)
-                .cmp(&Self::panefleet_fleet_workspace_status(right))
-                .then_with(|| left.name.cmp(&right.name))
-        });
+        Self::sort_panefleet_fleet_workspaces(&mut workspaces, &project_order);
         workspaces
+    }
+
+    fn sort_panefleet_fleet_workspaces(
+        workspaces: &mut [PaneFleetFleetWorkspace],
+        project_order: &HashMap<PathBuf, usize>,
+    ) {
+        workspaces.sort_by(|left, right| {
+            project_order
+                .get(&left.path)
+                .copied()
+                .unwrap_or(usize::MAX)
+                .cmp(
+                    &project_order
+                        .get(&right.path)
+                        .copied()
+                        .unwrap_or(usize::MAX),
+                )
+                .then_with(|| left.name.cmp(&right.name))
+                .then_with(|| left.path.cmp(&right.path))
+        });
     }
 
     fn panefleet_fleet_workspace_status(

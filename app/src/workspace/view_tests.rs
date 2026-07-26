@@ -2925,6 +2925,40 @@ fn panefleet_fleet_elapsed_uses_compact_units() {
 }
 
 #[test]
+fn panefleet_fleet_workspace_order_stays_aligned_with_project_sidebar() {
+    let workspace = |path: &str, status| PaneFleetFleetWorkspace {
+        path: PathBuf::from(path),
+        name: path.trim_start_matches('/').to_string(),
+        branch: None,
+        sessions: vec![PaneFleetFleetRow {
+            terminal_view_id: EntityId::new(),
+            workspace_path: PathBuf::from(path),
+            workspace_name: path.trim_start_matches('/').to_string(),
+            agent: CLIAgent::Claude,
+            status,
+            task: "Task".to_string(),
+            elapsed: None,
+        }],
+    };
+    let mut workspaces = vec![
+        workspace("/second", PaneFleetFleetStatus::Working),
+        workspace("/first", PaneFleetFleetStatus::Done),
+    ];
+    let project_order =
+        HashMap::from([(PathBuf::from("/first"), 0), (PathBuf::from("/second"), 1)]);
+
+    Workspace::sort_panefleet_fleet_workspaces(&mut workspaces, &project_order);
+
+    assert_eq!(
+        workspaces
+            .iter()
+            .map(|workspace| workspace.path.as_path())
+            .collect::<Vec<_>>(),
+        vec![Path::new("/first"), Path::new("/second")]
+    );
+}
+
+#[test]
 fn panefleet_fleet_event_age_is_human_readable_and_saturating() {
     let now = 10 * 86_400_000;
     assert_eq!(

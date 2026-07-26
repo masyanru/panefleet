@@ -2925,6 +2925,35 @@ fn panefleet_fleet_elapsed_uses_compact_units() {
 }
 
 #[test]
+fn panefleet_fleet_workspace_status_prioritizes_attention_over_activity() {
+    assert_eq!(
+        Workspace::aggregate_panefleet_fleet_status([]),
+        PaneFleetFleetStatus::Ready
+    );
+    assert_eq!(
+        Workspace::aggregate_panefleet_fleet_status([
+            PaneFleetFleetStatus::Ready,
+            PaneFleetFleetStatus::Working,
+        ]),
+        PaneFleetFleetStatus::Working
+    );
+    assert_eq!(
+        Workspace::aggregate_panefleet_fleet_status([
+            PaneFleetFleetStatus::Working,
+            PaneFleetFleetStatus::Blocked,
+        ]),
+        PaneFleetFleetStatus::Blocked
+    );
+    assert_eq!(
+        Workspace::aggregate_panefleet_fleet_status([
+            PaneFleetFleetStatus::Blocked,
+            PaneFleetFleetStatus::Failed,
+        ]),
+        PaneFleetFleetStatus::Failed
+    );
+}
+
+#[test]
 fn test_left_panel_window_scoped_reconciles_between_terminal_tabs_when_enabled() {
     let _conversation_list_guard =
         FeatureFlag::AgentViewConversationListView.override_enabled(false);

@@ -557,6 +557,10 @@ pub enum WorkspaceAction {
     FocusTerminalViewInWorkspace {
         terminal_view_id: EntityId,
     },
+    /// Open a PaneFleet workspace from a cross-workspace surface.
+    OpenPaneFleetWorkspace {
+        path: PathBuf,
+    },
     /// Show or hide PaneFleet's cross-workspace CLI-agent overview.
     TogglePaneFleetFleetOverview,
     /// Show or hide PaneFleet's full cross-workspace CLI-agent dashboard.
@@ -1161,6 +1165,7 @@ impl WorkspaceAction {
             | OpenAIFactCollection
             | OpenMCPServerCollection
             | FocusTerminalViewInWorkspace { .. }
+            | OpenPaneFleetWorkspace { .. }
             | TogglePaneFleetFleetOverview
             | TogglePaneFleetFleetDashboard
             | FocusPane(..)

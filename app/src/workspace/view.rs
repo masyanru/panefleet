@@ -652,7 +652,6 @@ pub const TOGGLE_COMMAND_PALETTE_KEYBINDING_NAME: &str = "workspace:toggle_comma
 
 const USER_AVATAR_BUTTON_POSITION_ID: &str = "workspace:user_avatar_button";
 const NOTIFICATIONS_MAILBOX_POSITION_ID: &str = "workspace:notifications_mailbox";
-const PANEFLEET_FLEET_OVERVIEW_POSITION_ID: &str = "workspace:panefleet_fleet_overview";
 pub(crate) const JUMP_TO_LATEST_TOAST_BINDING_NAME: &str = "workspace:jump_to_latest_toast";
 pub(crate) const TOGGLE_NOTIFICATION_MAILBOX_BINDING_NAME: &str =
     "workspace:toggle_notification_mailbox";
@@ -13274,13 +13273,35 @@ impl Workspace {
         self.vertical_tabs_panel
             .clear_detail_sidecar_if_for_pane_group(pane_group.id());
 
-        // If this is the last tab, close the window instead of actually removing
-        // the tab.
+        // A PaneFleet workspace owns a persistent set of tabs. Keep the window and
+        // project alive when its final tab is closed by replacing it with a fresh
+        // terminal rooted at the workspace before removing the requested tab.
+        //
+        // The upstream terminal behavior closes the whole window here. That loses
+        // PaneFleet's active-project identity and makes the next launch infer $HOME
+        // as a new workspace.
         if self.tabs.len() == 1 {
-            if ContextFlag::CloseWindow.is_enabled() {
-                ctx.close_window();
+            if FeatureFlag::PaneFleetWorkbench.is_enabled() {
+                let Some(project_path) = self.current_panefleet_project_path(ctx) else {
+                    return;
+                };
+                self.panefleet_active_project = Some(project_path.clone());
+                self.add_tab_with_pane_layout(
+                    PanesLayout::SingleTerminal(Box::new(NewTerminalOptions {
+                        initial_directory: Some(project_path),
+                        hide_homepage: true,
+                        ..Default::default()
+                    })),
+                    Arc::new(HashMap::new()),
+                    None,
+                    ctx,
+                );
+            } else {
+                if ContextFlag::CloseWindow.is_enabled() {
+                    ctx.close_window();
+                }
+                return;
             }
-            return;
         }
 
         // Preserve split-off child-agent tabs by moving their lone pane back
@@ -13315,6 +13336,11 @@ impl Workspace {
 
         let removed_pane_group_id = tab_data.pane_group.id();
         self.tab_mru_order.retain(|id| *id != removed_pane_group_id);
+        self.panefleet_tab_sessions.remove(&removed_pane_group_id);
+        self.panefleet_agent_restore_states
+            .remove(&removed_pane_group_id);
+        self.panefleet_working_agent_sessions
+            .remove(&removed_pane_group_id);
 
         // If the closed tab was a group member, prune the group when it now
         // has no remaining members.
@@ -13481,7 +13507,9 @@ impl Workspace {
         ctx: &mut ViewContext<Self>,
     ) {
         let is_last_tab = self.tabs.len() == 1;
-        if !ContextFlag::CloseWindow.is_enabled() && is_last_tab {
+        let preserves_panefleet_workspace =
+            is_last_tab && FeatureFlag::PaneFleetWorkbench.is_enabled();
+        if !ContextFlag::CloseWindow.is_enabled() && is_last_tab && !preserves_panefleet_workspace {
             return;
         }
 
@@ -13490,7 +13518,10 @@ impl Workspace {
         let tabs_closed = self.close_tabs(
             vec![index].into_iter(),
             OpenDialogSource::CloseTab { tab_index: index },
-            skip_confirmation || is_last_tab, // If this is the last tab, the confirmation dialog will be handled by the window close.
+            // The normal last-tab flow delegates confirmation to window close.
+            // PaneFleet keeps the window open, so its final tab must use the
+            // regular tab confirmation path.
+            skip_confirmation || (is_last_tab && !preserves_panefleet_workspace),
             add_to_undo_stack,
             ctx,
         );
@@ -22652,11 +22683,7 @@ impl Workspace {
             button
         };
 
-        SavePosition::new(
-            Container::new(Align::new(button).finish()).finish(),
-            PANEFLEET_FLEET_OVERVIEW_POSITION_ID,
-        )
-        .finish()
+        Container::new(Align::new(button).finish()).finish()
     }
 
     fn panefleet_fleet_status_label(status: PaneFleetFleetStatus) -> &'static str {
@@ -22842,8 +22869,8 @@ impl Workspace {
             })
             .count();
 
-        let close = self
-            .render_tab_bar_icon_button(
+        let close = ConstrainedBox::new(
+            self.render_tab_bar_icon_button(
                 appearance,
                 icons::Icon::X,
                 &self.mouse_states.panefleet_fleet_overview_close,
@@ -22853,7 +22880,11 @@ impl Workspace {
                 false,
                 false,
             )
-            .finish();
+            .finish(),
+        )
+        .with_width(TAB_BAR_HEIGHT)
+        .with_height(TAB_BAR_HEIGHT)
+        .finish();
         let summary = if attention_count > 0 {
             format!("{active_count} working · {attention_count} need attention")
         } else {
@@ -22902,9 +22933,14 @@ impl Workspace {
                         .with_cross_axis_alignment(CrossAxisAlignment::Center)
                         .with_spacing(6.)
                         .with_child(
-                            Icon::Users
-                                .to_warpui_icon(theme.sub_text_color(theme.background()))
-                                .finish(),
+                            ConstrainedBox::new(
+                                Icon::Users
+                                    .to_warpui_icon(theme.sub_text_color(theme.background()))
+                                    .finish(),
+                            )
+                            .with_width(20.)
+                            .with_height(20.)
+                            .finish(),
                         )
                         .with_child(
                             Text::new_inline("No CLI agent sessions yet", font_family, 12.)
@@ -22958,6 +22994,10 @@ impl Workspace {
                 .finish(),
         )
         .with_width(420.)
+        // Positioned overlays receive an unbounded constraint by default. Keep
+        // every child on a finite vertical budget so toolbar controls cannot
+        // expand the popover to an infinite paint rectangle.
+        .with_max_height(640.)
         .finish()
     }
 
@@ -30521,11 +30561,14 @@ impl View for Workspace {
         {
             stack.add_positioned_overlay_child(
                 self.render_panefleet_fleet_overview(appearance, app),
-                OffsetPositioning::offset_from_save_position_element(
-                    PANEFLEET_FLEET_OVERVIEW_POSITION_ID,
-                    Vector2F::zero(),
-                    PositionedElementOffsetBounds::WindowByPosition,
-                    PositionedElementAnchor::BottomRight,
+                // Anchor to the window instead of the toolbar button's saved
+                // position. During window restoration the button can disappear
+                // for one frame, and resolving that missing position produces
+                // non-finite geometry in WarpUI's paint pass.
+                OffsetPositioning::offset_from_parent(
+                    vec2f(-8., TOTAL_TAB_BAR_HEIGHT + 8.),
+                    ParentOffsetBounds::WindowByPosition,
+                    ParentAnchor::TopRight,
                     ChildAnchor::TopRight,
                 ),
             );

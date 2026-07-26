@@ -2855,6 +2855,52 @@ fn panefleet_does_not_open_workspace_panels_for_settings_tab() {
 }
 
 #[test]
+fn panefleet_closing_final_tab_keeps_workspace_and_project_alive() {
+    let _panefleet_guard = FeatureFlag::PaneFleetWorkbench.override_enabled(true);
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        app.add_singleton_model(|ctx| ProjectManagementModel::new(Vec::new(), None, ctx));
+
+        let workspace = mock_workspace(&mut app);
+        workspace.update(&mut app, |workspace, ctx| {
+            let project_path = std::env::temp_dir();
+            workspace.panefleet_active_project = Some(project_path.clone());
+            let original_tab_id = workspace.active_tab_pane_group().id();
+
+            workspace.close_tab(0, true, true, ctx);
+
+            assert_eq!(workspace.tab_count(), 1);
+            assert_ne!(workspace.active_tab_pane_group().id(), original_tab_id);
+            assert_eq!(
+                workspace.current_panefleet_project_path(ctx),
+                Some(project_path)
+            );
+        });
+    });
+}
+
+#[test]
+fn panefleet_fleet_overview_renders_with_finite_geometry() {
+    let _panefleet_guard = FeatureFlag::PaneFleetWorkbench.override_enabled(true);
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        app.add_singleton_model(|ctx| ProjectManagementModel::new(Vec::new(), None, ctx));
+
+        let workspace = mock_workspace(&mut app);
+        workspace.update(&mut app, |workspace, ctx| {
+            workspace.handle_action(&WorkspaceAction::TogglePaneFleetFleetOverview, ctx);
+            assert!(
+                workspace
+                    .current_workspace_state
+                    .is_panefleet_fleet_overview_open
+            );
+        });
+    });
+}
+
+#[test]
 fn panefleet_fleet_status_only_marks_real_turns_as_working() {
     assert_eq!(
         Workspace::panefleet_fleet_status(&CLIAgentSessionStatus::InProgress, None),

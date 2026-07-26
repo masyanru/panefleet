@@ -2,7 +2,7 @@
 
 Статус: живая спецификация прототипа
 
-Последнее обновление: 2026-07-25
+Последнее обновление: 2026-07-26
 
 Этот файл — единая памятка по интерфейсу PaneFleet и ожидаемому поведению
 workspace, вкладок и CLI-агентов. Если реализация расходится с этим документом,
@@ -230,6 +230,25 @@ Enabled in launcher, Add agent, Delete, Restore default и Save. Пользов�
 Billing and usage, Cloud platform, Teams, Warpify, Referrals и Shared blocks.
 Account пока сохраняется, а судьба Warp Drive будет определена отдельно.
 
+## 5.4 Settings → Notifications
+
+Первая версия намеренно минимальна:
+
+- один переключатель звука завершения агентского хода;
+- три ненавязчивых системных звука macOS: `Glass`, `Pop` и `Tink`;
+- выбор звука и кнопка Preview;
+- настройка хранится локально и применяется к новым событиям сразу.
+
+Звук воспроизводится только после перехода реального пользовательского turn из
+`InProgress` в `Success` или `Failed`. Сам запуск CLI, восстановление сохранённой
+сессии, idle prompt и переход в `Blocked` уведомлением не считаются.
+
+Источник истины — структурированные события `CLIAgentSessionsModel`. PaneFleet
+запоминает `terminal_view_id` только после `InProgress` с непустым query и
+удаляет его после первого завершающего события, поэтому один turn даёт не более
+одного звука. Унаследованный стандартный звук desktop notification в режиме
+PaneFleet выключен, чтобы не было двойного сигнала.
+
 ## 6. Точное восстановление Agent Session
 
 ### 6.1 Критерий готовности
@@ -344,7 +363,8 @@ Restoring  → InProgress → Blocked → InProgress → Success
 ~/Library/Application Support/dev.panefleet.PaneFleet/
 ├── panefleet-workspaces.json
 ├── panefleet-agent-definitions.json
-└── panefleet-workspace-preferences.json
+├── panefleet-workspace-preferences.json
+└── panefleet-notification-preferences.json
 ```
 
 Перед реализацией точного resume формат нужно версионировать:
@@ -397,6 +417,13 @@ Restoring  → InProgress → Blocked → InProgress → Success
 - [x] Добавить трёхточечную анимацию.
 - [ ] Добавить Reduce Motion fallback.
 - [x] Добавить Blocked/Failed состояния и tooltips.
+
+### P3 — notifications
+
+- [x] Добавить локальные настройки звука завершения agent turn.
+- [x] Добавить три системных macOS-звука и Preview.
+- [x] Не уведомлять о старте CLI, resume, idle и Blocked.
+- [x] Исключить двойной системный звук у унаследованных desktop notifications.
 
 ## 10. Acceptance checklist
 

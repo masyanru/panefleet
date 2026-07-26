@@ -52,6 +52,8 @@ agents side by side.
   reopening an empty terminal with the old title.
 - **Agent activity indicators** that distinguish an active turn from an idle
   CLI process.
+- **Agent completion sounds** with three subtle macOS cues and no notification
+  on CLI startup or session restore.
 - **Project explorer** in the right context sidebar, alongside Changes and
   Review.
 - **File actions** for creating files and folders, refreshing the tree, and

@@ -16,6 +16,7 @@ use main_page::{MainPageAction, MainSettingsPageEvent, MainSettingsPageView};
 use mcp_servers_page::MCPServersSettingsPageView;
 use nav::{SettingsNavItem, SettingsUmbrella};
 use panefleet_agents_page::{PaneFleetAgentsSettingsPageEvent, PaneFleetAgentsSettingsPageView};
+use panefleet_notifications_page::PaneFleetNotificationsSettingsPageView;
 use panefleet_workspace_page::{
     PaneFleetWorkspaceSettingsPageEvent, PaneFleetWorkspaceSettingsPageView,
 };
@@ -102,6 +103,7 @@ pub mod mcp_servers_page;
 mod nav;
 pub mod pane_manager;
 mod panefleet_agents_page;
+mod panefleet_notifications_page;
 mod panefleet_workspace_page;
 mod platform;
 mod platform_page;
@@ -278,6 +280,7 @@ pub enum SettingsSection {
     AgentMCPServers,
     Knowledge,
     PaneFleetAgents,
+    PaneFleetNotifications,
     PaneFleetWorkspace,
     ThirdPartyCLIAgents,
     /// Internal backing-page identifier for CodeSettingsPageView. Multiple subpages
@@ -311,6 +314,7 @@ impl Display for SettingsSection {
             SettingsSection::AgentMCPServers => write!(f, "MCP servers"),
             SettingsSection::Knowledge => write!(f, "Knowledge"),
             SettingsSection::PaneFleetAgents => write!(f, "CLI agents"),
+            SettingsSection::PaneFleetNotifications => write!(f, "Notifications"),
             SettingsSection::PaneFleetWorkspace => write!(f, "Workspace"),
             SettingsSection::ThirdPartyCLIAgents => write!(f, "Third party CLI agents"),
             SettingsSection::CodeIndexing => write!(f, "Indexing and projects"),
@@ -419,6 +423,7 @@ impl FromStr for SettingsSection {
             "MCP servers" | "AgentMCPServers" => Ok(Self::AgentMCPServers),
             "Knowledge" => Ok(Self::Knowledge),
             "CLI agents" | "PaneFleetAgents" => Ok(Self::PaneFleetAgents),
+            "Notifications" | "PaneFleetNotifications" => Ok(Self::PaneFleetNotifications),
             "Workspace" | "PaneFleetWorkspace" => Ok(Self::PaneFleetWorkspace),
             "Third party CLI agents" | "ThirdPartyCLIAgents" => Ok(Self::ThirdPartyCLIAgents),
             "Indexing and projects" | "CodeIndexing" => Ok(Self::CodeIndexing),
@@ -1128,6 +1133,9 @@ macro_rules! update_page {
             SettingsPageViewHandle::MCPServers(handle) => $ctx.update_view(handle, $update),
             SettingsPageViewHandle::WarpDrive(handle) => $ctx.update_view(handle, $update),
             SettingsPageViewHandle::PaneFleetAgents(handle) => $ctx.update_view(handle, $update),
+            SettingsPageViewHandle::PaneFleetNotifications(handle) => {
+                $ctx.update_view(handle, $update)
+            }
             SettingsPageViewHandle::PaneFleetWorkspace(handle) => $ctx.update_view(handle, $update),
         }
     };
@@ -1221,6 +1229,8 @@ impl SettingsView {
         ctx.subscribe_to_view(&panefleet_agents_page_handle, |me, _, event, ctx| {
             me.handle_panefleet_agents_page_event(event, ctx);
         });
+        let panefleet_notifications_page_handle =
+            ctx.add_typed_action_view(PaneFleetNotificationsSettingsPageView::new);
         let panefleet_workspace_page_handle =
             ctx.add_typed_action_view(PaneFleetWorkspaceSettingsPageView::new);
         ctx.subscribe_to_view(&panefleet_workspace_page_handle, |me, _, event, ctx| {
@@ -1337,6 +1347,7 @@ impl SettingsView {
         let mut settings_pages = vec![
             SettingsPage::new(ai_page_handle),
             SettingsPage::new(panefleet_agents_page_handle),
+            SettingsPage::new(panefleet_notifications_page_handle),
             SettingsPage::new(panefleet_workspace_page_handle),
             billing_and_usage_page,
             SettingsPage::new(code_page_handle),
@@ -1376,6 +1387,7 @@ impl SettingsView {
         let mut nav_items = if panefleet_enabled {
             vec![
                 SettingsNavItem::Page(SettingsSection::PaneFleetWorkspace),
+                SettingsNavItem::Page(SettingsSection::PaneFleetNotifications),
                 SettingsNavItem::Umbrella(SettingsUmbrella::new(
                     "Agents",
                     vec![
@@ -2254,6 +2266,7 @@ impl SettingsView {
             SettingsPageViewHandle::Code(v) => v.as_ref(app).should_render(app),
             SettingsPageViewHandle::WarpDrive(v) => v.as_ref(app).should_render(app),
             SettingsPageViewHandle::PaneFleetAgents(v) => v.as_ref(app).should_render(app),
+            SettingsPageViewHandle::PaneFleetNotifications(v) => v.as_ref(app).should_render(app),
             SettingsPageViewHandle::PaneFleetWorkspace(v) => v.as_ref(app).should_render(app),
         }
     }

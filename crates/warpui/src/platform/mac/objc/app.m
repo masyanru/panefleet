@@ -44,6 +44,21 @@ BOOL isDarkMode() {
     return name == NSAppearanceNameDarkAqua;
 }
 
+void panefleet_play_system_sound(const char *soundName, float volume) {
+    if (soundName == NULL) {
+        return;
+    }
+
+    NSString *name = [NSString stringWithUTF8String:soundName];
+    NSSound *sound = [NSSound soundNamed:name];
+    if (sound == nil) {
+        return;
+    }
+
+    sound.volume = volume;
+    [sound play];
+}
+
 NSArray *getFilePathsFromPasteboard() {
     NSPasteboard *pb = [NSPasteboard generalPasteboard];
     NSArray *types = [pb types];

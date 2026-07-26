@@ -148,6 +148,7 @@ use super::lightbox_view::{LightboxParams, LightboxView, LightboxViewEvent};
 use super::native_modal::{NativeModal, NativeModalEvent};
 use super::one_time_modal_model::OneTimeModalEvent;
 use super::panefleet_agents::{PaneFleetAgentDefinition, PaneFleetAgentDefinitions};
+use super::panefleet_notifications::PaneFleetNotificationPreferences;
 use super::panefleet_state::{
     PANEFLEET_STATE_VERSION, PaneFleetPersistedAgentSession, PaneFleetPersistedState,
     PaneFleetPersistedTab, PaneFleetPersistedWorkspace, panefleet_agent_launch_command,
@@ -1059,6 +1060,7 @@ pub struct Workspace {
     panefleet_project_tabs: HashMap<PathBuf, PaneFleetProjectTabState>,
     panefleet_tab_sessions: HashMap<EntityId, PaneFleetPersistedAgentSession>,
     panefleet_agent_restore_states: HashMap<EntityId, PaneFleetAgentRestoreState>,
+    panefleet_working_agent_sessions: HashSet<EntityId>,
     panefleet_agent_definitions: PaneFleetAgentDefinitions,
     panefleet_restoring_state: bool,
     tab_rename_editor: ViewHandle<EditorView>,
@@ -3449,6 +3451,7 @@ impl Workspace {
             panefleet_project_tabs: HashMap::new(),
             panefleet_tab_sessions: HashMap::new(),
             panefleet_agent_restore_states: HashMap::new(),
+            panefleet_working_agent_sessions: HashSet::new(),
             panefleet_agent_definitions,
             panefleet_restoring_state: false,
             tab_rename_editor: Self::tab_rename_editor(ctx),
@@ -3878,6 +3881,53 @@ impl Workspace {
         })
     }
 
+    fn update_panefleet_agent_completion_sound(
+        &mut self,
+        event: &CLIAgentSessionsModelEvent,
+        pane_group_id: EntityId,
+    ) {
+        match event {
+            CLIAgentSessionsModelEvent::StatusChanged {
+                terminal_view_id,
+                status: CLIAgentSessionStatus::InProgress,
+                session_context,
+                ..
+            } if session_context
+                .query
+                .as_deref()
+                .is_some_and(|query| !query.trim().is_empty())
+                && !self
+                    .panefleet_agent_restore_states
+                    .contains_key(&pane_group_id) =>
+            {
+                self.panefleet_working_agent_sessions
+                    .insert(*terminal_view_id);
+            }
+            CLIAgentSessionsModelEvent::StatusChanged {
+                terminal_view_id,
+                status: CLIAgentSessionStatus::Success | CLIAgentSessionStatus::Failed { .. },
+                ..
+            } => {
+                if self
+                    .panefleet_working_agent_sessions
+                    .remove(terminal_view_id)
+                {
+                    PaneFleetNotificationPreferences::load_or_default(
+                        &PaneFleetNotificationPreferences::path(),
+                    )
+                    .play_agent_completion_sound();
+                }
+            }
+            CLIAgentSessionsModelEvent::Ended {
+                terminal_view_id, ..
+            } => {
+                self.panefleet_working_agent_sessions
+                    .remove(terminal_view_id);
+            }
+            _ => {}
+        }
+    }
+
     fn handle_cli_agent_sessions_event(
         &mut self,
         event: &CLIAgentSessionsModelEvent,
@@ -3900,6 +3950,8 @@ impl Workspace {
             && let Some(pane_group_id) =
                 self.panefleet_pane_group_id_for_terminal_view(event.terminal_view_id(), ctx)
         {
+            self.update_panefleet_agent_completion_sound(event, pane_group_id);
+
             let observed_session = CLIAgentSessionsModel::as_ref(ctx)
                 .session(event.terminal_view_id())
                 .map(|session| {
@@ -9031,6 +9083,7 @@ impl Workspace {
         self.panefleet_project_tabs.clear();
         self.panefleet_tab_sessions.clear();
         self.panefleet_agent_restore_states.clear();
+        self.panefleet_working_agent_sessions.clear();
 
         let mut active_workspace = None;
         for workspace in persisted.workspaces {
@@ -16916,9 +16969,10 @@ impl Workspace {
 
                 if let Ok(notification_data_str) = serde_json::to_string(&notification_data) {
                     // Read the notification sound setting from SessionSettings
-                    let play_sound = SessionSettings::as_ref(ctx)
-                        .notifications
-                        .play_notification_sound;
+                    let play_sound = !FeatureFlag::PaneFleetWorkbench.is_enabled()
+                        && SessionSettings::as_ref(ctx)
+                            .notifications
+                            .play_notification_sound;
 
                     ctx.send_desktop_notification(
                         UserNotification::new_with_sound(

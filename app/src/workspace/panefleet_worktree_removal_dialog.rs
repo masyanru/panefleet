@@ -86,6 +86,7 @@ impl PaneFleetWorktreeRemovalDialog {
             button.set_label(label.to_string(), ctx);
         });
         self.source = Some(source);
+        ctx.notify();
     }
 }
 

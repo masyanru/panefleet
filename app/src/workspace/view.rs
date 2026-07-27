@@ -7117,11 +7117,21 @@ impl Workspace {
         match remove_panefleet_worktree(&source.inspection, source.delete_branch) {
             Ok(outcome) => {
                 if let Some(error) = outcome.branch_delete_error {
+                    log::warn!(
+                        "PaneFleet removed worktree {}, but kept branch '{}': {error}",
+                        source.inspection.path.display(),
+                        source.inspection.branch
+                    );
+                    let reason = if error.contains("not fully merged") {
+                        "it contains commits that are not fully merged"
+                    } else {
+                        "Git could not safely delete it"
+                    };
                     self.toast_stack.update(ctx, |toast_stack, ctx| {
                         toast_stack.add_persistent_toast(
                             DismissibleToast::default(format!(
-                                "Worktree removed, but branch '{}' was kept: {error}",
-                                source.inspection.branch
+                                "Worktree removed. Branch '{}' was kept because {reason}.",
+                                source.inspection.branch,
                             )),
                             ctx,
                         );
@@ -29057,7 +29067,16 @@ impl TypedActionView for Workspace {
                 delete_branch,
             } => {
                 if FeatureFlag::PaneFleetWorkbench.is_enabled() {
-                    self.request_remove_panefleet_worktree(path, *delete_branch, ctx);
+                    // A context-menu item dispatches its action while the menu's own close/select
+                    // actions are still being processed. Opening a modal in that same update can
+                    // leave it immediately hidden by the remaining overlay cleanup. Defer the
+                    // transition so the menu is fully closed before the confirmation dialog opens.
+                    let path = path.clone();
+                    let delete_branch = *delete_branch;
+                    self.show_panefleet_environment_context_menu = None;
+                    ctx.spawn(async {}, move |workspace, _, ctx| {
+                        workspace.request_remove_panefleet_worktree(&path, delete_branch, ctx);
+                    });
                 }
             }
             TogglePaneFleetFleetOverview => {

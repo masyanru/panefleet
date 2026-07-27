@@ -110,6 +110,22 @@ order, active tab, working directories, and resumable agent sessions.
 The living UI and session-behavior specification is in
 [`specs/panefleet/UI_AND_AGENT_SESSIONS.md`](specs/panefleet/UI_AND_AGENT_SESSIONS.md).
 
+### Worktree environment lifecycle
+
+Right-click a project or worktree environment in the left sidebar to manage it:
+
+- **Close Environment** removes it from the PaneFleet UI without deleting its
+  folder or Git branch.
+- **Remove Worktree…** closes its tabs and agents, removes the registered Git
+  worktree and folder, and keeps the local branch.
+- **Remove Worktree and Delete Branch…** additionally asks Git to delete the
+  branch with its normal non-forcing safety checks.
+
+PaneFleet refuses to remove a dirty worktree. It never force-deletes an
+unmerged branch; in that case the worktree is removed and the branch is kept.
+Folders linked from outside PaneFleet's managed worktree directory can be
+closed but are never physically deleted by PaneFleet.
+
 ## Privacy and cloud services
 
 PaneFleet is currently local-first:
@@ -176,7 +192,7 @@ brew uninstall --cask panefleet
 
 ### Direct download
 
-[**Download PaneFleet v0.1.0-alpha.2 for Apple Silicon**](https://github.com/masyanru/panefleet/releases/download/v0.1.0-alpha.2/PaneFleet-v0.1.0-alpha.2-macos-arm64.zip)
+[**Download PaneFleet v0.1.0-alpha.3 for Apple Silicon**](https://github.com/masyanru/panefleet/releases/download/v0.1.0-alpha.3/PaneFleet-v0.1.0-alpha.3-macos-arm64.zip)
 
 1. Download `PaneFleet-…-macos-arm64.zip` and its `.sha256` file.
 2. Unzip it and move `PaneFleet.app` to `/Applications`.
@@ -269,7 +285,7 @@ After installing `cargo-bundle`:
 
 ```bash
 ./script/generate-panefleet-macos-icon
-./script/package-panefleet-macos v0.1.0-alpha.2
+./script/package-panefleet-macos v0.1.0-alpha.3
 ```
 
 The release ZIP and SHA-256 checksum are written to

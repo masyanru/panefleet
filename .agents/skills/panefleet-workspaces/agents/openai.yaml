@@ -1,0 +1,4 @@
+interface:
+  display_name: "PaneFleet Workspaces"
+  short_description: "Build workspace, worktree, and Fleet features"
+  default_prompt: "Use $panefleet-workspaces to implement a PaneFleet workspace or worktree lifecycle change safely."

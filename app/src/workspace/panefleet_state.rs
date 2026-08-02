@@ -100,6 +100,14 @@ pub(super) struct PaneFleetPersistedAgentSession {
     pub agent: CLIAgent,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_session_id: Option<String>,
+    /// Which pane of the tab the agent was running in, as the terminal's
+    /// persistent UUID in hex.
+    ///
+    /// Absent in files written before split layouts survived a restart, and
+    /// absent whenever the pane could not be identified; restore then falls
+    /// back to the active pane, which is what it always used to do.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pane_uuid: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -129,7 +137,16 @@ impl PaneFleetPersistedAgentSession {
         Self {
             agent,
             provider_session_id,
+            pane_uuid: None,
         }
+    }
+
+    pub fn set_pane_uuid(&mut self, pane_uuid: &[u8]) {
+        self.pane_uuid = Some(encode_pane_uuid(pane_uuid));
+    }
+
+    pub fn pane_uuid_bytes(&self) -> Option<Vec<u8>> {
+        decode_pane_uuid(self.pane_uuid.as_deref()?)
     }
 
     pub fn resume_command(&self) -> Result<String, PaneFleetResumeError> {
@@ -168,6 +185,29 @@ impl PaneFleetPersistedAgentSession {
             | CLIAgent::Unknown => Err(PaneFleetResumeError::UnsupportedAgent(self.agent)),
         }
     }
+}
+
+/// Hex rather than a byte array, so the state file stays readable by a person
+/// and by whatever else reads it.
+fn encode_pane_uuid(pane_uuid: &[u8]) -> String {
+    pane_uuid
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>()
+}
+
+fn decode_pane_uuid(encoded: &str) -> Option<Vec<u8>> {
+    if encoded.is_empty() || !encoded.len().is_multiple_of(2) {
+        return None;
+    }
+    encoded
+        .as_bytes()
+        .chunks(2)
+        .map(|pair| {
+            let pair = std::str::from_utf8(pair).ok()?;
+            u8::from_str_radix(pair, 16).ok()
+        })
+        .collect()
 }
 
 pub(super) fn panefleet_agent_launch_command(agent: CLIAgent) -> String {

@@ -2231,6 +2231,22 @@ impl PaneGroup {
             .any(|pane| pane.terminal_view(ctx).id() == terminal_view_id)
     }
 
+    /// The persistent UUID of the terminal pane hosting `terminal_view_id`.
+    ///
+    /// [`PaneId`] is derived from an `EntityId` and so is process-local; this
+    /// UUID is carried through the window snapshot and comes back unchanged
+    /// after a restart, which makes it the only usable handle for remembering
+    /// which pane something was running in.
+    pub fn session_uuid_for_terminal_view(
+        &self,
+        terminal_view_id: EntityId,
+        ctx: &AppContext,
+    ) -> Option<Vec<u8>> {
+        let pane_id = self.find_pane_id_for_terminal_view(terminal_view_id, ctx)?;
+        self.terminal_session_by_id(pane_id)
+            .map(TerminalPane::session_uuid)
+    }
+
     /// Returns the [`PaneId`] of the terminal pane whose persistent UUID matches
     /// the given bytes, or `None` if no such pane exists in this group.
     pub fn find_terminal_pane_by_session_uuid(&self, uuid: &[u8]) -> Option<PaneId> {

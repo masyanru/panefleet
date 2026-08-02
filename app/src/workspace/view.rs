@@ -3900,6 +3900,28 @@ impl Workspace {
             })
     }
 
+    /// The restart-stable UUID of the pane hosting `terminal_view_id`, so an
+    /// agent can be resumed into the pane it was actually running in rather
+    /// than whichever pane happens to be active.
+    fn panefleet_pane_uuid_for_terminal_view(
+        &self,
+        terminal_view_id: EntityId,
+        ctx: &AppContext,
+    ) -> Option<Vec<u8>> {
+        self.tabs
+            .iter()
+            .chain(
+                self.panefleet_project_tabs
+                    .values()
+                    .flat_map(|state| state.tabs.iter()),
+            )
+            .find_map(|tab| {
+                tab.pane_group
+                    .as_ref(ctx)
+                    .session_uuid_for_terminal_view(terminal_view_id, ctx)
+            })
+    }
+
     fn panefleet_project_path_for_terminal_view(
         &self,
         terminal_view_id: EntityId,
@@ -4484,6 +4506,8 @@ impl Workspace {
                     );
                 }
 
+                let pane_uuid =
+                    self.panefleet_pane_uuid_for_terminal_view(event.terminal_view_id(), ctx);
                 let saved_session = self
                     .panefleet_tab_sessions
                     .entry(pane_group_id)
@@ -4492,6 +4516,9 @@ impl Workspace {
                 saved_session.agent = agent;
                 if observed_session_id.is_some() {
                     saved_session.provider_session_id = observed_session_id.clone();
+                }
+                if let Some(pane_uuid) = pane_uuid {
+                    saved_session.set_pane_uuid(&pane_uuid);
                 }
 
                 if let Some(
@@ -9869,7 +9896,17 @@ impl Workspace {
             return;
         };
         let pane_group_id = tab.pane_group.id();
-        let terminal = tab.pane_group.as_ref(ctx).active_session_view(ctx);
+        // Resume into the pane the agent was actually in. Falling back to the
+        // active pane is what this always did, and is still right when the pane
+        // is gone or the record predates split restoration — but with layouts
+        // now coming back, guessing would revive the agent on top of whatever
+        // the user had in the pane that happens to be active.
+        let pane_group = tab.pane_group.as_ref(ctx);
+        let terminal = agent_session
+            .pane_uuid_bytes()
+            .and_then(|pane_uuid| pane_group.find_terminal_pane_by_session_uuid(&pane_uuid))
+            .and_then(|pane_id| pane_group.terminal_view_from_pane_id(pane_id, ctx))
+            .or_else(|| pane_group.active_session_view(ctx));
         let agent = agent_session.agent;
         let resume_command = agent_session.resume_command();
         self.panefleet_tab_sessions

@@ -31,6 +31,63 @@ fn migrates_legacy_state_without_agent_metadata() {
 }
 
 #[test]
+fn remembers_which_pane_the_agent_ran_in() {
+    let mut session = PaneFleetPersistedAgentSession::new(CLIAgent::Claude, None);
+    assert_eq!(session.pane_uuid_bytes(), None);
+
+    let pane_uuid = vec![0x00, 0x0f, 0xa0, 0xff];
+    session.set_pane_uuid(&pane_uuid);
+
+    assert_eq!(session.pane_uuid.as_deref(), Some("000fa0ff"));
+    assert_eq!(session.pane_uuid_bytes(), Some(pane_uuid));
+}
+
+#[test]
+fn a_state_file_without_a_pane_address_still_loads() {
+    // Written before split layouts survived a restart. Such a session must
+    // restore into the active pane rather than be dropped.
+    let legacy = br#"{
+        "version": 3,
+        "active_project": "/tmp/project",
+        "workspaces": [{
+            "path": "/tmp/project",
+            "active_tab_index": 0,
+            "tabs": [{
+                "title": "project",
+                "agent_session": {"agent": "Claude", "provider_session_id": "abc"}
+            }]
+        }]
+    }"#;
+
+    let state = PaneFleetPersistedState::decode(legacy).unwrap();
+    let session = state.workspaces[0].tabs[0]
+        .agent_session
+        .as_ref()
+        .expect("agent session survives");
+
+    assert_eq!(session.agent, CLIAgent::Claude);
+    assert_eq!(session.pane_uuid, None);
+    assert_eq!(session.pane_uuid_bytes(), None);
+}
+
+#[test]
+fn a_damaged_pane_address_is_ignored_rather_than_trusted() {
+    for damaged in ["", "abc", "zz", "00ff0"] {
+        let session = PaneFleetPersistedAgentSession {
+            agent: CLIAgent::Claude,
+            provider_session_id: None,
+            pane_uuid: Some(damaged.to_string()),
+        };
+
+        assert_eq!(
+            session.pane_uuid_bytes(),
+            None,
+            "'{damaged}' should not decode"
+        );
+    }
+}
+
+#[test]
 fn round_trips_isolated_worktree_metadata() {
     let encoded = br#"{
         "version": 3,

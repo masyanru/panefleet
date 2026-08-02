@@ -1027,6 +1027,9 @@ struct PaneFleetFleetRow {
 struct PaneFleetFleetEnvironment {
     path: PathBuf,
     name: String,
+    /// The work axis of the bound task, shown beside the process axis so the
+    /// card answers "is the work done" and not only "is the agent busy".
+    task_state: Option<PaneFleetTaskState>,
     sessions: Vec<PaneFleetFleetRow>,
 }
 
@@ -4064,17 +4067,6 @@ impl Workspace {
         }
     }
 
-    fn compact_panefleet_task_text(text: &str) -> String {
-        const MAX_CHARS: usize = 96;
-        let compact = text.split_whitespace().join(" ");
-        if compact.chars().count() <= MAX_CHARS {
-            return compact;
-        }
-        let mut truncated = compact.chars().take(MAX_CHARS - 1).collect::<String>();
-        truncated.push('…');
-        truncated
-    }
-
     fn format_panefleet_elapsed(elapsed: Duration) -> String {
         let seconds = elapsed.as_secs();
         if seconds < 60 {
@@ -4112,18 +4104,19 @@ impl Workspace {
                 &session.status,
                 session.session_context.query.as_deref(),
             );
-            let task = session
-                .session_context
-                .display_title()
-                .map(|text| Self::compact_panefleet_task_text(&text))
-                .filter(|text| !text.is_empty())
-                .unwrap_or_else(|| match status {
-                    PaneFleetFleetStatus::Working => "Working…".to_string(),
-                    PaneFleetFleetStatus::Blocked => "Waiting for input".to_string(),
-                    PaneFleetFleetStatus::Failed => "Agent run failed".to_string(),
-                    PaneFleetFleetStatus::Ready => "Ready for a task".to_string(),
-                    PaneFleetFleetStatus::Done => "Last task completed".to_string(),
-                });
+            // Deliberately not `display_title()`. That is the user's own last
+            // prompt, and free text where the eye looks for a status gets read
+            // as one — a prompt of "done" is indistinguishable from work that
+            // is actually done. What the work *is* belongs on the card header;
+            // this line says what the agent is doing.
+            let task = match status {
+                PaneFleetFleetStatus::Working => "Working…",
+                PaneFleetFleetStatus::Blocked => "Waiting for input",
+                PaneFleetFleetStatus::Failed => "Agent run failed",
+                PaneFleetFleetStatus::Ready => "Ready for a task",
+                PaneFleetFleetStatus::Done => "Turn finished",
+            }
+            .to_string();
             rows.push(PaneFleetFleetRow {
                 terminal_view_id: terminal.id(),
                 workspace_path: path.to_path_buf(),
@@ -4204,6 +4197,8 @@ impl Workspace {
                             .or_else(|| git_branch_for_workspace(&environment.path));
                         // Same substitution as the sidebar: the card names the
                         // work when there is a task, the branch otherwise.
+                        let task_state_for_environment =
+                            environment.task.as_ref().map(|task| task.state);
                         let environment_name =
                             environment.task.map(|task| task.title).unwrap_or_else(|| {
                                 branch.unwrap_or_else(|| {
@@ -4220,6 +4215,7 @@ impl Workspace {
                             sessions: sessions_by_path
                                 .remove(&environment.path)
                                 .unwrap_or_default(),
+                            task_state: task_state_for_environment,
                             path: environment.path,
                             name: environment_name,
                         }
@@ -24492,6 +24488,7 @@ impl Workspace {
         let is_working = status == PaneFleetFleetStatus::Working;
         let session_count = environment.sessions.len();
         let title = environment.name;
+        let task_state_label = environment.task_state.map(PaneFleetTaskState::label);
         let path_label = environment.path.to_string_lossy().into_owned();
         let sessions = environment.sessions;
 
@@ -24534,10 +24531,20 @@ impl Workspace {
                     .finish(),
                 );
 
-            let trailing = Flex::row()
+            let mut trailing = Flex::row()
                 .with_main_axis_size(MainAxisSize::Min)
                 .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                .with_spacing(5.)
+                .with_spacing(5.);
+            // The work axis first: whether the work passed its check outranks
+            // how many agent processes happen to be attached to it.
+            if let Some(task_state_label) = task_state_label {
+                trailing.add_child(
+                    Text::new_inline(task_state_label.to_string(), font_family, 10.)
+                        .with_color(main_text.into())
+                        .finish(),
+                );
+            }
+            let trailing = trailing
                 .with_child(
                     Text::new_inline(
                         format!(

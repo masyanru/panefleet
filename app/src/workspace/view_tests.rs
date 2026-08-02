@@ -3038,18 +3038,6 @@ fn panefleet_fleet_status_only_marks_real_turns_as_working() {
 }
 
 #[test]
-fn panefleet_fleet_task_text_is_single_line_and_bounded() {
-    assert_eq!(
-        Workspace::compact_panefleet_task_text("  review\n  the   current branch  "),
-        "review the current branch"
-    );
-    let long = "a".repeat(120);
-    let compact = Workspace::compact_panefleet_task_text(&long);
-    assert_eq!(compact.chars().count(), 96);
-    assert!(compact.ends_with('…'));
-}
-
-#[test]
 fn panefleet_fleet_elapsed_uses_compact_units() {
     assert_eq!(
         Workspace::format_panefleet_elapsed(Duration::from_secs(7)),
@@ -3073,6 +3061,7 @@ fn panefleet_fleet_workspace_order_stays_aligned_with_project_sidebar() {
         environments: vec![PaneFleetFleetEnvironment {
             path: PathBuf::from(path),
             name: "main".to_string(),
+            task_state: None,
             sessions: vec![PaneFleetFleetRow {
                 terminal_view_id: EntityId::new(),
                 workspace_path: PathBuf::from(path),

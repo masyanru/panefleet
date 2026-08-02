@@ -97,11 +97,18 @@ pub(crate) struct PaneFleetTaskBinding {
     /// with no moment attached.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub completed_at_unix_ms: Option<u64>,
-    /// Set when the task was marked done without a gate verdict behind it — no
-    /// gate configured, or the last one failed. The confirmation then rests on
+    /// Set when the task was marked done without a passing gate behind it — no
+    /// gate configured, or the last run failed. The confirmation then rests on
     /// the person's word, and a card should not present it as checked.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub completed_without_gate: bool,
+    /// Verdict of the most recent gate run, independent of the current state.
+    ///
+    /// The state is not a usable substitute: passing the gate and then sending
+    /// another prompt moves the task back to `Working`, and confirming from
+    /// there would otherwise look like confirming with no check at all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_gate_passed: Option<bool>,
     /// Ids of tasks that are part of the same effort in other repositories.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub related: Vec<String>,
@@ -118,6 +125,7 @@ impl PaneFleetTaskBinding {
             done_check: None,
             completed_at_unix_ms: None,
             completed_without_gate: false,
+            last_gate_passed: None,
             related: Vec::new(),
         }
     }
@@ -179,6 +187,7 @@ impl PaneFleetTaskBinding {
         };
         self.completed_at_unix_ms = None;
         self.completed_without_gate = false;
+        self.last_gate_passed = Some(passed);
     }
 
     /// Marks the work finished. The only route to `Done`.
@@ -186,7 +195,7 @@ impl PaneFleetTaskBinding {
     /// Records whether a passing gate stood behind the decision, so a surface
     /// can tell "checked and confirmed" from "confirmed on someone's word".
     pub fn mark_done(&mut self, now_unix_ms: u64) {
-        self.completed_without_gate = self.state != PaneFleetTaskState::AwaitingAck;
+        self.completed_without_gate = self.last_gate_passed != Some(true);
         self.state = PaneFleetTaskState::Done;
         self.completed_at_unix_ms = Some(now_unix_ms);
     }

@@ -339,3 +339,31 @@ fn a_new_turn_after_confirmation_clears_the_completion() {
     assert_eq!(task.completed_at_unix_ms, None);
     assert!(!task.completed_without_gate);
 }
+
+#[test]
+fn more_work_after_a_passing_gate_does_not_make_confirmation_unchecked() {
+    let mut task = binding("t-0001", "Onboard Miro audit logs");
+    task.set_done_check_from_text("true");
+
+    // The common sequence: the check passes, then a prompt or two to refine,
+    // and only then the confirmation.
+    task.apply_done_check_outcome(true);
+    task.state = PaneFleetTaskState::Working;
+    task.mark_done(1_700_000_000_000);
+
+    assert_eq!(task.state, PaneFleetTaskState::Done);
+    assert!(
+        !task.completed_without_gate,
+        "a gate that passed still stands behind this"
+    );
+}
+
+#[test]
+fn a_failed_gate_makes_confirmation_unchecked_even_from_review() {
+    let mut task = binding("t-0001", "Onboard Miro audit logs");
+    task.apply_done_check_outcome(false);
+
+    task.mark_done(1_700_000_000_000);
+
+    assert!(task.completed_without_gate);
+}

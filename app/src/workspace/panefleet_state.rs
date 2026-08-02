@@ -82,8 +82,15 @@ impl PaneFleetWorkspaceSource {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub(super) struct PaneFleetPersistedTab {
     pub title: Option<String>,
+    /// Written before a tab could hold more than one agent. Read so those files
+    /// still restore, never written again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_session: Option<PaneFleetPersistedAgentSession>,
+    /// One entry per pane running an agent. A tab commonly holds two — the same
+    /// agent twice, or a builder and a critic — and each has to come back into
+    /// its own pane.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agent_sessions: Vec<PaneFleetPersistedAgentSession>,
 }
 
 impl PaneFleetPersistedTab {
@@ -91,6 +98,16 @@ impl PaneFleetPersistedTab {
         Self {
             title,
             agent_session: None,
+            agent_sessions: Vec::new(),
+        }
+    }
+
+    /// Every agent session of this tab, whichever field carried it.
+    pub fn sessions(self) -> Vec<PaneFleetPersistedAgentSession> {
+        if self.agent_sessions.is_empty() {
+            self.agent_session.into_iter().collect()
+        } else {
+            self.agent_sessions
         }
     }
 }
@@ -189,7 +206,7 @@ impl PaneFleetPersistedAgentSession {
 
 /// Hex rather than a byte array, so the state file stays readable by a person
 /// and by whatever else reads it.
-fn encode_pane_uuid(pane_uuid: &[u8]) -> String {
+pub(super) fn encode_pane_uuid(pane_uuid: &[u8]) -> String {
     pane_uuid
         .iter()
         .map(|byte| format!("{byte:02x}"))

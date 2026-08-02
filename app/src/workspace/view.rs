@@ -162,7 +162,7 @@ use super::panefleet_preferences::{
 };
 use super::panefleet_state::{
     PANEFLEET_STATE_VERSION, PaneFleetPersistedAgentSession, PaneFleetPersistedState,
-    PaneFleetPersistedTab, PaneFleetPersistedWorkspace, PaneFleetWorkspaceSource,
+    PaneFleetPersistedTab, PaneFleetPersistedWorkspace, PaneFleetWorkspaceSource, encode_pane_uuid,
     panefleet_agent_launch_command, write_panefleet_state_atomic,
 };
 use super::panefleet_task_dialog::{
@@ -1128,7 +1128,10 @@ pub struct Workspace {
     /// `panefleet-workspaces.json`, so an external process can read and write
     /// tasks without understanding workspace layout.
     panefleet_tasks: PaneFleetTaskStore,
-    panefleet_tab_sessions: HashMap<EntityId, PaneFleetPersistedAgentSession>,
+    /// Agent sessions of each tab, keyed by pane-group id. A tab can run
+    /// several agents in side-by-side panes, so this is a collection; each
+    /// entry carries the pane it belongs to.
+    panefleet_tab_sessions: HashMap<EntityId, Vec<PaneFleetPersistedAgentSession>>,
     panefleet_agent_restore_states: HashMap<EntityId, PaneFleetAgentRestoreState>,
     panefleet_working_agent_sessions: HashSet<EntityId>,
     panefleet_agent_turn_started_at: HashMap<EntityId, Instant>,
@@ -4506,19 +4509,32 @@ impl Workspace {
                     );
                 }
 
-                let pane_uuid =
-                    self.panefleet_pane_uuid_for_terminal_view(event.terminal_view_id(), ctx);
-                let saved_session = self
+                let pane_uuid = self
+                    .panefleet_pane_uuid_for_terminal_view(event.terminal_view_id(), ctx)
+                    .map(|pane_uuid| encode_pane_uuid(&pane_uuid));
+                let sessions = self
                     .panefleet_tab_sessions
                     .entry(pane_group_id)
-                    .or_insert_with(|| PaneFleetPersistedAgentSession::new(agent, None));
+                    .or_default();
+                // Match on the pane, not on the tab: two agents in two panes of
+                // one tab would otherwise keep overwriting each other's entry.
+                let saved_session = match sessions
+                    .iter_mut()
+                    .position(|session| session.pane_uuid == pane_uuid && pane_uuid.is_some())
+                {
+                    Some(index) => &mut sessions[index],
+                    None => {
+                        sessions.push(PaneFleetPersistedAgentSession::new(agent, None));
+                        sessions.last_mut().expect("just pushed")
+                    }
+                };
                 let expected_session_id = saved_session.provider_session_id.clone();
                 saved_session.agent = agent;
                 if observed_session_id.is_some() {
                     saved_session.provider_session_id = observed_session_id.clone();
                 }
-                if let Some(pane_uuid) = pane_uuid {
-                    saved_session.set_pane_uuid(&pane_uuid);
+                if pane_uuid.is_some() {
+                    saved_session.pane_uuid = pane_uuid;
                 }
 
                 if let Some(
@@ -9820,7 +9836,7 @@ impl Workspace {
         path: PathBuf,
         state: &PaneFleetProjectTabState,
         source: PaneFleetWorkspaceSource,
-        tab_sessions: &HashMap<EntityId, PaneFleetPersistedAgentSession>,
+        tab_sessions: &HashMap<EntityId, Vec<PaneFleetPersistedAgentSession>>,
         app: &AppContext,
     ) -> PaneFleetPersistedWorkspace {
         PaneFleetPersistedWorkspace {
@@ -9832,7 +9848,12 @@ impl Workspace {
                 .iter()
                 .map(|tab| PaneFleetPersistedTab {
                     title: tab.pane_group.as_ref(app).custom_title(app),
-                    agent_session: tab_sessions.get(&tab.pane_group.id()).cloned(),
+                    // The legacy single-session field is never written again.
+                    agent_session: None,
+                    agent_sessions: tab_sessions
+                        .get(&tab.pane_group.id())
+                        .cloned()
+                        .unwrap_or_default(),
                 })
                 .collect(),
         }
@@ -9886,6 +9907,18 @@ impl Workspace {
         }
     }
 
+    /// Brings every agent of a restored tab back, each into its own pane.
+    fn restore_panefleet_agents_at_tab_index(
+        &mut self,
+        tab_index: usize,
+        agent_sessions: Vec<PaneFleetPersistedAgentSession>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        for agent_session in agent_sessions {
+            self.restore_panefleet_agent_at_tab_index(tab_index, agent_session, ctx);
+        }
+    }
+
     fn restore_panefleet_agent_at_tab_index(
         &mut self,
         tab_index: usize,
@@ -9910,7 +9943,9 @@ impl Workspace {
         let agent = agent_session.agent;
         let resume_command = agent_session.resume_command();
         self.panefleet_tab_sessions
-            .insert(pane_group_id, agent_session);
+            .entry(pane_group_id)
+            .or_default()
+            .push(agent_session);
 
         match (terminal, resume_command) {
             (Some(terminal), Ok(command)) => {
@@ -9998,7 +10033,8 @@ impl Workspace {
                 workspace.tabs
             };
             for tab in tabs {
-                let agent_session = tab.agent_session.clone();
+                let title = tab.title.clone();
+                let agent_sessions = tab.sessions();
                 self.add_tab_with_pane_layout(
                     PanesLayout::SingleTerminal(Box::new(NewTerminalOptions {
                         initial_directory: Some(workspace.path.clone()),
@@ -10006,16 +10042,14 @@ impl Workspace {
                         ..Default::default()
                     })),
                     Arc::new(HashMap::new()),
-                    tab.title,
+                    title,
                     ctx,
                 );
-                if let Some(agent_session) = agent_session {
-                    self.restore_panefleet_agent_at_tab_index(
-                        self.tabs.len().saturating_sub(1),
-                        agent_session,
-                        ctx,
-                    );
-                }
+                self.restore_panefleet_agents_at_tab_index(
+                    self.tabs.len().saturating_sub(1),
+                    agent_sessions,
+                    ctx,
+                );
             }
             let active_tab_index = workspace
                 .active_tab_index
@@ -10052,9 +10086,11 @@ impl Workspace {
                 self.active_tab_index =
                     restored_active_tab_index.min(self.tabs.len().saturating_sub(1));
                 for (tab_index, persisted_tab) in active_workspace.tabs.into_iter().enumerate() {
-                    if let Some(agent_session) = persisted_tab.agent_session {
-                        self.restore_panefleet_agent_at_tab_index(tab_index, agent_session, ctx);
-                    }
+                    self.restore_panefleet_agents_at_tab_index(
+                        tab_index,
+                        persisted_tab.sessions(),
+                        ctx,
+                    );
                 }
                 self.finish_panefleet_restore(active_project, ctx);
                 return;
@@ -10084,13 +10120,11 @@ impl Workspace {
                     persisted_tab.title.clone(),
                     ctx,
                 );
-                if let Some(agent_session) = persisted_tab.agent_session {
-                    self.restore_panefleet_agent_at_tab_index(
-                        self.tabs.len().saturating_sub(1),
-                        agent_session,
-                        ctx,
-                    );
-                }
+                self.restore_panefleet_agents_at_tab_index(
+                    self.tabs.len().saturating_sub(1),
+                    persisted_tab.sessions(),
+                    ctx,
+                );
             }
             self.active_tab_index =
                 restored_active_tab_index.min(self.tabs.len().saturating_sub(1));
@@ -10406,6 +10440,7 @@ impl Workspace {
                 definition,
                 self.panefleet_tab_sessions
                     .values()
+                    .flatten()
                     .map(|session| session.agent),
             )
         {
@@ -10458,9 +10493,28 @@ impl Workspace {
             ctx,
         );
 
-        if let Some(agent_session) = agent_session {
+        if let Some(mut agent_session) = agent_session {
+            // Record the pane at launch rather than waiting to observe a live
+            // session: observation needs the notification plugin, which only
+            // some agents have, and without this those agents would never get
+            // an address at all.
+            let pane_group = self.active_tab_pane_group();
+            if let Some(pane_uuid) =
+                pane_group
+                    .as_ref(ctx)
+                    .active_session_view(ctx)
+                    .and_then(|terminal| {
+                        pane_group
+                            .as_ref(ctx)
+                            .session_uuid_for_terminal_view(terminal.id(), ctx)
+                    })
+            {
+                agent_session.set_pane_uuid(&pane_uuid);
+            }
             self.panefleet_tab_sessions
-                .insert(self.active_tab_pane_group().id(), agent_session);
+                .entry(pane_group.id())
+                .or_default()
+                .push(agent_session);
         }
 
         if let Some(command) = command.as_deref()
@@ -21935,6 +21989,7 @@ impl Workspace {
             let icon = self
                 .panefleet_tab_sessions
                 .get(&tab.pane_group.id())
+                .and_then(|sessions| sessions.first())
                 .and_then(|session| session.agent.icon())
                 .unwrap_or(Icon::Terminal);
             component = component.with_leading_icon(icon);

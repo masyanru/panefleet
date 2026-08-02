@@ -71,6 +71,65 @@ fn a_state_file_without_a_pane_address_still_loads() {
 }
 
 #[test]
+fn a_tab_keeps_one_session_per_pane() {
+    let raw = br#"{
+        "version": 3,
+        "active_project": "/tmp/project",
+        "workspaces": [{
+            "path": "/tmp/project",
+            "active_tab_index": 0,
+            "tabs": [{
+                "title": "SEC-1802 Onboard Miro audit logs",
+                "agent_sessions": [
+                    {"agent": "Claude", "provider_session_id": "left", "pane_uuid": "aa01"},
+                    {"agent": "Claude", "provider_session_id": "right", "pane_uuid": "bb02"}
+                ]
+            }]
+        }]
+    }"#;
+
+    let mut state = PaneFleetPersistedState::decode(raw).unwrap();
+    let sessions = state.workspaces.remove(0).tabs.remove(0).sessions();
+
+    assert_eq!(sessions.len(), 2);
+    assert_eq!(
+        sessions
+            .iter()
+            .map(|session| session.pane_uuid.as_deref())
+            .collect::<Vec<_>>(),
+        [Some("aa01"), Some("bb02")]
+    );
+    // Two agents in one tab must not collapse into one another.
+    assert_ne!(
+        sessions[0].provider_session_id,
+        sessions[1].provider_session_id
+    );
+}
+
+#[test]
+fn a_legacy_single_session_tab_still_restores_its_agent() {
+    let legacy = br#"{
+        "version": 3,
+        "active_project": "/tmp/project",
+        "workspaces": [{
+            "path": "/tmp/project",
+            "active_tab_index": 0,
+            "tabs": [{
+                "title": "project",
+                "agent_session": {"agent": "Claude", "provider_session_id": "only"}
+            }]
+        }]
+    }"#;
+
+    let mut state = PaneFleetPersistedState::decode(legacy).unwrap();
+    let sessions = state.workspaces.remove(0).tabs.remove(0).sessions();
+
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0].provider_session_id.as_deref(), Some("only"));
+    assert_eq!(sessions[0].pane_uuid, None);
+}
+
+#[test]
 fn a_damaged_pane_address_is_ignored_rather_than_trusted() {
     for damaged in ["", "abc", "zz", "00ff0"] {
         let session = PaneFleetPersistedAgentSession {

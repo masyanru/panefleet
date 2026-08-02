@@ -16,6 +16,7 @@ mod lightbox_view;
 mod native_modal;
 mod one_time_modal_model;
 pub(crate) mod panefleet_agents;
+mod panefleet_attention;
 pub(crate) mod panefleet_claude;
 pub(crate) mod panefleet_fleet_events;
 pub(crate) mod panefleet_notifications;

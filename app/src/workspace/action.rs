@@ -463,6 +463,10 @@ pub enum WorkspaceAction {
     ClearPaneFleetTask {
         path: PathBuf,
     },
+    /// Confirms the work is finished. The only route to the `Done` state.
+    MarkPaneFleetTaskDone {
+        path: PathBuf,
+    },
     Reauth,
     SignupAnonymousUser,
     SignInAnonymousWebUser,
@@ -1184,6 +1188,7 @@ impl WorkspaceAction {
             | RequestRemovePaneFleetWorktree { .. }
             | SetPaneFleetTask { .. }
             | ClearPaneFleetTask { .. }
+            | MarkPaneFleetTaskDone { .. }
             | TogglePaneFleetFleetOverview
             | TogglePaneFleetFleetDashboard
             | FocusPane(..)

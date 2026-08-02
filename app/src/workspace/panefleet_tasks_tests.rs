@@ -272,13 +272,70 @@ fn an_empty_gate_clears_it_and_an_unparseable_one_is_refused() {
 }
 
 #[test]
-fn done_is_only_reachable_through_the_gate() {
+fn the_gate_decides_between_review_and_confirmation() {
     let mut task = binding("t-0001", "Onboard Miro audit logs");
     assert_eq!(task.state, PaneFleetTaskState::Queued);
 
     task.apply_done_check_outcome(false);
     assert_eq!(task.state, PaneFleetTaskState::NeedsReview);
 
+    // Never `Done` — that word belongs to the person, not the check.
     task.apply_done_check_outcome(true);
+    assert_eq!(task.state, PaneFleetTaskState::AwaitingAck);
+}
+
+#[test]
+fn a_passing_gate_asks_for_confirmation_rather_than_claiming_done() {
+    let mut task = binding("t-0001", "Onboard Miro audit logs");
+
+    task.apply_done_check_outcome(true);
+
+    // The check passing is evidence for a person, not a substitute for them.
+    assert_eq!(task.state, PaneFleetTaskState::AwaitingAck);
+    assert_eq!(task.completed_at_unix_ms, None);
+}
+
+#[test]
+fn only_a_person_reaches_done_and_the_moment_is_recorded() {
+    let mut task = binding("t-0001", "Onboard Miro audit logs");
+    task.apply_done_check_outcome(true);
+
+    task.mark_done(1_700_000_000_000);
+
     assert_eq!(task.state, PaneFleetTaskState::Done);
+    assert_eq!(task.completed_at_unix_ms, Some(1_700_000_000_000));
+    // A passing gate stood behind this one.
+    assert!(!task.completed_without_gate);
+}
+
+#[test]
+fn confirming_without_a_passing_gate_is_recorded_as_such() {
+    for state in [
+        PaneFleetTaskState::Queued,
+        PaneFleetTaskState::Working,
+        PaneFleetTaskState::NeedsReview,
+    ] {
+        let mut task = binding("t-0001", "Onboard Miro audit logs");
+        task.state = state;
+
+        task.mark_done(1_700_000_000_000);
+
+        assert_eq!(task.state, PaneFleetTaskState::Done);
+        // Nothing checked the work, so a card must not present it as checked.
+        assert!(task.completed_without_gate, "{state:?} should be flagged");
+    }
+}
+
+#[test]
+fn a_new_turn_after_confirmation_clears_the_completion() {
+    let mut task = binding("t-0001", "Onboard Miro audit logs");
+    task.apply_done_check_outcome(true);
+    task.mark_done(1_700_000_000_000);
+
+    // Refining a finished task is the common case, not an exception.
+    task.apply_done_check_outcome(false);
+
+    assert_eq!(task.state, PaneFleetTaskState::NeedsReview);
+    assert_eq!(task.completed_at_unix_ms, None);
+    assert!(!task.completed_without_gate);
 }

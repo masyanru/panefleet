@@ -7151,6 +7151,23 @@ impl Workspace {
             .into_item(),
         ];
         if has_task {
+            let awaiting_ack = self
+                .panefleet_tasks
+                .get(&path)
+                .is_some_and(|task| task.state == PaneFleetTaskState::AwaitingAck);
+            items.push(
+                MenuItemFields::new(if awaiting_ack {
+                    // The gate has already vouched for it; say so, so the
+                    // difference from confirming on your own word is visible.
+                    "Mark Done (check passed)"
+                } else {
+                    "Mark Done"
+                })
+                .with_on_select_action(WorkspaceAction::MarkPaneFleetTaskDone {
+                    path: path.clone(),
+                })
+                .into_item(),
+            );
             items.push(
                 MenuItemFields::new("Clear Task")
                     .with_on_select_action(WorkspaceAction::ClearPaneFleetTask {
@@ -7341,6 +7358,37 @@ impl Workspace {
             .set(environment_path.to_path_buf(), task);
         self.persist_panefleet_tasks();
         self.sync_panefleet_workspace_activities(ctx);
+        ctx.notify();
+    }
+
+    /// Confirms the work of `environment_path` is finished.
+    ///
+    /// Only a person reaches `Done`; a passing gate stops at `AwaitingAck`.
+    fn mark_panefleet_task_done(&mut self, environment_path: &Path, ctx: &mut ViewContext<Self>) {
+        self.reload_panefleet_tasks();
+        let Some(task) = self.panefleet_tasks.get(environment_path) else {
+            return;
+        };
+        let mut task = task.clone();
+        task.mark_done(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis()
+                .try_into()
+                .unwrap_or(u64::MAX),
+        );
+        let without_gate = task.completed_without_gate;
+        self.panefleet_tasks
+            .set(environment_path.to_path_buf(), task);
+        self.persist_panefleet_tasks();
+        self.sync_panefleet_workspace_activities(ctx);
+        if without_gate {
+            log::info!(
+                "PaneFleet task at {} marked done without a passing check",
+                environment_path.display()
+            );
+        }
         ctx.notify();
     }
 
@@ -29813,6 +29861,13 @@ impl TypedActionView for Workspace {
                 if FeatureFlag::PaneFleetWorkbench.is_enabled() {
                     self.show_panefleet_environment_context_menu = None;
                     self.clear_panefleet_task(path, ctx);
+                    ctx.notify();
+                }
+            }
+            MarkPaneFleetTaskDone { path } => {
+                if FeatureFlag::PaneFleetWorkbench.is_enabled() {
+                    self.show_panefleet_environment_context_menu = None;
+                    self.mark_panefleet_task_done(path, ctx);
                     ctx.notify();
                 }
             }

@@ -35,8 +35,10 @@ fn current_version() -> u32 {
 /// (`Restoring / InProgress / Blocked / Failed / Success`). "The agent stopped
 /// talking" and "the work passed its check" are different claims.
 ///
-/// `Done` is not reachable without passing `done_check`; the gate itself
-/// arrives in P2.
+/// `Done` is only ever set by a person. A passing gate yields `AwaitingAck` —
+/// "the check passed, look at it" — because in practice a task that passed once
+/// usually takes more prompts to refine, so a passing check is a current
+/// property rather than an achievement. Marking it done is the human step.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum PaneFleetTaskState {
@@ -87,10 +89,19 @@ pub(crate) struct PaneFleetTaskBinding {
     #[serde(default)]
     pub state: PaneFleetTaskState,
     /// argv run in the environment's cwd to decide whether the work is
-    /// actually done. Consumed in P2; persisted from v1 so the file format
-    /// does not have to change when it lands.
+    /// actually done.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub done_check: Option<Vec<String>>,
+    /// When a person marked this done, as unix milliseconds. Lets a surface ask
+    /// "how many in the last day" — impossible while `Done` was just a state
+    /// with no moment attached.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_at_unix_ms: Option<u64>,
+    /// Set when the task was marked done without a gate verdict behind it — no
+    /// gate configured, or the last one failed. The confirmation then rests on
+    /// the person's word, and a card should not present it as checked.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub completed_without_gate: bool,
     /// Ids of tasks that are part of the same effort in other repositories.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub related: Vec<String>,
@@ -105,6 +116,8 @@ impl PaneFleetTaskBinding {
             template: None,
             state: PaneFleetTaskState::default(),
             done_check: None,
+            completed_at_unix_ms: None,
+            completed_without_gate: false,
             related: Vec::new(),
         }
     }
@@ -156,14 +169,26 @@ impl PaneFleetTaskBinding {
 
     /// Records the outcome of a gate run. Zero means the work passed.
     ///
-    /// `Done` is only reachable through here: "the agent stopped talking" is
-    /// not the same claim as "the work passed its check".
+    /// A pass yields `AwaitingAck`, not `Done`: the check passing is evidence
+    /// for a person, not a substitute for them.
     pub fn apply_done_check_outcome(&mut self, passed: bool) {
         self.state = if passed {
-            PaneFleetTaskState::Done
+            PaneFleetTaskState::AwaitingAck
         } else {
             PaneFleetTaskState::NeedsReview
         };
+        self.completed_at_unix_ms = None;
+        self.completed_without_gate = false;
+    }
+
+    /// Marks the work finished. The only route to `Done`.
+    ///
+    /// Records whether a passing gate stood behind the decision, so a surface
+    /// can tell "checked and confirmed" from "confirmed on someone's word".
+    pub fn mark_done(&mut self, now_unix_ms: u64) {
+        self.completed_without_gate = self.state != PaneFleetTaskState::AwaitingAck;
+        self.state = PaneFleetTaskState::Done;
+        self.completed_at_unix_ms = Some(now_unix_ms);
     }
 
     /// Rewrites title and external key from user input while preserving id,

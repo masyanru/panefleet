@@ -1693,6 +1693,15 @@ impl AccountFirstCompletion {
 /// authentication.
 const HAS_COMPLETED_ONBOARDING_KEY: &str = "HasCompletedOnboarding";
 
+/// Whether to show Warp's own onboarding slides at all.
+///
+/// PaneFleet never does. The slides pick a theme and set up Warp's built-in
+/// agent — a product this workbench does not ship. It orchestrates third-party
+/// CLI agents instead, so the first screen should be the workspace.
+fn onboarding_slides_enabled() -> bool {
+    FeatureFlag::AgentOnboarding.is_enabled() && !FeatureFlag::PaneFleetWorkbench.is_enabled()
+}
+
 /// Returns whether the user has completed the onboarding slides locally (before login).
 pub(crate) fn has_completed_local_onboarding(ctx: &AppContext) -> bool {
     ctx.private_user_preferences()
@@ -1820,7 +1829,7 @@ impl RootView {
                     let has_completed_local_onboarding = pre_login_onboarding_enabled
                         && has_completed_local_onboarding(ctx);
                     let should_show_pre_login_onboarding = pre_login_onboarding_enabled
-                        && FeatureFlag::AgentOnboarding.is_enabled()
+                        && onboarding_slides_enabled()
                         && !has_completed_local_onboarding;
                     if FeatureFlag::ForceLogin.is_enabled() {
                         // ForceLogin is true for Preview
@@ -3936,7 +3945,7 @@ impl AuthOnboardingState {
         if !is_onboarded
             && !is_anonymous
             && !has_completed_local_onboarding
-            && FeatureFlag::AgentOnboarding.is_enabled()
+            && onboarding_slides_enabled()
         {
             self.try_open_onboarding_slides(ctx);
         }

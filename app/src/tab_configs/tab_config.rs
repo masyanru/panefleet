@@ -39,15 +39,32 @@ fn handlebars_placeholder(name: &str) -> String {
     format!("{{{{{name}}}}}")
 }
 
+/// Where generated worktrees live, one directory per source repository.
+///
+/// PaneFleet keeps them under its own name rather than in `data_dir()`. On
+/// macOS that directory is derived from the release channel, so PaneFleet —
+/// which runs on the OSS channel — would otherwise put worktrees in
+/// `~/.warp-oss/worktrees` and share them with a real Warp OSS install.
+///
+/// Existing worktrees under the old path keep working; git records absolute
+/// paths, so only newly created ones land here.
+fn generated_worktrees_root() -> PathBuf {
+    if warp_core::features::FeatureFlag::PaneFleetWorkbench.is_enabled() {
+        return dirs::home_dir()
+            .unwrap_or_default()
+            .join(".panefleet")
+            .join("worktrees");
+    }
+    warp_core::paths::data_dir().join("worktrees")
+}
+
 pub(crate) fn generated_worktree_repo_dir(repo_path: &Path) -> PathBuf {
     let repo_name = repo_path
         .file_name()
         .and_then(|name| name.to_str())
         .filter(|name| !name.is_empty())
         .unwrap_or("untitled");
-    warp_core::paths::data_dir()
-        .join("worktrees")
-        .join(repo_name)
+    generated_worktrees_root().join(repo_name)
 }
 pub(crate) fn generated_worktree_path(repo_path: &Path, worktree_name: &str) -> PathBuf {
     generated_worktree_repo_dir(repo_path).join(worktree_name)

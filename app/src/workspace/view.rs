@@ -4517,11 +4517,36 @@ impl Workspace {
                     .entry(pane_group_id)
                     .or_default();
                 // Match on the pane, not on the tab: two agents in two panes of
-                // one tab would otherwise keep overwriting each other's entry.
-                let saved_session = match sessions
-                    .iter_mut()
-                    .position(|session| session.pane_uuid == pane_uuid && pane_uuid.is_some())
-                {
+                // one tab would otherwise overwrite each other's entry.
+                //
+                // A record restored from disk has no address yet, so adopt one
+                // of the same agent rather than starting a second record for a
+                // session that is already being resumed — otherwise its
+                // `provider_session_id` is orphaned, restore reports "resumed a
+                // different session", and the tab gains an agent per restart.
+                //
+                // When the pane cannot be resolved at all, still reuse a record
+                // of the same agent. Falling through to a push would append one
+                // entry per tool-use event and rewrite the file each time.
+                let index = pane_uuid
+                    .as_ref()
+                    .and_then(|uuid| {
+                        sessions
+                            .iter()
+                            .position(|session| session.pane_uuid.as_ref() == Some(uuid))
+                    })
+                    .or_else(|| {
+                        sessions.iter().position(|session| {
+                            session.pane_uuid.is_none() && session.agent == agent
+                        })
+                    })
+                    .or_else(|| {
+                        pane_uuid
+                            .is_none()
+                            .then(|| sessions.iter().position(|session| session.agent == agent))
+                            .flatten()
+                    });
+                let saved_session = match index {
                     Some(index) => &mut sessions[index],
                     None => {
                         sessions.push(PaneFleetPersistedAgentSession::new(agent, None));
@@ -9846,14 +9871,23 @@ impl Workspace {
             tabs: state
                 .tabs
                 .iter()
-                .map(|tab| PaneFleetPersistedTab {
-                    title: tab.pane_group.as_ref(app).custom_title(app),
-                    // The legacy single-session field is never written again.
-                    agent_session: None,
-                    agent_sessions: tab_sessions
+                .map(|tab| {
+                    let agent_sessions = tab_sessions
                         .get(&tab.pane_group.id())
                         .cloned()
-                        .unwrap_or_default(),
+                        .unwrap_or_default();
+                    PaneFleetPersistedTab {
+                        title: tab.pane_group.as_ref(app).custom_title(app),
+                        // Keep filling the legacy field with the first session.
+                        // `agent_sessions` is not a field an older build can
+                        // ignore harmlessly — it holds the only copy of every
+                        // `provider_session_id`, and the version guard cannot
+                        // help because both builds write version 3. Without
+                        // this, opening an older PaneFleet drops every session
+                        // and rewrites the file, losing them for good.
+                        agent_session: agent_sessions.first().cloned(),
+                        agent_sessions,
+                    }
                 })
                 .collect(),
         }
@@ -12868,7 +12902,24 @@ impl Workspace {
                         self.persist_panefleet_tasks();
                     }
                 }
-                self.open_panefleet_workspace(worktree.path, source, ctx);
+                match initial_prompt {
+                    // The agent's tab *is* the environment's first tab. Opening
+                    // the workspace first and then adding the agent would leave
+                    // an untitled idle terminal in front of it, which then
+                    // persists and comes back on every restart.
+                    Some(initial_prompt) => {
+                        self.panefleet_workspace_sources
+                            .insert(path.clone(), source);
+                        self.open_panefleet_agent_with_prompt(
+                            path,
+                            crate::terminal::CLIAgent::Claude,
+                            initial_prompt,
+                            ctx,
+                        );
+                        self.ensure_panefleet_panels_open(ctx);
+                    }
+                    None => self.open_panefleet_workspace(worktree.path, source, ctx),
+                }
                 self.toast_stack.update(ctx, |toast_stack, ctx| {
                     toast_stack.add_ephemeral_toast(
                         DismissibleToast::success(format!(
@@ -12878,14 +12929,6 @@ impl Workspace {
                         ctx,
                     );
                 });
-                if let Some(initial_prompt) = initial_prompt {
-                    self.open_panefleet_agent_with_prompt(
-                        path,
-                        crate::terminal::CLIAgent::Claude,
-                        initial_prompt,
-                        ctx,
-                    );
-                }
                 true
             }
             Err(error) => {
@@ -15239,7 +15282,11 @@ impl Workspace {
                 ..Default::default()
             })),
             Arc::new(HashMap::new()),
-            None,
+            // Name the tab after the work when the environment has a task, the
+            // same substitution the sidebar row makes.
+            self.panefleet_tasks
+                .get(&path_buf)
+                .map(PaneFleetTaskBinding::label),
             ctx,
         );
         // Deliberately no `maybe_set_pending_repo_init_path` here. That starts

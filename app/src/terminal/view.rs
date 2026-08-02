@@ -14410,6 +14410,13 @@ impl TerminalView {
         directory: &Path,
         ctx: &AppContext,
     ) -> bool {
+        // PaneFleet used to suppress this per directory as a side effect of
+        // priming Warp's `/init` flow. That priming is gone, and the banner
+        // offers the same Warp-agent setup PaneFleet deliberately does not
+        // ship, so refuse it outright rather than marking paths one by one.
+        if FeatureFlag::PaneFleetWorkbench.is_enabled() {
+            return false;
+        }
         let already_shown = AISettings::as_ref(ctx)
             .agent_mode_setup_banner_shown_for_repo_paths
             .value()

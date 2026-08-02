@@ -261,6 +261,13 @@ impl Workspace {
         if !AppExecutionMode::as_ref(ctx).can_show_onboarding() {
             return false;
         }
+        // PaneFleet does not ship Warp's built-in agent, so its onboarding
+        // conversation must not land in the first tab. Skipping the pre-login
+        // slides means `HasCompletedOnboarding` is never written, which would
+        // otherwise leave this gate open forever.
+        if FeatureFlag::PaneFleetWorkbench.is_enabled() {
+            return false;
+        }
         FeatureFlag::AgentOnboarding.is_enabled()
     }
 }

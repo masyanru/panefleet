@@ -1037,6 +1037,22 @@ struct PaneFleetFleetWorkspace {
     environments: Vec<PaneFleetFleetEnvironment>,
 }
 
+struct PaneFleetAgentRestore {
+    /// Pane this resume belongs to. `None` matches any pane — the address was
+    /// unresolvable, or the record predates per-pane addressing.
+    pane_uuid: Option<String>,
+    state: PaneFleetAgentRestoreState,
+}
+
+impl PaneFleetAgentRestore {
+    fn matches(&self, pane_uuid: Option<&str>) -> bool {
+        match (self.pane_uuid.as_deref(), pane_uuid) {
+            (Some(stored), Some(queried)) => stored == queried,
+            _ => true,
+        }
+    }
+}
+
 enum PaneFleetAgentRestoreState {
     Restoring {
         agent: crate::terminal::CLIAgent,
@@ -1132,7 +1148,10 @@ pub struct Workspace {
     /// several agents in side-by-side panes, so this is a collection; each
     /// entry carries the pane it belongs to.
     panefleet_tab_sessions: HashMap<EntityId, Vec<PaneFleetPersistedAgentSession>>,
-    panefleet_agent_restore_states: HashMap<EntityId, PaneFleetAgentRestoreState>,
+    /// Resume progress, one entry per pane. A tab can restore several agents,
+    /// so a single slot per tab would let one agent's event resolve or fail
+    /// another's.
+    panefleet_agent_restore_states: HashMap<EntityId, Vec<PaneFleetAgentRestore>>,
     panefleet_working_agent_sessions: HashSet<EntityId>,
     panefleet_agent_turn_started_at: HashMap<EntityId, Instant>,
     panefleet_fleet_events: PaneFleetFleetEventStore,
@@ -4357,9 +4376,7 @@ impl Workspace {
                 .query
                 .as_deref()
                 .is_some_and(|query| !query.trim().is_empty())
-                && !self
-                    .panefleet_agent_restore_states
-                    .contains_key(&pane_group_id) =>
+                && self.panefleet_tab_restore_state(pane_group_id).is_none() =>
             {
                 if self
                     .panefleet_working_agent_sessions
@@ -4495,23 +4512,24 @@ impl Workspace {
 
             if let Some((agent, observed_session_id, received_rich_notification)) = observed_session
             {
+                let pane_uuid = self
+                    .panefleet_pane_uuid_for_terminal_view(event.terminal_view_id(), ctx)
+                    .map(|pane_uuid| encode_pane_uuid(&pane_uuid));
+
                 if matches!(event, CLIAgentSessionsModelEvent::Started { .. })
                     && matches!(
-                        self.panefleet_agent_restore_states.get(&pane_group_id),
+                        self.panefleet_restore_state(pane_group_id, pane_uuid.as_deref()),
                         Some(PaneFleetAgentRestoreState::Restoring {
                             agent: restoring_agent
                         }) if *restoring_agent == agent
                     )
                 {
-                    self.panefleet_agent_restore_states.insert(
+                    self.set_panefleet_restore_state(
                         pane_group_id,
+                        pane_uuid.clone(),
                         PaneFleetAgentRestoreState::Confirming { agent },
                     );
                 }
-
-                let pane_uuid = self
-                    .panefleet_pane_uuid_for_terminal_view(event.terminal_view_id(), ctx)
-                    .map(|pane_uuid| encode_pane_uuid(&pane_uuid));
                 let sessions = self
                     .panefleet_tab_sessions
                     .entry(pane_group_id)
@@ -4559,24 +4577,25 @@ impl Workspace {
                     saved_session.provider_session_id = observed_session_id.clone();
                 }
                 if pane_uuid.is_some() {
-                    saved_session.pane_uuid = pane_uuid;
+                    saved_session.pane_uuid = pane_uuid.clone();
                 }
 
                 if let Some(
                     PaneFleetAgentRestoreState::Restoring { .. }
                     | PaneFleetAgentRestoreState::Confirming { .. },
-                ) = self.panefleet_agent_restore_states.get(&pane_group_id)
+                ) = self.panefleet_restore_state(pane_group_id, pane_uuid.as_deref())
                 {
                     match observed_session_id {
                         Some(observed_session_id)
                             if expected_session_id.as_deref()
                                 == Some(observed_session_id.as_str()) =>
                         {
-                            self.panefleet_agent_restore_states.remove(&pane_group_id);
+                            self.take_panefleet_restore_state(pane_group_id, pane_uuid.as_deref());
                         }
                         Some(_) => {
-                            self.panefleet_agent_restore_states.insert(
+                            self.set_panefleet_restore_state(
                                 pane_group_id,
+                                pane_uuid.clone(),
                                 PaneFleetAgentRestoreState::Failed {
                                     agent,
                                     message: "The CLI resumed a different session than requested"
@@ -4590,7 +4609,7 @@ impl Workspace {
                         // it can only arrive after the requested resume command has started the
                         // agent and its plugin hooks are active.
                         None if received_rich_notification => {
-                            self.panefleet_agent_restore_states.remove(&pane_group_id);
+                            self.take_panefleet_restore_state(pane_group_id, pane_uuid.as_deref());
                         }
                         None => {}
                     }
@@ -4599,10 +4618,11 @@ impl Workspace {
                 && let Some(
                     PaneFleetAgentRestoreState::Restoring { agent }
                     | PaneFleetAgentRestoreState::Confirming { agent },
-                ) = self.panefleet_agent_restore_states.remove(&pane_group_id)
+                ) = self.take_panefleet_restore_state(pane_group_id, None)
             {
-                self.panefleet_agent_restore_states.insert(
+                self.set_panefleet_restore_state(
                     pane_group_id,
+                    None,
                     PaneFleetAgentRestoreState::Failed {
                         agent,
                         message: "The agent process ended before resume was confirmed".to_string(),
@@ -7176,6 +7196,76 @@ impl Workspace {
         ctx.notify();
     }
 
+    /// The resume progress recorded for one pane of a tab.
+    ///
+    /// An entry with no pane address matches any pane: it predates per-pane
+    /// addressing, or the pane could not be resolved, and in both cases the
+    /// old single-agent behaviour is the right answer.
+    fn panefleet_restore_state(
+        &self,
+        pane_group_id: EntityId,
+        pane_uuid: Option<&str>,
+    ) -> Option<&PaneFleetAgentRestoreState> {
+        self.panefleet_agent_restore_states
+            .get(&pane_group_id)?
+            .iter()
+            .find(|restore| restore.matches(pane_uuid))
+            .map(|restore| &restore.state)
+    }
+
+    /// Any pane's resume progress, for surfaces that show one banner per tab.
+    fn panefleet_tab_restore_state(
+        &self,
+        pane_group_id: EntityId,
+    ) -> Option<&PaneFleetAgentRestoreState> {
+        self.panefleet_agent_restore_states
+            .get(&pane_group_id)?
+            .first()
+            .map(|restore| &restore.state)
+    }
+
+    fn set_panefleet_restore_state(
+        &mut self,
+        pane_group_id: EntityId,
+        pane_uuid: Option<String>,
+        state: PaneFleetAgentRestoreState,
+    ) {
+        let restores = self
+            .panefleet_agent_restore_states
+            .entry(pane_group_id)
+            .or_default();
+        match restores
+            .iter_mut()
+            .find(|restore| restore.matches(pane_uuid.as_deref()))
+        {
+            Some(restore) => {
+                if pane_uuid.is_some() {
+                    restore.pane_uuid = pane_uuid;
+                }
+                restore.state = state;
+            }
+            None => restores.push(PaneFleetAgentRestore { pane_uuid, state }),
+        }
+    }
+
+    fn take_panefleet_restore_state(
+        &mut self,
+        pane_group_id: EntityId,
+        pane_uuid: Option<&str>,
+    ) -> Option<PaneFleetAgentRestoreState> {
+        let restores = self
+            .panefleet_agent_restore_states
+            .get_mut(&pane_group_id)?;
+        let index = restores
+            .iter()
+            .position(|restore| restore.matches(pane_uuid))?;
+        let removed = restores.remove(index);
+        if restores.is_empty() {
+            self.panefleet_agent_restore_states.remove(&pane_group_id);
+        }
+        Some(removed.state)
+    }
+
     /// Re-reads the task file before it is edited, the way
     /// `PaneFleetWorkspacePreferences` does, so a second window's bindings are
     /// not lost: each window holds its own copy and writes the whole file.
@@ -7183,6 +7273,15 @@ impl Workspace {
     /// Also picks up a file that became readable again, clearing `unwritable`.
     fn reload_panefleet_tasks(&mut self) {
         self.panefleet_tasks = PaneFleetTaskStore::load_or_default(&PaneFleetTaskStore::path());
+    }
+
+    /// Drops bindings for environments that no longer exist on disk, then
+    /// writes if anything changed. Runs once at startup rather than on every
+    /// edit: the check touches the filesystem once per binding.
+    fn prune_panefleet_tasks(&mut self) {
+        if self.panefleet_tasks.prune_missing_environments() {
+            self.persist_panefleet_tasks();
+        }
     }
 
     fn persist_panefleet_tasks(&self) {
@@ -9952,6 +10051,36 @@ impl Workspace {
         }
     }
 
+    /// Which live tab these persisted sessions belong to.
+    ///
+    /// Pane UUIDs survive a restart, so they identify the tab even after it has
+    /// been reordered. `fallback` is used only for records that carry no
+    /// address at all — files written before per-pane addressing. A record with
+    /// addresses that match nothing returns `None`: the tab it describes is not
+    /// in this window.
+    fn panefleet_tab_index_for_sessions(
+        &self,
+        sessions: &[PaneFleetPersistedAgentSession],
+        fallback: usize,
+        ctx: &AppContext,
+    ) -> Option<usize> {
+        let addresses = sessions
+            .iter()
+            .filter_map(PaneFleetPersistedAgentSession::pane_uuid_bytes)
+            .collect::<Vec<_>>();
+        if addresses.is_empty() {
+            return Some(fallback);
+        }
+        self.tabs.iter().position(|tab| {
+            let pane_group = tab.pane_group.as_ref(ctx);
+            addresses.iter().any(|address| {
+                pane_group
+                    .find_terminal_pane_by_session_uuid(address)
+                    .is_some()
+            })
+        })
+    }
+
     /// Brings every agent of a restored tab back, each into its own pane.
     fn restore_panefleet_agents_at_tab_index(
         &mut self,
@@ -9987,6 +10116,7 @@ impl Workspace {
             .or_else(|| pane_group.active_session_view(ctx));
         let agent = agent_session.agent;
         let resume_command = agent_session.resume_command();
+        let pane_uuid = agent_session.pane_uuid.clone();
         self.panefleet_tab_sessions
             .entry(pane_group_id)
             .or_default()
@@ -9994,8 +10124,9 @@ impl Workspace {
 
         match (terminal, resume_command) {
             (Some(terminal), Ok(command)) => {
-                self.panefleet_agent_restore_states.insert(
+                self.set_panefleet_restore_state(
                     pane_group_id,
+                    pane_uuid,
                     PaneFleetAgentRestoreState::Restoring { agent },
                 );
                 terminal.update(ctx, |terminal, ctx| {
@@ -10003,8 +10134,9 @@ impl Workspace {
                 });
             }
             (_, Err(error)) => {
-                self.panefleet_agent_restore_states.insert(
+                self.set_panefleet_restore_state(
                     pane_group_id,
+                    pane_uuid,
                     PaneFleetAgentRestoreState::Failed {
                         agent,
                         message: error.message(),
@@ -10012,8 +10144,9 @@ impl Workspace {
                 );
             }
             (None, Ok(_)) => {
-                self.panefleet_agent_restore_states.insert(
+                self.set_panefleet_restore_state(
                     pane_group_id,
+                    pane_uuid,
                     PaneFleetAgentRestoreState::Failed {
                         agent,
                         message: "The restored tab does not contain a terminal".to_string(),
@@ -10131,11 +10264,21 @@ impl Workspace {
                 self.active_tab_index =
                     restored_active_tab_index.min(self.tabs.len().saturating_sub(1));
                 for (tab_index, persisted_tab) in active_workspace.tabs.into_iter().enumerate() {
-                    self.restore_panefleet_agents_at_tab_index(
-                        tab_index,
-                        persisted_tab.sessions(),
-                        ctx,
-                    );
+                    let sessions = persisted_tab.sessions();
+                    // Equal tab counts do not mean equal order — the user may
+                    // have dragged a tab since the last save. Locate the tab by
+                    // the panes the sessions were recorded in, and skip rather
+                    // than guess when none of them are here: a wrong guess
+                    // types `--resume` into an unrelated terminal.
+                    let Some(tab_index) =
+                        self.panefleet_tab_index_for_sessions(&sessions, tab_index, ctx)
+                    else {
+                        log::warn!(
+                            "Skipping PaneFleet agent restore: no restored tab holds the recorded panes"
+                        );
+                        continue;
+                    };
+                    self.restore_panefleet_agents_at_tab_index(tab_index, sessions, ctx);
                 }
                 self.finish_panefleet_restore(active_project, ctx);
                 return;
@@ -10197,6 +10340,7 @@ impl Workspace {
         self.left_panel_view.update(ctx, |left_panel, ctx| {
             left_panel.set_panefleet_active_project(Some(active_project), ctx);
         });
+        self.prune_panefleet_tasks();
         self.normalize_panefleet_project_roots(ctx);
         self.ensure_panefleet_panels_open(ctx);
         self.sync_panefleet_workspace_activities(ctx);
@@ -25967,7 +26111,7 @@ impl Workspace {
         appearance: &Appearance,
     ) -> Option<Box<dyn Element>> {
         let pane_group_id = self.active_tab_pane_group().id();
-        let restore_state = self.panefleet_agent_restore_states.get(&pane_group_id)?;
+        let restore_state = self.panefleet_tab_restore_state(pane_group_id)?;
         let theme = appearance.theme();
         let font_family = appearance.ui_font_family();
         let (icon, color, text) = match restore_state {

@@ -213,3 +213,23 @@ fn a_future_schema_is_left_alone_rather_than_replaced() {
     assert!(loaded.write_atomic(&path).is_err());
     assert_eq!(fs::read_to_string(&path).expect("file survives"), future);
 }
+
+#[test]
+fn drops_bindings_whose_environment_is_gone() {
+    let directory = tempdir().expect("tempdir");
+    let alive = directory.path().join("alive");
+    fs::create_dir(&alive).expect("create environment");
+    let gone = directory.path().join("gone");
+
+    let mut store = PaneFleetTaskStore::default();
+    store.set(alive.clone(), binding("t-0001", "Still here"));
+    store.set(gone.clone(), binding("t-0002", "Removed from the shell"));
+
+    assert!(store.prune_missing_environments());
+    assert!(store.get(&alive).is_some());
+    assert!(store.get(&gone).is_none());
+    // Ids are not recycled just because a binding went away.
+    assert_eq!(store.allocate_id(), "t-0003");
+
+    assert!(!store.prune_missing_environments());
+}

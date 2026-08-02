@@ -215,11 +215,35 @@ impl PaneFleetTaskStore {
     }
 
     pub fn set(&mut self, environment_path: PathBuf, binding: PaneFleetTaskBinding) {
+        // Raise the high-water mark here rather than only in `allocate_id`, so
+        // removing a binding can never lower it below an id that was once in
+        // use — whatever route the binding came in by.
+        if let Some(number) = binding
+            .id
+            .strip_prefix("t-")
+            .and_then(|number| number.parse::<u32>().ok())
+        {
+            self.issued_id_count = self.issued_id_count.max(number);
+        }
         self.tasks.insert(environment_path, binding);
     }
 
     pub fn remove(&mut self, environment_path: &Path) -> Option<PaneFleetTaskBinding> {
         self.tasks.remove(environment_path)
+    }
+
+    /// Drops bindings whose environment directory no longer exists.
+    ///
+    /// A worktree removed with `git worktree remove`, or a folder deleted
+    /// outside the app, never reaches the removal flow. Without this the file
+    /// only grows, and a path later reused by a new environment silently
+    /// inherits the old task's title and work state.
+    ///
+    /// Returns whether anything was dropped.
+    pub fn prune_missing_environments(&mut self) -> bool {
+        let before = self.tasks.len();
+        self.tasks.retain(|path, _| path.exists());
+        self.tasks.len() != before
     }
 
     /// Display labels for every bound environment. Consumers look up by path,

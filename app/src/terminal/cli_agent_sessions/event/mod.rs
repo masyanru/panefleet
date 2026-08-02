@@ -46,6 +46,13 @@ pub struct CLIAgentEventPayload {
     pub summary: Option<String>,
     pub tool_name: Option<String>,
     pub tool_input_preview: Option<String>,
+    /// Name of the local capability a tool invocation names: the skill for
+    /// `Skill`, the subagent type for `Agent`/`Task`.
+    ///
+    /// Whitelisted from `tool_input` by name rather than carried wholesale —
+    /// these identify a local capability, so the invariant that prompts,
+    /// responses and tool inputs are never stored still holds.
+    pub tool_capability: Option<String>,
     pub plugin_version: Option<String>,
     /// On Claude Code, this comes from the `StopFailure` hook (e.g. `"rate_limit"`).
     /// Not implemented for Codex.

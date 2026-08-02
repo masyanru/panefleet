@@ -32,6 +32,15 @@ pub(super) fn parse(body: &str) -> Option<CLIAgentEvent> {
             .map(|s| s.to_string())
     });
 
+    // Two keys only. `Skill` names its skill, `Agent`/`Task` name their
+    // subagent type; everything else in `tool_input` stays out.
+    let tool_capability = raw.tool_input.as_ref().and_then(|val| {
+        val.get("skill")
+            .or_else(|| val.get("subagent_type"))
+            .and_then(|value| value.as_str())
+            .map(str::to_owned)
+    });
+
     let agent = raw
         .agent
         .as_deref()
@@ -52,6 +61,7 @@ pub(super) fn parse(body: &str) -> Option<CLIAgentEvent> {
             summary: raw.summary,
             tool_name: raw.tool_name,
             tool_input_preview,
+            tool_capability,
             plugin_version: raw.plugin_version,
             error_type: raw.error_type,
         },

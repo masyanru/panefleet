@@ -4648,11 +4648,12 @@ impl Workspace {
             terminal_view_id,
             agent: CLIAgent::Claude,
             tool_name,
+            tool_capability,
         } = event
         else {
             return;
         };
-        let Some(activity) = classify_claude_tool(tool_name) else {
+        let Some(activity) = classify_claude_tool(tool_name, tool_capability.as_deref()) else {
             return;
         };
         let Some(workspace_path) =

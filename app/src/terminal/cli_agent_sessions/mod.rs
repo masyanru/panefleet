@@ -294,6 +294,8 @@ pub enum CLIAgentSessionsModelEvent {
         terminal_view_id: EntityId,
         agent: CLIAgent,
         tool_name: String,
+        /// Skill or subagent name, when the tool names one.
+        tool_capability: Option<String>,
     },
     /// The agent session has been updated. Subscribers may use this as a trigger for best-effort
     /// saving of state derived from the agent's session.
@@ -469,6 +471,7 @@ impl CLIAgentSessionsModel {
         }
 
         let event_type = &event.event;
+        let tool_capability = event.payload.tool_capability.clone();
         let tool_name = if event.source == CLIAgentEventSource::RichPlugin
             && matches!(event_type, CLIAgentEventType::ToolComplete)
         {
@@ -497,6 +500,7 @@ impl CLIAgentSessionsModel {
                 terminal_view_id,
                 agent: session.agent,
                 tool_name,
+                tool_capability,
             });
         }
 

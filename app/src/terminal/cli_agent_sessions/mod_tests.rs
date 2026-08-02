@@ -243,6 +243,7 @@ fn rich_tool_complete_emits_tool_used_without_copying_tool_input() {
                     terminal_view_id: event_terminal_view_id,
                     agent: CLIAgent::Claude,
                     tool_name,
+                    ..
                 } if *event_terminal_view_id == terminal_view_id => Some(tool_name.clone()),
                 _ => None,
             })

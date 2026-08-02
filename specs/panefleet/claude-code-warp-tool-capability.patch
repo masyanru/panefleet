@@ -1,0 +1,42 @@
+Forward the skill and subagent name from PostToolUse
+
+`tool_complete` carries only `tool_name`, so a consumer sees `Skill` and
+`Agent` with no idea which skill or which subagent ran. Claude Code already
+puts the names in the hook input — `tool_input.skill` for `Skill`,
+`tool_input.subagent_type` for `Agent`/`Task`.
+
+Forward those two keys by name rather than the whole `tool_input`. They
+identify a local capability, not user content, so a consumer that promises
+never to store prompts, responses or tool inputs can keep that promise. The
+original key is preserved, so a reader can still tell a skill from a subagent.
+
+`on-permission-request.sh` already sends a full `tool_input`, so the field is
+part of the v1 payload and no protocol version bump is needed.
+
+Applies to warpdotdev/claude-code-warp at e0e18e1.
+
+--- a/plugins/warp/scripts/on-post-tool-use.sh
++++ b/plugins/warp/scripts/on-post-tool-use.sh
+@@ -16,8 +16,19 @@
+ INPUT=$(cat)
+
+ TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name // empty' 2>/dev/null)
+
++# Only the name of the capability being invoked, never the rest of tool_input:
++# `Skill` names its skill, `Agent`/`Task` name their subagent type. The key is
++# kept so a reader can tell the two apart.
++TOOL_CAPABILITY=$(echo "$INPUT" | jq -c '
++    if (.tool_input.skill // "") != "" then {skill: .tool_input.skill}
++    elif (.tool_input.subagent_type // "") != "" then {subagent_type: .tool_input.subagent_type}
++    else empty end' 2>/dev/null)
++
++CAPABILITY_ARGS=()
++if [ -n "$TOOL_CAPABILITY" ]; then
++    CAPABILITY_ARGS=(--argjson tool_input "$TOOL_CAPABILITY")
++fi
++
+ BODY=$(build_payload "$INPUT" "tool_complete" \
+-    --arg tool_name "$TOOL_NAME")
++    --arg tool_name "$TOOL_NAME" "${CAPABILITY_ARGS[@]}")
+
+ "$SCRIPT_DIR/warp-notify.sh" "warp://cli-agent" "$BODY"

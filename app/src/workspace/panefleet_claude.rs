@@ -5,11 +5,21 @@ pub(crate) enum PaneFleetClaudeActivity {
     Subagent { name: Option<String> },
 }
 
-pub(crate) fn classify_claude_tool(tool_name: &str) -> Option<PaneFleetClaudeActivity> {
+/// Classifies a tool invocation, naming the local capability when the plugin
+/// forwarded it.
+///
+/// `capability` is the whitelisted `tool_input.skill` / `tool_input.subagent_type`.
+/// Plugins that do not forward it yield an unnamed skill or subagent, which is
+/// what every build did before the whitelist existed.
+pub(crate) fn classify_claude_tool(
+    tool_name: &str,
+    capability: Option<&str>,
+) -> Option<PaneFleetClaudeActivity> {
     let tool_name = compact_identifier(tool_name)?;
+    let capability = capability.and_then(compact_identifier);
     match tool_name.as_str() {
-        "Skill" => Some(PaneFleetClaudeActivity::Skill { name: None }),
-        "Agent" | "Task" => Some(PaneFleetClaudeActivity::Subagent { name: None }),
+        "Skill" => Some(PaneFleetClaudeActivity::Skill { name: capability }),
+        "Agent" | "Task" => Some(PaneFleetClaudeActivity::Subagent { name: capability }),
         _ => Some(PaneFleetClaudeActivity::Tool { name: tool_name }),
     }
 }

@@ -168,7 +168,7 @@ use super::panefleet_state::{
 use super::panefleet_task_dialog::{
     PaneFleetTaskDialog, PaneFleetTaskDialogEvent, PaneFleetTaskDialogSource,
 };
-use super::panefleet_tasks::{PaneFleetTaskBinding, PaneFleetTaskStore};
+use super::panefleet_tasks::{PaneFleetTaskBinding, PaneFleetTaskState, PaneFleetTaskStore};
 use super::panefleet_workspace_groups::group_panefleet_workspaces;
 use super::panefleet_worktree_removal_dialog::{
     PaneFleetWorktreeRemovalDialog, PaneFleetWorktreeRemovalDialogEvent,
@@ -1144,6 +1144,9 @@ pub struct Workspace {
     /// `panefleet-workspaces.json`, so an external process can read and write
     /// tasks without understanding workspace layout.
     panefleet_tasks: PaneFleetTaskStore,
+    /// Environments whose gate is running, so a turn ending twice cannot start
+    /// two gates racing each other to a verdict.
+    panefleet_running_done_checks: HashSet<PathBuf>,
     /// Agent sessions of each tab, keyed by pane-group id. A tab can run
     /// several agents in side-by-side panes, so this is a collection; each
     /// entry carries the pane it belongs to.
@@ -3590,6 +3593,7 @@ impl Workspace {
             panefleet_project_tabs: HashMap::new(),
             panefleet_workspace_sources: HashMap::new(),
             panefleet_tasks,
+            panefleet_running_done_checks: HashSet::new(),
             panefleet_tab_sessions: HashMap::new(),
             panefleet_agent_restore_states: HashMap::new(),
             panefleet_working_agent_sessions: HashSet::new(),
@@ -4200,17 +4204,18 @@ impl Workspace {
                             .or_else(|| git_branch_for_workspace(&environment.path));
                         // Same substitution as the sidebar: the card names the
                         // work when there is a task, the branch otherwise.
-                        let environment_name = environment.task_label.unwrap_or_else(|| {
-                            branch.unwrap_or_else(|| {
-                                environment
-                                    .path
-                                    .file_name()
-                                    .and_then(|name| name.to_str())
-                                    .filter(|name| !name.is_empty())
-                                    .unwrap_or("working tree")
-                                    .to_string()
-                            })
-                        });
+                        let environment_name =
+                            environment.task.map(|task| task.title).unwrap_or_else(|| {
+                                branch.unwrap_or_else(|| {
+                                    environment
+                                        .path
+                                        .file_name()
+                                        .and_then(|name| name.to_str())
+                                        .filter(|name| !name.is_empty())
+                                        .unwrap_or("working tree")
+                                        .to_string()
+                                })
+                            });
                         PaneFleetFleetEnvironment {
                             sessions: sessions_by_path
                                 .remove(&environment.path)
@@ -4499,6 +4504,7 @@ impl Workspace {
         {
             self.update_panefleet_agent_lifecycle(event, pane_group_id, ctx);
             self.record_panefleet_claude_activity(event, ctx);
+            self.advance_panefleet_task_state(event, ctx);
 
             let observed_session = CLIAgentSessionsModel::as_ref(ctx)
                 .session(event.terminal_view_id())
@@ -7276,6 +7282,134 @@ impl Workspace {
         self.panefleet_tasks = PaneFleetTaskStore::load_or_default(&PaneFleetTaskStore::path());
     }
 
+    /// Advances the work axis from what the CLI process just did.
+    ///
+    /// A turn starting means work is underway. A turn succeeding means only
+    /// that the agent stopped; whether the work is done is the gate's answer,
+    /// so without a gate the task stays `Working` rather than claiming `Done`.
+    fn advance_panefleet_task_state(
+        &mut self,
+        event: &CLIAgentSessionsModelEvent,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let CLIAgentSessionsModelEvent::StatusChanged {
+            terminal_view_id,
+            status,
+            session_context,
+            ..
+        } = event
+        else {
+            return;
+        };
+        let Some(environment_path) =
+            self.panefleet_project_path_for_terminal_view(*terminal_view_id, ctx)
+        else {
+            return;
+        };
+
+        match status {
+            CLIAgentSessionStatus::InProgress
+                if session_context
+                    .query
+                    .as_deref()
+                    .is_some_and(|query| !query.trim().is_empty()) =>
+            {
+                self.set_panefleet_task_state(&environment_path, PaneFleetTaskState::Working, ctx);
+            }
+            CLIAgentSessionStatus::Success => {
+                self.run_panefleet_done_check(environment_path, ctx);
+            }
+            _ => {}
+        }
+    }
+
+    /// Moves the task of `environment_path` onto the work axis.
+    ///
+    /// Separate from the CLI process axis on purpose: `Success` means the agent
+    /// stopped talking, which is not the same claim as the work being done.
+    fn set_panefleet_task_state(
+        &mut self,
+        environment_path: &Path,
+        state: PaneFleetTaskState,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let Some(task) = self.panefleet_tasks.get(environment_path) else {
+            return;
+        };
+        if task.state == state {
+            return;
+        }
+        let mut task = task.clone();
+        task.state = state;
+        self.panefleet_tasks
+            .set(environment_path.to_path_buf(), task);
+        self.persist_panefleet_tasks();
+        self.sync_panefleet_workspace_activities(ctx);
+        ctx.notify();
+    }
+
+    /// Runs the task's gate in the environment's working directory and records
+    /// the verdict. Zero means the work passed.
+    ///
+    /// Nothing happens without a gate: `Done` must not be reachable just
+    /// because a turn ended.
+    fn run_panefleet_done_check(&mut self, environment_path: PathBuf, ctx: &mut ViewContext<Self>) {
+        let Some(argv) = self
+            .panefleet_tasks
+            .get(&environment_path)
+            .and_then(|task| task.done_check.clone())
+            .filter(|argv| !argv.is_empty())
+        else {
+            return;
+        };
+        if !self
+            .panefleet_running_done_checks
+            .insert(environment_path.clone())
+        {
+            // A turn can end several times while the gate is still running;
+            // starting a second copy would race it to the verdict.
+            return;
+        }
+
+        let command = shell_words::join(argv.iter().map(String::as_str));
+        let directory = environment_path.to_string_lossy().into_owned();
+        let executor = crate::terminal::model::session::LocalCommandExecutor::new(
+            None,
+            crate::terminal::shell::ShellType::Bash,
+        );
+        ctx.spawn(
+            async move {
+                let outcome: anyhow::Result<bool> = executor
+                    .execute_local_command_in_login_shell(&command, Some(&directory), None)
+                    .await
+                    .map(|output| output.success());
+                outcome
+            },
+            move |workspace, result, ctx| {
+                workspace
+                    .panefleet_running_done_checks
+                    .remove(&environment_path);
+                let passed = match result {
+                    Ok(passed) => passed,
+                    Err(error) => {
+                        // A gate that cannot run has not passed.
+                        log::warn!("PaneFleet done_check failed to run: {error:#}");
+                        false
+                    }
+                };
+                let Some(task) = workspace.panefleet_tasks.get(&environment_path) else {
+                    return;
+                };
+                let mut task = task.clone();
+                task.apply_done_check_outcome(passed);
+                workspace.panefleet_tasks.set(environment_path, task);
+                workspace.persist_panefleet_tasks();
+                workspace.sync_panefleet_workspace_activities(ctx);
+                ctx.notify();
+            },
+        );
+    }
+
     /// Drops bindings for environments that no longer exist on disk, then
     /// writes if anything changed. Runs once at startup rather than on every
     /// edit: the check touches the filesystem once per binding.
@@ -7318,6 +7452,7 @@ impl Workspace {
         environment_path: &Path,
         existing: Option<PaneFleetTaskBinding>,
         input: &str,
+        done_check: &str,
         ctx: &mut ViewContext<Self>,
     ) {
         self.reload_panefleet_tasks();
@@ -7330,10 +7465,17 @@ impl Workspace {
                 PaneFleetTaskBinding::from_input(id, input)
             }
         };
-        let Some(binding) = binding else {
+        let Some(mut binding) = binding else {
             self.show_panefleet_error_toast("A task needs a title".to_string(), ctx);
             return;
         };
+        if !binding.set_done_check_from_text(done_check) {
+            self.show_panefleet_error_toast(
+                "The done check is not a valid command line".to_string(),
+                ctx,
+            );
+            return;
+        }
 
         self.panefleet_task_dialog_open = false;
         self.panefleet_tasks
@@ -13740,6 +13882,7 @@ impl Workspace {
                     &submission.environment_path,
                     submission.existing.clone(),
                     &submission.input,
+                    &submission.done_check,
                     ctx,
                 );
             }

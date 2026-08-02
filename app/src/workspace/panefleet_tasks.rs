@@ -48,6 +48,19 @@ pub(crate) enum PaneFleetTaskState {
     Done,
 }
 
+impl PaneFleetTaskState {
+    /// Label for surfaces that show the work axis beside the mechanism.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Queued => "queued",
+            Self::Working => "working",
+            Self::NeedsReview => "needs review",
+            Self::AwaitingAck => "awaiting ack",
+            Self::Done => "done",
+        }
+    }
+}
+
 /// A pointer into whatever tracker owns this work. PaneFleet stays
 /// vendor-neutral: it stores the key and an optional URL, and never learns
 /// what a Jira issue is.
@@ -116,6 +129,43 @@ impl PaneFleetTaskBinding {
         Some(binding)
     }
 
+    /// The gate as a shell command line, for showing and editing it.
+    pub fn done_check_text(&self) -> String {
+        self.done_check
+            .as_ref()
+            .map(|argv| shell_words::join(argv.iter().map(String::as_str)))
+            .unwrap_or_default()
+    }
+
+    /// Parses a gate from a shell command line. An unparseable line leaves the
+    /// existing gate alone rather than silently dropping it.
+    pub fn set_done_check_from_text(&mut self, text: &str) -> bool {
+        let text = text.trim();
+        if text.is_empty() {
+            self.done_check = None;
+            return true;
+        }
+        match shell_words::split(text) {
+            Ok(argv) if !argv.is_empty() => {
+                self.done_check = Some(argv);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Records the outcome of a gate run. Zero means the work passed.
+    ///
+    /// `Done` is only reachable through here: "the agent stopped talking" is
+    /// not the same claim as "the work passed its check".
+    pub fn apply_done_check_outcome(&mut self, passed: bool) {
+        self.state = if passed {
+            PaneFleetTaskState::Done
+        } else {
+            PaneFleetTaskState::NeedsReview
+        };
+    }
+
     /// Rewrites title and external key from user input while preserving id,
     /// state and every field the input cannot express.
     pub fn apply_input(&mut self, input: &str) -> bool {
@@ -147,6 +197,14 @@ impl PaneFleetTaskBinding {
             _ => self.title.clone(),
         }
     }
+}
+
+/// What a surface needs to render a bound task: the work axis alongside the
+/// name, so "needs review" is visible without opening anything.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PaneFleetTaskLabel {
+    pub title: String,
+    pub state: PaneFleetTaskState,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -249,10 +307,18 @@ impl PaneFleetTaskStore {
     /// Display labels for every bound environment. Consumers look up by path,
     /// so handing over the whole set cannot miss an environment that the
     /// caller has not registered elsewhere yet.
-    pub fn labels(&self) -> HashMap<PathBuf, String> {
+    pub fn labels(&self) -> HashMap<PathBuf, PaneFleetTaskLabel> {
         self.tasks
             .iter()
-            .map(|(path, task)| (path.clone(), task.label()))
+            .map(|(path, task)| {
+                (
+                    path.clone(),
+                    PaneFleetTaskLabel {
+                        title: task.label(),
+                        state: task.state,
+                    },
+                )
+            })
             .collect()
     }
 

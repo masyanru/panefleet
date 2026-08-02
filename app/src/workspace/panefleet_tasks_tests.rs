@@ -233,3 +233,52 @@ fn drops_bindings_whose_environment_is_gone() {
 
     assert!(!store.prune_missing_environments());
 }
+
+#[test]
+fn a_gate_round_trips_through_a_shell_command_line() {
+    let mut task = binding("t-0001", "Onboard Miro audit logs");
+    assert_eq!(task.done_check_text(), "");
+
+    assert!(task.set_done_check_from_text("./deployment/deploy.sh --dry-run"));
+    assert_eq!(
+        task.done_check,
+        Some(vec![
+            "./deployment/deploy.sh".to_string(),
+            "--dry-run".to_string()
+        ])
+    );
+    assert_eq!(task.done_check_text(), "./deployment/deploy.sh --dry-run");
+
+    // Quoting survives the round trip rather than splitting the argument.
+    assert!(task.set_done_check_from_text("selfcheck.sh 'inc 36884'"));
+    assert_eq!(
+        task.done_check,
+        Some(vec!["selfcheck.sh".to_string(), "inc 36884".to_string()])
+    );
+}
+
+#[test]
+fn an_empty_gate_clears_it_and_an_unparseable_one_is_refused() {
+    let mut task = binding("t-0001", "Onboard Miro audit logs");
+    assert!(task.set_done_check_from_text("cargo test"));
+
+    assert!(task.set_done_check_from_text("   "));
+    assert_eq!(task.done_check, None);
+
+    assert!(task.set_done_check_from_text("cargo test"));
+    // An unbalanced quote must not silently drop the gate that is already set.
+    assert!(!task.set_done_check_from_text("cargo test 'unterminated"));
+    assert_eq!(task.done_check_text(), "cargo test");
+}
+
+#[test]
+fn done_is_only_reachable_through_the_gate() {
+    let mut task = binding("t-0001", "Onboard Miro audit logs");
+    assert_eq!(task.state, PaneFleetTaskState::Queued);
+
+    task.apply_done_check_outcome(false);
+    assert_eq!(task.state, PaneFleetTaskState::NeedsReview);
+
+    task.apply_done_check_outcome(true);
+    assert_eq!(task.state, PaneFleetTaskState::Done);
+}

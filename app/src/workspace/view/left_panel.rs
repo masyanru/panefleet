@@ -71,6 +71,7 @@ use crate::workspace::panefleet_preferences::{
     workspace_icon_for_path,
 };
 use crate::workspace::panefleet_state::PaneFleetWorkspaceSource;
+use crate::workspace::panefleet_tasks::PaneFleetTaskLabel;
 use crate::workspace::panefleet_workspace_groups::{
     PaneFleetWorkspaceEnvironment, PaneFleetWorkspaceGroup, group_panefleet_workspaces,
 };
@@ -324,7 +325,7 @@ pub struct LeftPanelView {
     panefleet_workspace_sources: HashMap<PathBuf, PaneFleetWorkspaceSource>,
     /// Environment path → the task that environment is for, already formatted
     /// for display. The panel never sees the task record itself.
-    panefleet_task_labels: HashMap<PathBuf, String>,
+    panefleet_task_labels: HashMap<PathBuf, PaneFleetTaskLabel>,
     panefleet_preferences: PaneFleetWorkspacePreferences,
     panefleet_activity_frame: usize,
     #[cfg_attr(not(feature = "local_fs"), allow(dead_code))]
@@ -1225,7 +1226,7 @@ impl LeftPanelView {
 
     pub(super) fn set_panefleet_task_labels(
         &mut self,
-        task_labels: HashMap<PathBuf, String>,
+        task_labels: HashMap<PathBuf, PaneFleetTaskLabel>,
         ctx: &mut ViewContext<Self>,
     ) {
         if self.panefleet_task_labels != task_labels {
@@ -1478,14 +1479,19 @@ impl LeftPanelView {
             });
         // With a task the row leads with the work and demotes the branch to the
         // second line; without one it stays exactly as it was.
-        let (title, mechanism_label) = match environment.task_label.clone() {
-            Some(task_label) => {
+        let (title, mechanism_label) = match environment.task.clone() {
+            Some(task) => {
                 let kind = if environment.branch.is_some() {
                     "worktree"
                 } else {
                     "directory"
                 };
-                (task_label, Some(format!("{branch} · {kind}")))
+                // The work axis sits beside the mechanism, so "needs review" is
+                // readable without opening anything.
+                (
+                    task.title,
+                    Some(format!("{branch} · {kind} · {}", task.state.label())),
+                )
             }
             None => (branch, None),
         };
@@ -1633,13 +1639,13 @@ impl LeftPanelView {
         // A task takes the row's first line here too, and pushes the folder name
         // down into the metadata line. When the path is already shown the folder
         // name is just its tail, so showing both would say the same thing twice.
-        let task_label = self.panefleet_task_labels.get(&project_path).cloned();
+        let task = self.panefleet_task_labels.get(&project_path).cloned();
         let shows_path = self.panefleet_preferences.show_workspace_path;
-        let folder_label = task_label
-            .as_ref()
-            .filter(|_| !shows_path)
-            .map(|_| folder_name.clone());
-        let title = task_label.unwrap_or(folder_name);
+        let folder_label = task.as_ref().map(|task| match shows_path {
+            true => task.state.label().to_string(),
+            false => format!("{folder_name} · {}", task.state.label()),
+        });
+        let title = task.map(|task| task.title).unwrap_or(folder_name);
         let activity = self
             .panefleet_preferences
             .show_agent_activity

@@ -54,6 +54,7 @@ pub(super) struct PaneFleetTaskDialogSource {
 
 pub(super) struct PaneFleetTaskDialog {
     editor: ViewHandle<EditorView>,
+    done_check_editor: ViewHandle<EditorView>,
     cancel_button: ViewHandle<ActionButton>,
     save_button: ViewHandle<ActionButton>,
     source: Option<PaneFleetTaskDialogSource>,
@@ -82,6 +83,27 @@ impl PaneFleetTaskDialog {
             _ => ctx.notify(),
         });
 
+        let done_check_editor = ctx.add_typed_action_view(|ctx| {
+            let options = {
+                let appearance = Appearance::as_ref(ctx);
+                SingleLineEditorOptions {
+                    text: TextOptions::ui_text(Some(INPUT_FONT_SIZE), appearance),
+                    select_all_on_focus: true,
+                    propagate_and_no_op_vertical_navigation_keys:
+                        PropagateAndNoOpNavigationKeys::Always,
+                    ..Default::default()
+                }
+            };
+            let mut editor = EditorView::single_line(options, ctx);
+            editor.set_placeholder_text("cargo test  —  leave empty for no gate", ctx);
+            editor
+        });
+        ctx.subscribe_to_view(&done_check_editor, |me, _, event, ctx| match event {
+            EditorEvent::Enter => me.confirm(ctx),
+            EditorEvent::Escape => ctx.emit(PaneFleetTaskDialogEvent::Cancel),
+            _ => ctx.notify(),
+        });
+
         let cancel_button = ctx.add_typed_action_view(|_| {
             ActionButton::new("Cancel", NakedTheme).on_click(|ctx| {
                 ctx.dispatch_typed_action(PaneFleetTaskDialogAction::Cancel);
@@ -98,6 +120,7 @@ impl PaneFleetTaskDialog {
 
         Self {
             editor,
+            done_check_editor,
             cancel_button,
             save_button,
             source: None,
@@ -118,8 +141,16 @@ impl PaneFleetTaskDialog {
         self.save_button.update(ctx, |button, ctx| {
             button.set_label(label.to_string(), ctx);
         });
+        let done_check = source
+            .existing
+            .as_ref()
+            .map(PaneFleetTaskBinding::done_check_text)
+            .unwrap_or_default();
         self.editor.update(ctx, |editor, ctx| {
             editor.set_buffer_text(&text, ctx);
+        });
+        self.done_check_editor.update(ctx, |editor, ctx| {
+            editor.set_buffer_text(&done_check, ctx);
         });
         self.source = Some(source);
         ctx.notify();
@@ -130,26 +161,32 @@ impl PaneFleetTaskDialog {
             return;
         };
         let input = self.editor.as_ref(ctx).buffer_text(ctx);
+        let done_check = self.done_check_editor.as_ref(ctx).buffer_text(ctx);
         ctx.emit(PaneFleetTaskDialogEvent::Confirm(Box::new(
             PaneFleetTaskSubmission {
                 environment_path: source.environment_path,
                 existing: source.existing,
                 input,
+                done_check,
             },
         )));
     }
 
+    fn render_done_check(&self, app: &AppContext) -> Box<dyn Element> {
+        self.render_editor(&self.done_check_editor, app)
+    }
+
     fn render_input(&self, app: &AppContext) -> Box<dyn Element> {
+        self.render_editor(&self.editor, app)
+    }
+
+    fn render_editor(&self, editor: &ViewHandle<EditorView>, app: &AppContext) -> Box<dyn Element> {
         let appearance = Appearance::as_ref(app);
         let theme = appearance.theme();
-        let height = self
-            .editor
-            .as_ref(app)
-            .line_height(app.font_cache(), appearance);
-        let editor =
-            ConstrainedBox::new(Clipped::new(ChildView::new(&self.editor).finish()).finish())
-                .with_height(height)
-                .finish();
+        let height = editor.as_ref(app).line_height(app.font_cache(), appearance);
+        let editor = ConstrainedBox::new(Clipped::new(ChildView::new(editor).finish()).finish())
+            .with_height(height)
+            .finish();
         Container::new(editor)
             .with_uniform_padding(INPUT_PADDING)
             .with_background(theme.background())
@@ -204,6 +241,7 @@ impl View for PaneFleetTaskDialog {
             },
         )
         .with_child(self.render_input(app))
+        .with_child(self.render_done_check(app))
         .with_bottom_row_child(cancel_button)
         .with_bottom_row_child(ChildView::new(&self.save_button).finish())
         .build()
@@ -230,6 +268,9 @@ pub(super) struct PaneFleetTaskSubmission {
     pub environment_path: PathBuf,
     pub existing: Option<PaneFleetTaskBinding>,
     pub input: String,
+    /// Shell command line deciding whether the work is done. Empty means no
+    /// gate, and then the task never reaches `Done` on its own.
+    pub done_check: String,
 }
 
 pub(super) enum PaneFleetTaskDialogEvent {

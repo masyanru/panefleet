@@ -3,6 +3,14 @@ use std::path::PathBuf;
 
 use super::group_panefleet_workspaces;
 use crate::workspace::panefleet_state::PaneFleetWorkspaceSource;
+use crate::workspace::panefleet_tasks::{PaneFleetTaskLabel, PaneFleetTaskState};
+
+fn task(title: &str) -> PaneFleetTaskLabel {
+    PaneFleetTaskLabel {
+        title: title.to_string(),
+        state: PaneFleetTaskState::Working,
+    }
+}
 
 #[test]
 fn groups_primary_and_isolated_worktrees_under_one_repository() {
@@ -127,14 +135,8 @@ fn orders_environments_by_the_task_the_row_shows_not_the_hidden_branch() {
         ),
     ]);
     let task_labels = HashMap::from([
-        (
-            miro.clone(),
-            "SEC-1791 · Exposure rule param limit".to_string(),
-        ),
-        (
-            exposure.clone(),
-            "SEC-1802 · Onboard Miro audit logs".to_string(),
-        ),
+        (miro.clone(), task("SEC-1791 · Exposure rule param limit")),
+        (exposure.clone(), task("SEC-1802 · Onboard Miro audit logs")),
     ]);
 
     let groups = group_panefleet_workspaces(
@@ -148,12 +150,18 @@ fn orders_environments_by_the_task_the_row_shows_not_the_hidden_branch() {
     assert!(environments[0].is_primary);
     // Branch order would be aa- then zz-; task order is 1791 then 1802.
     assert_eq!(
-        environments[1].task_label.as_deref(),
+        environments[1]
+            .task
+            .as_ref()
+            .map(|task| task.title.as_str()),
         Some("SEC-1791 · Exposure rule param limit")
     );
     assert_eq!(environments[1].path, miro);
     assert_eq!(
-        environments[2].task_label.as_deref(),
+        environments[2]
+            .task
+            .as_ref()
+            .map(|task| task.title.as_str()),
         Some("SEC-1802 · Onboard Miro audit logs")
     );
     assert_eq!(environments[2].path, exposure);

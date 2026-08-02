@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use super::panefleet_state::PaneFleetWorkspaceSource;
+use super::panefleet_tasks::PaneFleetTaskLabel;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct PaneFleetWorkspaceEnvironment {
@@ -9,17 +10,19 @@ pub(super) struct PaneFleetWorkspaceEnvironment {
     pub branch: Option<String>,
     pub managed: bool,
     pub is_primary: bool,
-    /// What this environment is for, e.g. `SEC-1802 · Onboard Miro audit logs`.
-    /// When set it takes the row's first line and the branch drops to the second.
-    pub task_label: Option<String>,
+    /// What this environment is for, e.g. `SEC-1802 · Onboard Miro audit logs`,
+    /// with the state of that work. When set it takes the row's first line and
+    /// the branch drops to the second.
+    pub task: Option<PaneFleetTaskLabel>,
 }
 
 impl PaneFleetWorkspaceEnvironment {
     /// The text the row leads with: the task when there is one, otherwise the
     /// branch. Falls back to the empty string so plain folders sort first.
     fn sort_key(&self) -> &str {
-        self.task_label
-            .as_deref()
+        self.task
+            .as_ref()
+            .map(|task| task.title.as_str())
             .or(self.branch.as_deref())
             .unwrap_or_default()
     }
@@ -34,7 +37,7 @@ pub(super) struct PaneFleetWorkspaceGroup {
 pub(super) fn group_panefleet_workspaces(
     ordered_project_paths: Vec<PathBuf>,
     workspace_sources: &HashMap<PathBuf, PaneFleetWorkspaceSource>,
-    task_labels: &HashMap<PathBuf, String>,
+    task_labels: &HashMap<PathBuf, PaneFleetTaskLabel>,
     active_path: Option<PathBuf>,
 ) -> Vec<PaneFleetWorkspaceGroup> {
     let mut environment_sources = workspace_sources.clone();
@@ -104,7 +107,7 @@ fn environment_for(
     path: &Path,
     source: &PaneFleetWorkspaceSource,
     root_path: &Path,
-    task_label: Option<String>,
+    task: Option<PaneFleetTaskLabel>,
 ) -> PaneFleetWorkspaceEnvironment {
     match source {
         PaneFleetWorkspaceSource::ExistingFolder => PaneFleetWorkspaceEnvironment {
@@ -112,7 +115,7 @@ fn environment_for(
             branch: None,
             managed: false,
             is_primary: path == root_path,
-            task_label,
+            task,
         },
         PaneFleetWorkspaceSource::IsolatedWorktree {
             branch, managed, ..
@@ -121,7 +124,7 @@ fn environment_for(
             branch: Some(branch.clone()),
             managed: *managed,
             is_primary: false,
-            task_label,
+            task,
         },
     }
 }

@@ -69,9 +69,6 @@ impl PaneFleetAgentDefinition {
     /// `prompt_only_args` typically carries the flag that puts the agent in
     /// one-shot mode, and passing it with nothing to work on leaves the agent
     /// waiting on input that never comes.
-    // Exercised by tests until template panes gain `initial_prompt` and become
-    // the first caller.
-    #[allow(dead_code)]
     pub fn launch_command_with_prompt<'a>(
         &self,
         prompt: &str,

@@ -10425,11 +10425,40 @@ impl Workspace {
         }
     }
 
+    /// Opens a tab in `path` running `agent` on `initial_prompt`.
+    fn open_panefleet_agent_with_prompt(
+        &mut self,
+        path: PathBuf,
+        agent: crate::terminal::CLIAgent,
+        initial_prompt: &str,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let session_name = agent.display_name().to_string();
+        self.open_project_session_with_prompt(
+            path,
+            Some(agent),
+            &session_name,
+            Some(initial_prompt),
+            ctx,
+        );
+    }
+
     fn open_project_session(
         &mut self,
         path: PathBuf,
         agent: Option<crate::terminal::CLIAgent>,
         session_name: &str,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        self.open_project_session_with_prompt(path, agent, session_name, None, ctx);
+    }
+
+    fn open_project_session_with_prompt(
+        &mut self,
+        path: PathBuf,
+        agent: Option<crate::terminal::CLIAgent>,
+        session_name: &str,
+        initial_prompt: Option<&str>,
         ctx: &mut ViewContext<Self>,
     ) {
         // Checked before anything is created, so a refused launch leaves no
@@ -10454,11 +10483,13 @@ impl Workspace {
         let (command, agent_session) = match agent {
             Some(crate::terminal::CLIAgent::Claude) => {
                 let session_id = Uuid::new_v4().to_string();
+                let session_flag = ["--session-id", session_id.as_str()];
                 let command = self
                     .panefleet_agent_definitions
                     .first_for_agent(crate::terminal::CLIAgent::Claude)
-                    .and_then(|definition| {
-                        definition.launch_command(["--session-id", session_id.as_str()])
+                    .and_then(|definition| match initial_prompt {
+                        Some(prompt) => definition.launch_command_with_prompt(prompt, session_flag),
+                        None => definition.launch_command(session_flag),
                     })
                     .unwrap_or_else(|| format!("claude --session-id {session_id}"));
                 (
@@ -10473,7 +10504,10 @@ impl Workspace {
                 let command = self
                     .panefleet_agent_definitions
                     .first_for_agent(agent)
-                    .and_then(|definition| definition.launch_command([]))
+                    .and_then(|definition| match initial_prompt {
+                        Some(prompt) => definition.launch_command_with_prompt(prompt, []),
+                        None => definition.launch_command([]),
+                    })
                     .unwrap_or_else(|| panefleet_agent_launch_command(agent));
                 (
                     Some(command),
@@ -12740,12 +12774,16 @@ impl Workspace {
                 repo,
                 branch,
                 worktree_branch_name,
+                task_title,
+                initial_prompt,
             } => {
                 if FeatureFlag::PaneFleetWorkbench.is_enabled() {
                     if self.handle_panefleet_new_worktree_submit(
                         repo,
                         branch,
                         worktree_branch_name.as_deref(),
+                        task_title.as_deref(),
+                        initial_prompt.as_deref(),
                         ctx,
                     ) {
                         self.close_new_worktree_modal(ctx);
@@ -12809,6 +12847,8 @@ impl Workspace {
         repo: &str,
         base_branch: &str,
         worktree_branch_name: Option<&str>,
+        task_title: Option<&str>,
+        initial_prompt: Option<&str>,
         ctx: &mut ViewContext<Self>,
     ) -> bool {
         match create_panefleet_worktree(Path::new(repo), base_branch, worktree_branch_name) {
@@ -12818,6 +12858,16 @@ impl Workspace {
                     branch: worktree.branch.clone(),
                     managed: true,
                 };
+                let path = worktree.path.clone();
+                // Bind the task before opening, so the environment row and the
+                // first tab are already named after the work.
+                if let Some(task_title) = task_title {
+                    let id = self.panefleet_tasks.allocate_id();
+                    if let Some(binding) = PaneFleetTaskBinding::from_input(id, task_title) {
+                        self.panefleet_tasks.set(path.clone(), binding);
+                        self.persist_panefleet_tasks();
+                    }
+                }
                 self.open_panefleet_workspace(worktree.path, source, ctx);
                 self.toast_stack.update(ctx, |toast_stack, ctx| {
                     toast_stack.add_ephemeral_toast(
@@ -12828,6 +12878,14 @@ impl Workspace {
                         ctx,
                     );
                 });
+                if let Some(initial_prompt) = initial_prompt {
+                    self.open_panefleet_agent_with_prompt(
+                        path,
+                        crate::terminal::CLIAgent::Claude,
+                        initial_prompt,
+                        ctx,
+                    );
+                }
                 true
             }
             Err(error) => {
@@ -12847,6 +12905,8 @@ impl Workspace {
         _repo: &str,
         _base_branch: &str,
         _worktree_branch_name: Option<&str>,
+        _task_title: Option<&str>,
+        _initial_prompt: Option<&str>,
         _ctx: &mut ViewContext<Self>,
     ) -> bool {
         false

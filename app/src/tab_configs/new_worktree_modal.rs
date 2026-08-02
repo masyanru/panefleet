@@ -25,6 +25,8 @@ pub fn init(app: &mut AppContext) {
 
 use warp_core::ui::theme::color::internal_colors;
 
+use warp_core::features::FeatureFlag;
+
 use crate::ai::persisted_workspace::PersistedWorkspace;
 use crate::appearance::Appearance;
 use crate::editor::{EditorView, Event as EditorEvent, SingleLineEditorOptions};
@@ -90,6 +92,11 @@ pub struct NewWorktreeModal {
     repo_picker: ViewHandle<RepoPicker>,
     branch_picker: ViewHandle<BranchPicker>,
     worktree_name_editor: ViewHandle<EditorView>,
+    /// PaneFleet only: what the new environment is for, and what to hand the
+    /// agent to start on. Both optional — leaving them empty creates a plain
+    /// worktree environment, exactly as before.
+    task_title_editor: ViewHandle<EditorView>,
+    initial_prompt_editor: ViewHandle<EditorView>,
     autogenerate_branch_name: bool,
     selected_repo: Option<String>,
     selected_branch: Option<String>,
@@ -109,6 +116,11 @@ pub enum NewWorktreeModalEvent {
         /// will generate a name); `Some(name)` when the user typed a
         /// name manually.
         worktree_branch_name: Option<String>,
+        /// PaneFleet only. `None` leaves the environment unnamed.
+        task_title: Option<String>,
+        /// PaneFleet only. `None` opens the environment without starting an
+        /// agent, which is what this modal has always done.
+        initial_prompt: Option<String>,
     },
     /// The user clicked "+ Add new repo..." in the repo picker; the workspace
     /// should open a folder picker and call [`NewWorktreeModal::on_new_repo_selected`].
@@ -128,11 +140,17 @@ impl NewWorktreeModal {
         let repo_picker = Self::build_repo_picker(None, ctx);
         let branch_picker = Self::build_branch_picker(None, ctx);
         let worktree_name_editor = Self::build_worktree_name_editor(ctx);
+        let task_title_editor =
+            Self::build_submitting_editor("SEC-1802 Onboard Miro audit logs", ctx);
+        let initial_prompt_editor =
+            Self::build_submitting_editor("What should the agent start on?", ctx);
 
         Self {
             repo_picker,
             branch_picker,
             worktree_name_editor,
+            task_title_editor,
+            initial_prompt_editor,
             autogenerate_branch_name: true,
             selected_repo: None,
             selected_branch: None,
@@ -192,14 +210,46 @@ impl NewWorktreeModal {
         editor
     }
 
+    /// A single-line field that submits on Enter and closes on Escape, like the
+    /// worktree name field.
+    fn build_submitting_editor(
+        placeholder: &'static str,
+        ctx: &mut ViewContext<Self>,
+    ) -> ViewHandle<EditorView> {
+        let editor = ctx.add_typed_action_view(move |ctx| {
+            let mut editor = EditorView::single_line(SingleLineEditorOptions::default(), ctx);
+            editor.set_placeholder_text(placeholder, ctx);
+            editor
+        });
+        ctx.subscribe_to_view(&editor, |me, _, event, ctx| match event {
+            EditorEvent::Enter => me.try_submit(ctx),
+            EditorEvent::Escape => ctx.emit(NewWorktreeModalEvent::Close),
+            EditorEvent::Edited(_) => ctx.notify(),
+            _ => {}
+        });
+        editor
+    }
+
+    fn trimmed_text(editor: &ViewHandle<EditorView>, ctx: &AppContext) -> Option<String> {
+        let text = editor.as_ref(ctx).buffer_text(ctx);
+        let text = text.trim();
+        (!text.is_empty()).then(|| text.to_string())
+    }
+
     /// Called by the workspace before making the modal visible.
     pub fn on_open(&mut self, cwd: Option<PathBuf>, ctx: &mut ViewContext<Self>) {
         self.autogenerate_branch_name = true;
         self.selected_repo = None;
         self.selected_branch = None;
-        self.worktree_name_editor.update(ctx, |e, ctx| {
-            e.clear_buffer_and_reset_undo_stack(ctx);
-        });
+        for editor in [
+            &self.worktree_name_editor,
+            &self.task_title_editor,
+            &self.initial_prompt_editor,
+        ] {
+            editor.clone().update(ctx, |e, ctx| {
+                e.clear_buffer_and_reset_undo_stack(ctx);
+            });
+        }
 
         // Prefer the active session's cwd; fall back to the first known
         // workspace so that both pickers start populated even when no
@@ -277,6 +327,8 @@ impl NewWorktreeModal {
             repo,
             branch,
             worktree_branch_name,
+            task_title: Self::trimmed_text(&self.task_title_editor, ctx),
+            initial_prompt: Self::trimmed_text(&self.initial_prompt_editor, ctx),
         });
     }
 
@@ -505,6 +557,27 @@ impl View for NewWorktreeModal {
                     .finish(),
                 );
             }
+        }
+
+        // What the environment is for, and what the agent should start on.
+        // Both optional: skipping them creates a plain worktree environment.
+        if FeatureFlag::PaneFleetWorkbench.is_enabled() {
+            body.add_child(
+                Container::new(Self::render_section_label("Task", appearance))
+                    .with_margin_top(SECTION_GAP)
+                    .finish(),
+            );
+            body.add_child(ChildView::new(&self.task_title_editor).finish());
+
+            body.add_child(
+                Container::new(Self::render_section_label(
+                    "Start the agent with",
+                    appearance,
+                ))
+                .with_margin_top(SECTION_GAP)
+                .finish(),
+            );
+            body.add_child(ChildView::new(&self.initial_prompt_editor).finish());
         }
 
         let body_container = Container::new(body.finish())

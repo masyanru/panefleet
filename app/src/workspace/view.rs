@@ -148,7 +148,9 @@ use super::hoa_onboarding::{
 use super::lightbox_view::{LightboxParams, LightboxView, LightboxViewEvent};
 use super::native_modal::{NativeModal, NativeModalEvent};
 use super::one_time_modal_model::OneTimeModalEvent;
-use super::panefleet_agents::{PaneFleetAgentDefinition, PaneFleetAgentDefinitions};
+use super::panefleet_agents::{
+    PaneFleetAgentDefinition, PaneFleetAgentDefinitions, single_instance_conflict,
+};
 use super::panefleet_claude::{PaneFleetClaudeActivity, classify_claude_tool};
 use super::panefleet_fleet_events::{
     PaneFleetFleetEvent, PaneFleetFleetEventKind, PaneFleetFleetEventStore,
@@ -9995,6 +9997,32 @@ impl Workspace {
 
         if let Some(active_workspace) = active_workspace {
             let restored_active_tab_index = active_workspace.active_tab_index;
+
+            // The window snapshot already brought this project's tabs back with
+            // their real pane trees, working directories and scrollback.
+            // Rebuilding them as single terminals would throw all of that away,
+            // so adopt them and only re-attach the agent sessions. Counts can
+            // disagree after a crash or an older state file; that is the one
+            // case where rebuilding from our own record is the better guess.
+            let adopt_restored_tabs = !active_state.tabs.is_empty()
+                && active_state.tabs.len() == active_workspace.tabs.len();
+
+            if adopt_restored_tabs {
+                self.tabs = active_state.tabs;
+                self.tab_mru_order = active_state.tab_mru_order;
+                self.tab_groups = active_state.tab_groups;
+                self.panefleet_active_project = Some(active_project.clone());
+                self.active_tab_index =
+                    restored_active_tab_index.min(self.tabs.len().saturating_sub(1));
+                for (tab_index, persisted_tab) in active_workspace.tabs.into_iter().enumerate() {
+                    if let Some(agent_session) = persisted_tab.agent_session {
+                        self.restore_panefleet_agent_at_tab_index(tab_index, agent_session, ctx);
+                    }
+                }
+                self.finish_panefleet_restore(active_project, ctx);
+                return;
+            }
+
             let working_directories_model = self.working_directories_model.clone();
             Self::dispose_panefleet_project_state(active_state, &working_directories_model, ctx);
             self.tabs.clear();
@@ -10038,6 +10066,13 @@ impl Workspace {
                 .min(self.tabs.len().saturating_sub(1));
         }
 
+        self.finish_panefleet_restore(active_project, ctx);
+    }
+
+    /// Leaves restore mode and republishes everything that depends on the
+    /// project set. Shared by both restore paths so neither can forget to clear
+    /// `panefleet_restoring_state`, which gates persistence.
+    fn finish_panefleet_restore(&mut self, active_project: PathBuf, ctx: &mut ViewContext<Self>) {
         self.panefleet_active_project = Some(active_project.clone());
         self.panefleet_restoring_state = false;
         if !self.tabs.is_empty() {
@@ -10326,6 +10361,21 @@ impl Workspace {
         session_name: &str,
         ctx: &mut ViewContext<Self>,
     ) {
+        // Checked before anything is created, so a refused launch leaves no
+        // half-made tab behind.
+        if let Some(agent) = agent
+            && let Some(definition) = self.panefleet_agent_definitions.first_for_agent(agent)
+            && let Some(message) = single_instance_conflict(
+                definition,
+                self.panefleet_tab_sessions
+                    .values()
+                    .map(|session| session.agent),
+            )
+        {
+            self.show_panefleet_error_toast(message, ctx);
+            return;
+        }
+
         self.switch_panefleet_project(path.clone(), false, ctx);
 
         let title = Self::panefleet_tab_title(self.panefleet_tasks.get(&path), &path, session_name);

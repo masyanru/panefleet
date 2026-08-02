@@ -356,6 +356,7 @@ impl PaneFleetAgentsSettingsPageView {
             args: Vec::new(),
             prompt_only_args: Vec::new(),
             prompt_transport: PaneFleetPromptTransport::Argv,
+            single_instance_per_machine: false,
             enabled_in_launcher: true,
             launcher_order,
             bundled: false,

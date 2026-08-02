@@ -26,6 +26,13 @@ pub(crate) struct PaneFleetAgentDefinition {
     #[serde(default)]
     pub prompt_only_args: Vec<String>,
     pub prompt_transport: PaneFleetPromptTransport,
+    /// Whether two of these may run at once anywhere on this machine.
+    ///
+    /// Codex keeps its subscription tokens in a shared `~/.codex/auth.json`
+    /// and rewrites them on refresh, so a second process invalidates the
+    /// first. Claude and OpenCode have no such constraint.
+    #[serde(default)]
+    pub single_instance_per_machine: bool,
     #[serde(default = "default_true")]
     pub enabled_in_launcher: bool,
     #[serde(default)]
@@ -50,6 +57,52 @@ impl PaneFleetAgentDefinition {
         &self,
         additional_args: impl IntoIterator<Item = &'a str>,
     ) -> Option<String> {
+        let tokens = self.command_tokens(additional_args, false)?;
+        Some(join_tokens(&tokens))
+    }
+
+    /// Builds the launch command for an agent that should start working on
+    /// something immediately, delivering the prompt the way this definition
+    /// declares.
+    ///
+    /// A blank prompt falls back to a plain launch rather than an empty one:
+    /// `prompt_only_args` typically carries the flag that puts the agent in
+    /// one-shot mode, and passing it with nothing to work on leaves the agent
+    /// waiting on input that never comes.
+    // Exercised by tests until template panes gain `initial_prompt` and become
+    // the first caller.
+    #[allow(dead_code)]
+    pub fn launch_command_with_prompt<'a>(
+        &self,
+        prompt: &str,
+        additional_args: impl IntoIterator<Item = &'a str>,
+    ) -> Option<String> {
+        let prompt = prompt.trim();
+        if prompt.is_empty() {
+            return self.launch_command(additional_args);
+        }
+
+        let mut tokens = self.command_tokens(additional_args, true)?;
+        match self.prompt_transport {
+            PaneFleetPromptTransport::Argv => {
+                tokens.push(prompt.to_string());
+                Some(join_tokens(&tokens))
+            }
+            // `printf` rather than `echo` so a prompt starting with `-`, or
+            // containing backslashes, arrives byte for byte.
+            PaneFleetPromptTransport::Stdin => Some(format!(
+                "printf '%s' {} | {}",
+                shell_words::quote(prompt),
+                join_tokens(&tokens)
+            )),
+        }
+    }
+
+    fn command_tokens<'a>(
+        &self,
+        additional_args: impl IntoIterator<Item = &'a str>,
+        with_prompt: bool,
+    ) -> Option<Vec<String>> {
         let executable = self.executable.trim();
         if executable.is_empty() {
             return None;
@@ -67,16 +120,46 @@ impl PaneFleetAgentDefinition {
         }
         tokens.push(executable.to_string());
         tokens.extend(self.args.iter().cloned());
+        if with_prompt {
+            tokens.extend(self.prompt_only_args.iter().cloned());
+        }
         tokens.extend(additional_args.into_iter().map(str::to_string));
-
-        Some(
-            tokens
-                .iter()
-                .map(|token| shell_words::quote(token).into_owned())
-                .collect::<Vec<_>>()
-                .join(" "),
-        )
+        Some(tokens)
     }
+}
+
+/// Explains why a second copy of `definition` must not start, given the agents
+/// already running, or `None` when starting one is fine.
+///
+/// The check only sees agents PaneFleet itself launched. It cannot know about a
+/// Codex started from a plain terminal, so the message says what was checked
+/// rather than claiming the machine is clear.
+pub(crate) fn single_instance_conflict(
+    definition: &PaneFleetAgentDefinition,
+    running_agents: impl IntoIterator<Item = CLIAgent>,
+) -> Option<String> {
+    if !definition.single_instance_per_machine {
+        return None;
+    }
+    running_agents
+        .into_iter()
+        .any(|running| running == definition.agent)
+        .then(|| {
+            format!(
+                "{} is already running in another PaneFleet tab. It keeps its credentials in one \
+                 shared file and rewrites them when they refresh, so a second copy would sign the \
+                 first one out. Close that tab first.",
+                definition.label
+            )
+        })
+}
+
+fn join_tokens(tokens: &[String]) -> String {
+    tokens
+        .iter()
+        .map(|token| shell_words::quote(token).into_owned())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 impl PaneFleetAgentDefinitions {
@@ -92,6 +175,7 @@ impl PaneFleetAgentDefinitions {
                     args: Vec::new(),
                     prompt_only_args: Vec::new(),
                     prompt_transport: PaneFleetPromptTransport::Argv,
+                    single_instance_per_machine: true,
                     enabled_in_launcher: true,
                     launcher_order: 10,
                     bundled: true,
@@ -104,6 +188,7 @@ impl PaneFleetAgentDefinitions {
                     args: Vec::new(),
                     prompt_only_args: Vec::new(),
                     prompt_transport: PaneFleetPromptTransport::Argv,
+                    single_instance_per_machine: false,
                     enabled_in_launcher: true,
                     launcher_order: 20,
                     bundled: true,
@@ -116,6 +201,7 @@ impl PaneFleetAgentDefinitions {
                     args: Vec::new(),
                     prompt_only_args: Vec::new(),
                     prompt_transport: PaneFleetPromptTransport::Argv,
+                    single_instance_per_machine: false,
                     enabled_in_launcher: true,
                     launcher_order: 30,
                     bundled: true,

@@ -162,6 +162,11 @@ pub(crate) struct PaneFleetTaskStore {
     /// `related` list must never resolve to a different task.
     #[serde(default)]
     issued_id_count: u32,
+    /// Set when `load_or_default` found a file it could not use — corrupt, or
+    /// written by a newer build. Writing then would replace real bindings with
+    /// this empty store, turning a read failure into permanent data loss.
+    #[serde(skip)]
+    unwritable: bool,
 }
 
 impl Default for PaneFleetTaskStore {
@@ -170,6 +175,7 @@ impl Default for PaneFleetTaskStore {
             version: PANEFLEET_TASKS_VERSION,
             tasks: BTreeMap::new(),
             issued_id_count: 0,
+            unwritable: false,
         }
     }
 }
@@ -181,16 +187,27 @@ impl PaneFleetTaskStore {
 
     /// Reads the store, ignoring a file written by a newer PaneFleet rather
     /// than dropping fields it does not understand.
+    ///
+    /// A file that exists but cannot be used leaves the store `unwritable`, so
+    /// the next edit does not overwrite bindings this build simply failed to
+    /// read.
     pub fn load_or_default(path: &Path) -> Self {
-        fs::read(path)
+        let Ok(contents) = fs::read(path) else {
+            return Self::default();
+        };
+        let usable = serde_json::from_slice::<Self>(&contents)
             .ok()
-            .and_then(|contents| serde_json::from_slice::<Self>(&contents).ok())
-            .filter(|store| store.version <= PANEFLEET_TASKS_VERSION)
-            .map(|mut store| {
+            .filter(|store| store.version <= PANEFLEET_TASKS_VERSION);
+        match usable {
+            Some(mut store) => {
                 store.version = PANEFLEET_TASKS_VERSION;
                 store
-            })
-            .unwrap_or_default()
+            }
+            None => Self {
+                unwritable: true,
+                ..Self::default()
+            },
+        }
     }
 
     pub fn get(&self, environment_path: &Path) -> Option<&PaneFleetTaskBinding> {
@@ -231,6 +248,11 @@ impl PaneFleetTaskStore {
     }
 
     pub fn write_atomic(&self, path: &Path) -> io::Result<()> {
+        if self.unwritable {
+            return Err(io::Error::other(
+                "refusing to overwrite a task file this build could not read",
+            ));
+        }
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }

@@ -7176,6 +7176,15 @@ impl Workspace {
         ctx.notify();
     }
 
+    /// Re-reads the task file before it is edited, the way
+    /// `PaneFleetWorkspacePreferences` does, so a second window's bindings are
+    /// not lost: each window holds its own copy and writes the whole file.
+    ///
+    /// Also picks up a file that became readable again, clearing `unwritable`.
+    fn reload_panefleet_tasks(&mut self) {
+        self.panefleet_tasks = PaneFleetTaskStore::load_or_default(&PaneFleetTaskStore::path());
+    }
+
     fn persist_panefleet_tasks(&self) {
         if let Err(error) = self
             .panefleet_tasks
@@ -7211,6 +7220,7 @@ impl Workspace {
         input: &str,
         ctx: &mut ViewContext<Self>,
     ) {
+        self.reload_panefleet_tasks();
         let binding = match existing {
             // Renaming keeps the id, work state, and everything a single line
             // of input cannot express.
@@ -7238,6 +7248,7 @@ impl Workspace {
     /// itself goes away; closing an environment only hides it, so the binding
     /// survives and comes back when the folder is reopened.
     fn clear_panefleet_task(&mut self, environment_path: &Path, ctx: &mut ViewContext<Self>) {
+        self.reload_panefleet_tasks();
         if self.panefleet_tasks.remove(environment_path).is_none() {
             return;
         }
@@ -10497,14 +10508,15 @@ impl Workspace {
     ) {
         // Checked before anything is created, so a refused launch leaves no
         // half-made tab behind.
+        // Ask which agents are running now, not which ones this workspace has
+        // ever recorded: `panefleet_tab_sessions` survives the agent exiting
+        // and its pane closing, so using it would let one dead Codex block
+        // every later launch until its tab is closed.
         if let Some(agent) = agent
             && let Some(definition) = self.panefleet_agent_definitions.first_for_agent(agent)
             && let Some(message) = single_instance_conflict(
                 definition,
-                self.panefleet_tab_sessions
-                    .values()
-                    .flatten()
-                    .map(|session| session.agent),
+                CLIAgentSessionsModel::as_ref(ctx).live_agents(),
             )
         {
             self.show_panefleet_error_toast(message, ctx);
@@ -12896,6 +12908,7 @@ impl Workspace {
                 // Bind the task before opening, so the environment row and the
                 // first tab are already named after the work.
                 if let Some(task_title) = task_title {
+                    self.reload_panefleet_tasks();
                     let id = self.panefleet_tasks.allocate_id();
                     if let Some(binding) = PaneFleetTaskBinding::from_input(id, task_title) {
                         self.panefleet_tasks.set(path.clone(), binding);

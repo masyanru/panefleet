@@ -354,6 +354,14 @@ impl CLIAgentSessionsModel {
         self.sessions.get(&terminal_view_id)
     }
 
+    /// The agents that currently have a running process.
+    ///
+    /// Entries are dropped on `Ended`, so unlike a persisted record this
+    /// answers "is one running right now" rather than "did one run here".
+    pub fn live_agents(&self) -> impl Iterator<Item = CLIAgent> + '_ {
+        self.sessions.values().map(|session| session.agent)
+    }
+
     /// Returns `true` if the rich input editor is currently open for this terminal.
     pub fn is_input_open(&self, terminal_view_id: EntityId) -> bool {
         self.sessions

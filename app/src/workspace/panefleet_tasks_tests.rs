@@ -167,3 +167,49 @@ fn recovers_the_id_counter_from_a_hand_edited_file() {
 
     assert_eq!(loaded.allocate_id(), "t-0043");
 }
+
+#[test]
+fn refuses_to_overwrite_a_file_it_could_not_read() {
+    let directory = tempdir().expect("tempdir");
+    let path = directory.path().join("panefleet-tasks.json");
+    fs::write(&path, "{ this is not json").expect("write corrupt store");
+
+    let mut loaded = PaneFleetTaskStore::load_or_default(&path);
+    loaded.set(PathBuf::from("/tmp/a"), binding("t-0001", "A new task"));
+
+    // Writing here would turn a read failure into permanent loss of whatever
+    // the unreadable file actually held.
+    assert!(loaded.write_atomic(&path).is_err());
+    assert_eq!(
+        fs::read_to_string(&path).expect("file survives"),
+        "{ this is not json"
+    );
+}
+
+#[test]
+fn a_missing_file_is_writable_because_nothing_can_be_lost() {
+    let directory = tempdir().expect("tempdir");
+    let path = directory.path().join("panefleet-tasks.json");
+
+    let mut store = PaneFleetTaskStore::load_or_default(&path);
+    store.set(PathBuf::from("/tmp/a"), binding("t-0001", "A new task"));
+
+    assert!(store.write_atomic(&path).is_ok());
+}
+
+#[test]
+fn a_future_schema_is_left_alone_rather_than_replaced() {
+    let directory = tempdir().expect("tempdir");
+    let path = directory.path().join("panefleet-tasks.json");
+    let future = format!(
+        r#"{{"version":{},"tasks":{{}}}}"#,
+        PANEFLEET_TASKS_VERSION + 1
+    );
+    fs::write(&path, &future).expect("write future schema");
+
+    let mut loaded = PaneFleetTaskStore::load_or_default(&path);
+    loaded.set(PathBuf::from("/tmp/a"), binding("t-0001", "A new task"));
+
+    assert!(loaded.write_atomic(&path).is_err());
+    assert_eq!(fs::read_to_string(&path).expect("file survives"), future);
+}

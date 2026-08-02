@@ -205,26 +205,14 @@ impl PaneFleetPersistedAgentSession {
 }
 
 /// Hex rather than a byte array, so the state file stays readable by a person
-/// and by whatever else reads it.
+/// and by whatever else reads it. `hex` is the same encoding
+/// `terminal::focus_env` already applies to these very session UUIDs.
 pub(super) fn encode_pane_uuid(pane_uuid: &[u8]) -> String {
-    pane_uuid
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>()
+    hex::encode(pane_uuid)
 }
 
 fn decode_pane_uuid(encoded: &str) -> Option<Vec<u8>> {
-    if encoded.is_empty() || !encoded.len().is_multiple_of(2) {
-        return None;
-    }
-    encoded
-        .as_bytes()
-        .chunks(2)
-        .map(|pair| {
-            let pair = std::str::from_utf8(pair).ok()?;
-            u8::from_str_radix(pair, 16).ok()
-        })
-        .collect()
+    hex::decode(encoded).ok().filter(|bytes| !bytes.is_empty())
 }
 
 pub(super) fn panefleet_agent_launch_command(agent: CLIAgent) -> String {

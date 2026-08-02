@@ -456,6 +456,13 @@ pub enum WorkspaceAction {
         path: PathBuf,
         delete_branch: bool,
     },
+    /// Names what the environment at `path` is for, or renames an existing task.
+    SetPaneFleetTask {
+        path: PathBuf,
+    },
+    ClearPaneFleetTask {
+        path: PathBuf,
+    },
     Reauth,
     SignupAnonymousUser,
     SignInAnonymousWebUser,
@@ -1175,6 +1182,8 @@ impl WorkspaceAction {
             | OpenPaneFleetWorkspace { .. }
             | ClosePaneFleetEnvironment { .. }
             | RequestRemovePaneFleetWorktree { .. }
+            | SetPaneFleetTask { .. }
+            | ClearPaneFleetTask { .. }
             | TogglePaneFleetFleetOverview
             | TogglePaneFleetFleetDashboard
             | FocusPane(..)

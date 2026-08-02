@@ -2976,6 +2976,26 @@ fn panefleet_fleet_overview_renders_with_finite_geometry() {
 }
 
 #[test]
+fn panefleet_tab_is_named_after_the_task_not_the_mechanism() {
+    let path = std::path::Path::new("/worktrees/sentinel/feat-miro-connector");
+
+    assert_eq!(
+        Workspace::panefleet_tab_title(None, path, "Claude"),
+        "feat-miro-connector · Claude"
+    );
+
+    let task = crate::workspace::panefleet_tasks::PaneFleetTaskBinding::from_input(
+        "t-0001".to_string(),
+        "SEC-1802 Onboard Miro audit logs",
+    )
+    .expect("task binding");
+    assert_eq!(
+        Workspace::panefleet_tab_title(Some(&task), path, "Claude"),
+        "SEC-1802 · Onboard Miro audit logs"
+    );
+}
+
+#[test]
 fn panefleet_fleet_status_only_marks_real_turns_as_working() {
     assert_eq!(
         Workspace::panefleet_fleet_status(&CLIAgentSessionStatus::InProgress, None),

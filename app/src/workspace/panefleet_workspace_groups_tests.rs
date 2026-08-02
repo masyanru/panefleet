@@ -32,6 +32,7 @@ fn groups_primary_and_isolated_worktrees_under_one_repository() {
     let groups = group_panefleet_workspaces(
         vec![root.clone(), first.clone(), second.clone()],
         &sources,
+        &HashMap::new(),
         Some(second),
     );
 
@@ -55,6 +56,7 @@ fn keeps_unrelated_projects_as_separate_groups_in_project_order() {
     let groups = group_panefleet_workspaces(
         vec![PathBuf::from("/projects/b"), PathBuf::from("/projects/a")],
         &sources,
+        &HashMap::new(),
         None,
     );
 
@@ -80,7 +82,12 @@ fn synthesizes_primary_environment_for_a_persisted_isolated_worktree() {
         },
     )]);
 
-    let groups = group_panefleet_workspaces(vec![root.clone()], &sources, Some(worktree.clone()));
+    let groups = group_panefleet_workspaces(
+        vec![root.clone()],
+        &sources,
+        &HashMap::new(),
+        Some(worktree.clone()),
+    );
 
     assert_eq!(groups.len(), 1);
     assert_eq!(groups[0].root_path, root);
@@ -93,4 +100,61 @@ fn synthesizes_primary_environment_for_a_persisted_isolated_worktree() {
         vec![PathBuf::from("/projects/sentinel"), worktree]
     );
     assert!(groups[0].environments[0].is_primary);
+}
+
+#[test]
+fn orders_environments_by_the_task_the_row_shows_not_the_hidden_branch() {
+    let root = PathBuf::from("/projects/sentinel");
+    let miro = PathBuf::from("/worktrees/sentinel/zz-branch");
+    let exposure = PathBuf::from("/worktrees/sentinel/aa-branch");
+    let sources = HashMap::from([
+        (root.clone(), PaneFleetWorkspaceSource::ExistingFolder),
+        (
+            miro.clone(),
+            PaneFleetWorkspaceSource::IsolatedWorktree {
+                source_repository: root.clone(),
+                branch: "zz-branch".to_string(),
+                managed: true,
+            },
+        ),
+        (
+            exposure.clone(),
+            PaneFleetWorkspaceSource::IsolatedWorktree {
+                source_repository: root.clone(),
+                branch: "aa-branch".to_string(),
+                managed: true,
+            },
+        ),
+    ]);
+    let task_labels = HashMap::from([
+        (
+            miro.clone(),
+            "SEC-1791 · Exposure rule param limit".to_string(),
+        ),
+        (
+            exposure.clone(),
+            "SEC-1802 · Onboard Miro audit logs".to_string(),
+        ),
+    ]);
+
+    let groups = group_panefleet_workspaces(
+        vec![root.clone(), miro.clone(), exposure.clone()],
+        &sources,
+        &task_labels,
+        None,
+    );
+
+    let environments = &groups[0].environments;
+    assert!(environments[0].is_primary);
+    // Branch order would be aa- then zz-; task order is 1791 then 1802.
+    assert_eq!(
+        environments[1].task_label.as_deref(),
+        Some("SEC-1791 · Exposure rule param limit")
+    );
+    assert_eq!(environments[1].path, miro);
+    assert_eq!(
+        environments[2].task_label.as_deref(),
+        Some("SEC-1802 · Onboard Miro audit logs")
+    );
+    assert_eq!(environments[2].path, exposure);
 }

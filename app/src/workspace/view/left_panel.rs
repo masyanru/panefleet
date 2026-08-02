@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -96,30 +97,22 @@ struct MouseStateHandles {
 }
 
 const PANEFLEET_PROJECT_LIMIT: usize = 6;
-const PANEFLEET_ENVIRONMENT_LIMIT: usize = 12;
 const PANEFLEET_MIN_SIDEBAR_WIDTH: f32 = 168.;
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct PaneFleetWorkspaceRowMouseStates {
     row: MouseStateHandle,
     close: MouseStateHandle,
     activity: MouseStateHandle,
 }
 
+#[derive(Default)]
 struct PaneFleetWorkspaceGroupMouseStates {
     header: PaneFleetWorkspaceRowMouseStates,
-    environments: Vec<PaneFleetWorkspaceRowMouseStates>,
-}
-
-impl Default for PaneFleetWorkspaceGroupMouseStates {
-    fn default() -> Self {
-        Self {
-            header: Default::default(),
-            environments: (0..PANEFLEET_ENVIRONMENT_LIMIT)
-                .map(|_| Default::default())
-                .collect(),
-        }
-    }
+    /// Keyed by environment path and grown on demand. A fixed-size pool would
+    /// silently stop rendering rows past its end, and once environments are
+    /// named by task a project can easily hold twenty of them.
+    environments: RefCell<HashMap<PathBuf, PaneFleetWorkspaceRowMouseStates>>,
 }
 
 struct PaneFleetMouseStateHandles {
@@ -329,6 +322,9 @@ pub struct LeftPanelView {
     panefleet_fleet_dashboard_open: bool,
     panefleet_workspace_activities: HashMap<PathBuf, PaneFleetWorkspaceActivity>,
     panefleet_workspace_sources: HashMap<PathBuf, PaneFleetWorkspaceSource>,
+    /// Environment path → the task that environment is for, already formatted
+    /// for display. The panel never sees the task record itself.
+    panefleet_task_labels: HashMap<PathBuf, String>,
     panefleet_preferences: PaneFleetWorkspacePreferences,
     panefleet_activity_frame: usize,
     #[cfg_attr(not(feature = "local_fs"), allow(dead_code))]
@@ -593,6 +589,7 @@ impl LeftPanelView {
             panefleet_fleet_dashboard_open: false,
             panefleet_workspace_activities: HashMap::new(),
             panefleet_workspace_sources: HashMap::new(),
+            panefleet_task_labels: HashMap::new(),
             panefleet_preferences: PaneFleetWorkspacePreferences::load_or_default(
                 &PaneFleetWorkspacePreferences::path(),
             ),
@@ -1226,6 +1223,17 @@ impl LeftPanelView {
         }
     }
 
+    pub(super) fn set_panefleet_task_labels(
+        &mut self,
+        task_labels: HashMap<PathBuf, String>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        if self.panefleet_task_labels != task_labels {
+            self.panefleet_task_labels = task_labels;
+            ctx.notify();
+        }
+    }
+
     pub(super) fn reload_panefleet_preferences(&mut self, ctx: &mut ViewContext<Self>) {
         self.panefleet_preferences =
             PaneFleetWorkspacePreferences::load_or_default(&PaneFleetWorkspacePreferences::path());
@@ -1458,7 +1466,7 @@ impl LeftPanelView {
         let path_for_row = path.clone();
         let path_for_close = path.clone();
         let path_for_context_menu = path.clone();
-        let title = environment
+        let branch = environment
             .branch
             .clone()
             .or_else(|| git_branch_for_workspace(&path))
@@ -1468,6 +1476,19 @@ impl LeftPanelView {
                     .unwrap_or("working tree")
                     .to_string()
             });
+        // With a task the row leads with the work and demotes the branch to the
+        // second line; without one it stays exactly as it was.
+        let (title, mechanism_label) = match environment.task_label.clone() {
+            Some(task_label) => {
+                let kind = if environment.branch.is_some() {
+                    "worktree"
+                } else {
+                    "directory"
+                };
+                (task_label, Some(format!("{branch} · {kind}")))
+            }
+            None => (branch, None),
+        };
         let path_label = self
             .panefleet_preferences
             .show_workspace_path
@@ -1496,6 +1517,13 @@ impl LeftPanelView {
                                 .with_color(main_text.into())
                                 .finish(),
                         );
+                    if let Some(mechanism_label) = mechanism_label.clone() {
+                        labels.add_child(
+                            Text::new_inline(mechanism_label, font_family, 9.)
+                                .with_color(sub_text.into())
+                                .finish(),
+                        );
+                    }
                     if let Some(path_label) = path_label.clone() {
                         labels.add_child(
                             Text::new_inline(path_label, font_family, 9.)
@@ -1597,11 +1625,21 @@ impl LeftPanelView {
         let font_family = appearance.ui_font_family();
         let main_text_color = theme.main_text_color(theme.background());
         let sub_text_color = theme.sub_text_color(theme.background());
-        let title = project_path
+        let folder_name = project_path
             .file_name()
             .and_then(|name| name.to_str())
             .map(str::to_owned)
             .unwrap_or_else(|| project_path.to_string_lossy().into_owned());
+        // A task takes the row's first line here too, and pushes the folder name
+        // down into the metadata line. When the path is already shown the folder
+        // name is just its tail, so showing both would say the same thing twice.
+        let task_label = self.panefleet_task_labels.get(&project_path).cloned();
+        let shows_path = self.panefleet_preferences.show_workspace_path;
+        let folder_label = task_label
+            .as_ref()
+            .filter(|_| !shows_path)
+            .map(|_| folder_name.clone());
+        let title = task_label.unwrap_or(folder_name);
         let activity = self
             .panefleet_preferences
             .show_agent_activity
@@ -1618,10 +1656,7 @@ impl LeftPanelView {
                 appearance,
             )
         });
-        let workspace_path = self
-            .panefleet_preferences
-            .show_workspace_path
-            .then(|| project_path.to_string_lossy().into_owned());
+        let workspace_path = shows_path.then(|| project_path.to_string_lossy().into_owned());
         let git_branch = self
             .panefleet_preferences
             .show_git_branch
@@ -1662,11 +1697,22 @@ impl LeftPanelView {
                             .with_color(main_text_color.into())
                             .finish(),
                     );
-                if workspace_path.is_some() || git_branch.is_some() {
+                if folder_label.is_some() || workspace_path.is_some() || git_branch.is_some() {
                     let mut metadata = Flex::row()
                         .with_main_axis_size(MainAxisSize::Min)
                         .with_cross_axis_alignment(CrossAxisAlignment::Center)
                         .with_spacing(4.);
+                    if let Some(folder) = folder_label.clone() {
+                        metadata.add_child(
+                            Shrinkable::new(
+                                1.,
+                                Text::new_inline(folder, font_family, 10.)
+                                    .with_color(sub_text_color.into())
+                                    .finish(),
+                            )
+                            .finish(),
+                        );
+                    }
                     if let Some(path) = workspace_path.clone() {
                         metadata.add_child(
                             Shrinkable::new(
@@ -1859,6 +1905,7 @@ impl LeftPanelView {
                 .map(|(path, _)| PathBuf::from(path))
                 .collect(),
             &self.panefleet_workspace_sources,
+            &self.panefleet_task_labels,
             active_path.clone(),
         );
 
@@ -1888,12 +1935,16 @@ impl LeftPanelView {
                         is_active,
                         appearance,
                     ));
-                for (environment, environment_mouse_states) in
-                    group.environments.iter().zip(&mouse_states.environments)
-                {
+                for environment in &group.environments {
+                    let environment_mouse_states = mouse_states
+                        .environments
+                        .borrow_mut()
+                        .entry(environment.path.clone())
+                        .or_default()
+                        .clone();
                     group_content.add_child(self.render_panefleet_environment_row(
                         environment,
-                        environment_mouse_states,
+                        &environment_mouse_states,
                         active_path.as_ref() == Some(&environment.path),
                         appearance,
                     ));

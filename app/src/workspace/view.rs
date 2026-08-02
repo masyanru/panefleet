@@ -163,6 +163,10 @@ use super::panefleet_state::{
     PaneFleetPersistedTab, PaneFleetPersistedWorkspace, PaneFleetWorkspaceSource,
     panefleet_agent_launch_command, write_panefleet_state_atomic,
 };
+use super::panefleet_task_dialog::{
+    PaneFleetTaskDialog, PaneFleetTaskDialogEvent, PaneFleetTaskDialogSource,
+};
+use super::panefleet_tasks::{PaneFleetTaskBinding, PaneFleetTaskStore};
 use super::panefleet_workspace_groups::group_panefleet_workspaces;
 use super::panefleet_worktree_removal_dialog::{
     PaneFleetWorktreeRemovalDialog, PaneFleetWorktreeRemovalDialogEvent,
@@ -1117,6 +1121,11 @@ pub struct Workspace {
     panefleet_active_project: Option<PathBuf>,
     panefleet_project_tabs: HashMap<PathBuf, PaneFleetProjectTabState>,
     panefleet_workspace_sources: HashMap<PathBuf, PaneFleetWorkspaceSource>,
+    /// What each environment is *for*, keyed by environment path. Kept out of
+    /// `PaneFleetWorkspaceSource`, which was deliberately narrowed, and out of
+    /// `panefleet-workspaces.json`, so an external process can read and write
+    /// tasks without understanding workspace layout.
+    panefleet_tasks: PaneFleetTaskStore,
     panefleet_tab_sessions: HashMap<EntityId, PaneFleetPersistedAgentSession>,
     panefleet_agent_restore_states: HashMap<EntityId, PaneFleetAgentRestoreState>,
     panefleet_working_agent_sessions: HashSet<EntityId>,
@@ -1210,6 +1219,8 @@ pub struct Workspace {
     show_panefleet_environment_context_menu: Option<Vector2F>,
     panefleet_worktree_removal_dialog: ViewHandle<PaneFleetWorktreeRemovalDialog>,
     panefleet_worktree_removal_dialog_open: bool,
+    panefleet_task_dialog: ViewHandle<PaneFleetTaskDialog>,
+    panefleet_task_dialog_open: bool,
     theme_creator_modal: ViewHandle<ThemeCreatorModal>,
     theme_deletion_modal: ViewHandle<ThemeDeletionModal>,
     suggested_agent_mode_workflow_modal: ViewHandle<SuggestedAgentModeWorkflowModal>,
@@ -2071,6 +2082,14 @@ impl Workspace {
         let dialog = ctx.add_typed_action_view(PaneFleetWorktreeRemovalDialog::new);
         ctx.subscribe_to_view(&dialog, |me, _, event, ctx| {
             me.handle_panefleet_worktree_removal_dialog_event(event, ctx);
+        });
+        dialog
+    }
+
+    fn build_panefleet_task_dialog(ctx: &mut ViewContext<Self>) -> ViewHandle<PaneFleetTaskDialog> {
+        let dialog = ctx.add_typed_action_view(PaneFleetTaskDialog::new);
+        ctx.subscribe_to_view(&dialog, |me, _, event, ctx| {
+            me.handle_panefleet_task_dialog_event(event, ctx);
         });
         dialog
     }
@@ -3173,6 +3192,7 @@ impl Workspace {
         let delete_conversation_confirmation_dialog =
             Self::build_delete_conversation_confirmation_dialog(ctx);
         let panefleet_worktree_removal_dialog = Self::build_panefleet_worktree_removal_dialog(ctx);
+        let panefleet_task_dialog = Self::build_panefleet_task_dialog(ctx);
         let panefleet_environment_context_menu =
             Self::build_panefleet_environment_context_menu(ctx);
         let command_search_view =
@@ -3531,6 +3551,7 @@ impl Workspace {
         }
         let panefleet_fleet_events =
             PaneFleetFleetEventStore::load_or_default(&PaneFleetFleetEventStore::path());
+        let panefleet_tasks = PaneFleetTaskStore::load_or_default(&PaneFleetTaskStore::path());
 
         let mut ws = Self {
             tabs: Vec::new(),
@@ -3544,6 +3565,7 @@ impl Workspace {
             panefleet_active_project: None,
             panefleet_project_tabs: HashMap::new(),
             panefleet_workspace_sources: HashMap::new(),
+            panefleet_tasks,
             panefleet_tab_sessions: HashMap::new(),
             panefleet_agent_restore_states: HashMap::new(),
             panefleet_working_agent_sessions: HashSet::new(),
@@ -3602,6 +3624,8 @@ impl Workspace {
             delete_conversation_confirmation_dialog,
             panefleet_worktree_removal_dialog,
             panefleet_worktree_removal_dialog_open: false,
+            panefleet_task_dialog,
+            panefleet_task_dialog_open: false,
             resource_center_view,
             command_search_view,
             autoupdate_unable_to_update_banner_dismissed: false,
@@ -4092,6 +4116,7 @@ impl Workspace {
         let groups = group_panefleet_workspaces(
             ordered_projects.into_iter().map(|(path, _)| path).collect(),
             &self.panefleet_workspace_sources,
+            &self.panefleet_tasks.labels(),
             self.current_panefleet_project_path(ctx),
         );
         let project_order = groups
@@ -4127,14 +4152,18 @@ impl Workspace {
                         let branch = environment
                             .branch
                             .or_else(|| git_branch_for_workspace(&environment.path));
-                        let environment_name = branch.clone().unwrap_or_else(|| {
-                            environment
-                                .path
-                                .file_name()
-                                .and_then(|name| name.to_str())
-                                .filter(|name| !name.is_empty())
-                                .unwrap_or("working tree")
-                                .to_string()
+                        // Same substitution as the sidebar: the card names the
+                        // work when there is a task, the branch otherwise.
+                        let environment_name = environment.task_label.unwrap_or_else(|| {
+                            branch.unwrap_or_else(|| {
+                                environment
+                                    .path
+                                    .file_name()
+                                    .and_then(|name| name.to_str())
+                                    .filter(|name| !name.is_empty())
+                                    .unwrap_or("working tree")
+                                    .to_string()
+                            })
                         });
                         PaneFleetFleetEnvironment {
                             sessions: sessions_by_path
@@ -4252,9 +4281,11 @@ impl Workspace {
         }
 
         let sources = self.panefleet_workspace_sources.clone();
+        let task_labels = self.panefleet_tasks.labels();
         self.left_panel_view.update(ctx, |left_panel, ctx| {
             left_panel.set_panefleet_workspace_activities(activities, ctx);
             left_panel.set_panefleet_workspace_sources(sources, ctx);
+            left_panel.set_panefleet_task_labels(task_labels, ctx);
         });
     }
 
@@ -7007,6 +7038,7 @@ impl Workspace {
         position: Vector2F,
         ctx: &mut ViewContext<Self>,
     ) {
+        let has_task = self.panefleet_tasks.get(&path).is_some();
         let mut items = vec![
             MenuItemFields::new("Open Environment")
                 .with_on_select_action(WorkspaceAction::OpenPaneFleetWorkspace {
@@ -7017,12 +7049,31 @@ impl Workspace {
                 .with_on_select_action(WorkspaceAction::OpenInExplorer { path: path.clone() })
                 .into_item(),
             MenuItem::Separator,
+            MenuItemFields::new(if has_task {
+                "Rename Task…"
+            } else {
+                "Set Task…"
+            })
+            .with_on_select_action(WorkspaceAction::SetPaneFleetTask { path: path.clone() })
+            .into_item(),
+        ];
+        if has_task {
+            items.push(
+                MenuItemFields::new("Clear Task")
+                    .with_on_select_action(WorkspaceAction::ClearPaneFleetTask {
+                        path: path.clone(),
+                    })
+                    .into_item(),
+            );
+        }
+        items.extend([
+            MenuItem::Separator,
             MenuItemFields::new("Close Environment")
                 .with_on_select_action(WorkspaceAction::ClosePaneFleetEnvironment {
                     path: path.clone(),
                 })
                 .into_item(),
-        ];
+        ]);
         if matches!(
             self.panefleet_workspace_sources.get(&path),
             Some(PaneFleetWorkspaceSource::IsolatedWorktree { managed: true, .. })
@@ -7053,6 +7104,75 @@ impl Workspace {
         self.show_panefleet_environment_context_menu = Some(position);
         ctx.focus(&self.panefleet_environment_context_menu);
         ctx.notify();
+    }
+
+    fn persist_panefleet_tasks(&self) {
+        if let Err(error) = self
+            .panefleet_tasks
+            .write_atomic(&PaneFleetTaskStore::path())
+        {
+            log::warn!("Failed to persist PaneFleet tasks: {error}");
+        }
+    }
+
+    /// Opens the naming sheet for an environment, pre-filled when it already
+    /// has a task.
+    fn request_set_panefleet_task(&mut self, path: PathBuf, ctx: &mut ViewContext<Self>) {
+        self.show_panefleet_environment_context_menu = None;
+        let existing = self.panefleet_tasks.get(&path).cloned();
+        self.panefleet_task_dialog.update(ctx, |dialog, ctx| {
+            dialog.set_source(
+                PaneFleetTaskDialogSource {
+                    environment_path: path,
+                    existing,
+                },
+                ctx,
+            );
+        });
+        self.panefleet_task_dialog_open = true;
+        ctx.focus(&self.panefleet_task_dialog);
+        ctx.notify();
+    }
+
+    fn apply_panefleet_task_input(
+        &mut self,
+        environment_path: &Path,
+        existing: Option<PaneFleetTaskBinding>,
+        input: &str,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let binding = match existing {
+            // Renaming keeps the id, work state, and everything a single line
+            // of input cannot express.
+            Some(mut existing) => existing.apply_input(input).then_some(existing),
+            None => {
+                let id = self.panefleet_tasks.allocate_id();
+                PaneFleetTaskBinding::from_input(id, input)
+            }
+        };
+        let Some(binding) = binding else {
+            self.show_panefleet_error_toast("A task needs a title".to_string(), ctx);
+            return;
+        };
+
+        self.panefleet_task_dialog_open = false;
+        self.panefleet_tasks
+            .set(environment_path.to_path_buf(), binding);
+        self.persist_panefleet_tasks();
+        self.sync_panefleet_workspace_activities(ctx);
+        ctx.focus(&self.left_panel_view);
+        ctx.notify();
+    }
+
+    /// Drops the task bound to an environment. Called when the environment
+    /// itself goes away; closing an environment only hides it, so the binding
+    /// survives and comes back when the folder is reopened.
+    fn clear_panefleet_task(&mut self, environment_path: &Path, ctx: &mut ViewContext<Self>) {
+        if self.panefleet_tasks.remove(environment_path).is_none() {
+            return;
+        }
+        self.persist_panefleet_tasks();
+        self.sync_panefleet_workspace_activities(ctx);
     }
 
     fn request_remove_panefleet_worktree(
@@ -7116,6 +7236,9 @@ impl Workspace {
 
         match remove_panefleet_worktree(&source.inspection, source.delete_branch) {
             Ok(outcome) => {
+                // The environment is gone for good, so its task goes with it.
+                // Merely closing an environment keeps the binding.
+                self.clear_panefleet_task(&path, ctx);
                 if let Some(error) = outcome.branch_delete_error {
                     log::warn!(
                         "PaneFleet removed worktree {}, but kept branch '{}': {error}",
@@ -10175,6 +10298,27 @@ impl Workspace {
         ctx.notify();
     }
 
+    /// Names a new tab after the work rather than the mechanism. `sentinel ·
+    /// claude` says which project and which CLI; the task says what is being
+    /// done. A later manual rename still wins, because it overwrites the same
+    /// custom title.
+    fn panefleet_tab_title(
+        task: Option<&PaneFleetTaskBinding>,
+        path: &Path,
+        session_name: &str,
+    ) -> String {
+        match task {
+            Some(task) => task.label(),
+            None => {
+                let project_name = path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("Project");
+                format!("{project_name} · {session_name}")
+            }
+        }
+    }
+
     fn open_project_session(
         &mut self,
         path: PathBuf,
@@ -10184,11 +10328,7 @@ impl Workspace {
     ) {
         self.switch_panefleet_project(path.clone(), false, ctx);
 
-        let project_name = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("Project");
-        let title = format!("{project_name} · {session_name}");
+        let title = Self::panefleet_tab_title(self.panefleet_tasks.get(&path), &path, session_name);
         let (command, agent_session) = match agent {
             Some(crate::terminal::CLIAgent::Claude) => {
                 let session_id = Uuid::new_v4().to_string();
@@ -13178,6 +13318,28 @@ impl Workspace {
             }
             PaneFleetWorktreeRemovalDialogEvent::Confirm { source } => {
                 self.execute_remove_panefleet_worktree(source.clone(), ctx);
+            }
+        }
+    }
+
+    fn handle_panefleet_task_dialog_event(
+        &mut self,
+        event: &PaneFleetTaskDialogEvent,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        match event {
+            PaneFleetTaskDialogEvent::Cancel => {
+                self.panefleet_task_dialog_open = false;
+                ctx.focus(&self.left_panel_view);
+                ctx.notify();
+            }
+            PaneFleetTaskDialogEvent::Confirm(submission) => {
+                self.apply_panefleet_task_input(
+                    &submission.environment_path,
+                    submission.existing.clone(),
+                    &submission.input,
+                    ctx,
+                );
             }
         }
     }
@@ -16347,6 +16509,7 @@ impl Workspace {
         self.current_workspace_state.close_all_modals();
         self.show_panefleet_environment_context_menu = None;
         self.panefleet_worktree_removal_dialog_open = false;
+        self.panefleet_task_dialog_open = false;
         self.close_tab_bar_overflow_menu(ctx);
         self.close_all_chip_menus(ctx);
 
@@ -29079,6 +29242,25 @@ impl TypedActionView for Workspace {
                     });
                 }
             }
+            SetPaneFleetTask { path } => {
+                if FeatureFlag::PaneFleetWorkbench.is_enabled() {
+                    // Same deferral as the worktree removal dialog: the menu's own
+                    // close still has overlay cleanup to run, which would hide a
+                    // dialog opened in this update.
+                    let path = path.clone();
+                    self.show_panefleet_environment_context_menu = None;
+                    ctx.spawn(async {}, move |workspace, _, ctx| {
+                        workspace.request_set_panefleet_task(path, ctx);
+                    });
+                }
+            }
+            ClearPaneFleetTask { path } => {
+                if FeatureFlag::PaneFleetWorkbench.is_enabled() {
+                    self.show_panefleet_environment_context_menu = None;
+                    self.clear_panefleet_task(path, ctx);
+                    ctx.notify();
+                }
+            }
             TogglePaneFleetFleetOverview => {
                 if FeatureFlag::PaneFleetWorkbench.is_enabled() {
                     let opening = !self
@@ -31203,6 +31385,18 @@ impl View for Workspace {
         if self.panefleet_worktree_removal_dialog_open {
             stack.add_positioned_overlay_child(
                 ChildView::new(&self.panefleet_worktree_removal_dialog).finish(),
+                OffsetPositioning::offset_from_parent(
+                    Vector2F::zero(),
+                    ParentOffsetBounds::WindowByPosition,
+                    ParentAnchor::Center,
+                    ChildAnchor::Center,
+                ),
+            );
+        }
+
+        if self.panefleet_task_dialog_open {
+            stack.add_positioned_overlay_child(
+                ChildView::new(&self.panefleet_task_dialog).finish(),
                 OffsetPositioning::offset_from_parent(
                     Vector2F::zero(),
                     ParentOffsetBounds::WindowByPosition,

@@ -9,6 +9,20 @@ pub(super) struct PaneFleetWorkspaceEnvironment {
     pub branch: Option<String>,
     pub managed: bool,
     pub is_primary: bool,
+    /// What this environment is for, e.g. `SEC-1802 · Onboard Miro audit logs`.
+    /// When set it takes the row's first line and the branch drops to the second.
+    pub task_label: Option<String>,
+}
+
+impl PaneFleetWorkspaceEnvironment {
+    /// The text the row leads with: the task when there is one, otherwise the
+    /// branch. Falls back to the empty string so plain folders sort first.
+    fn sort_key(&self) -> &str {
+        self.task_label
+            .as_deref()
+            .or(self.branch.as_deref())
+            .unwrap_or_default()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -20,6 +34,7 @@ pub(super) struct PaneFleetWorkspaceGroup {
 pub(super) fn group_panefleet_workspaces(
     ordered_project_paths: Vec<PathBuf>,
     workspace_sources: &HashMap<PathBuf, PaneFleetWorkspaceSource>,
+    task_labels: &HashMap<PathBuf, String>,
     active_path: Option<PathBuf>,
 ) -> Vec<PaneFleetWorkspaceGroup> {
     let mut environment_sources = workspace_sources.clone();
@@ -58,16 +73,18 @@ pub(super) fn group_panefleet_workspaces(
         .map(|root_path| {
             let mut environments = environment_sources
                 .iter()
-                .filter_map(|(path, source)| {
-                    (source_root(path, source) == root_path)
-                        .then(|| environment_for(path, source, &root_path))
+                .filter(|&(path, source)| source_root(path, source) == root_path)
+                .map(|(path, source)| {
+                    environment_for(path, source, &root_path, task_labels.get(path).cloned())
                 })
                 .collect::<Vec<_>>();
             environments.sort_by(|left, right| {
                 right
                     .is_primary
                     .cmp(&left.is_primary)
-                    .then_with(|| left.branch.cmp(&right.branch))
+                    // Order by what the row actually shows, so a list of tasks
+                    // does not appear shuffled by hidden branch names.
+                    .then_with(|| left.sort_key().cmp(right.sort_key()))
                     .then_with(|| left.path.cmp(&right.path))
             });
             environments.dedup_by(|left, right| left.path == right.path);
@@ -87,6 +104,7 @@ fn environment_for(
     path: &Path,
     source: &PaneFleetWorkspaceSource,
     root_path: &Path,
+    task_label: Option<String>,
 ) -> PaneFleetWorkspaceEnvironment {
     match source {
         PaneFleetWorkspaceSource::ExistingFolder => PaneFleetWorkspaceEnvironment {
@@ -94,6 +112,7 @@ fn environment_for(
             branch: None,
             managed: false,
             is_primary: path == root_path,
+            task_label,
         },
         PaneFleetWorkspaceSource::IsolatedWorktree {
             branch, managed, ..
@@ -102,6 +121,7 @@ fn environment_for(
             branch: Some(branch.clone()),
             managed: *managed,
             is_primary: false,
+            task_label,
         },
     }
 }

@@ -15242,13 +15242,11 @@ impl Workspace {
             None,
             ctx,
         );
-        self.active_tab_pane_group().update(ctx, |tab, ctx| {
-            if let Some(active_terminal) = tab.active_session_view(ctx) {
-                active_terminal.update(ctx, |terminal, _| {
-                    terminal.maybe_set_pending_repo_init_path(path_buf);
-                });
-            }
-        });
+        // Deliberately no `maybe_set_pending_repo_init_path` here. That starts
+        // Warp's own agent on a project-setup conversation — index the codebase,
+        // offer to write AGENTS.md — which is the wrong agent for an
+        // environment opened to run Claude, Codex or OpenCode, and it steals the
+        // first tab from the work the environment was created for.
         self.ensure_panefleet_panels_open(ctx);
     }
 

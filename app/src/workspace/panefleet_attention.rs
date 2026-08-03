@@ -57,24 +57,6 @@ pub(super) fn attention_column(input: PaneFleetAttentionInput) -> Option<PaneFle
     }
 }
 
-/// Why an environment is where it is, for the line under its title.
-pub(super) fn attention_reason(input: PaneFleetAttentionInput) -> &'static str {
-    if input.agent_is_blocked {
-        return "agent is asking";
-    }
-    if input.agent_failed {
-        return "agent run failed";
-    }
-    match input.task_state {
-        Some(PaneFleetTaskState::NeedsReview) => "check did not pass",
-        Some(PaneFleetTaskState::AwaitingAck) => "check passed",
-        Some(PaneFleetTaskState::Queued) => "not started",
-        Some(PaneFleetTaskState::Working) => "working",
-        Some(PaneFleetTaskState::Done) => "done",
-        None => "no task",
-    }
-}
-
 /// The counter strip.
 ///
 /// `working`, `needs_you`, `to_pull` and `quiet` **partition** the bound work:

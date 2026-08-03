@@ -153,7 +153,7 @@ use super::panefleet_agents::{
 };
 use super::panefleet_attention::{
     DONE_WINDOW_MS, PaneFleetAttentionColumn, PaneFleetAttentionCounts, PaneFleetAttentionInput,
-    attention_column, attention_reason,
+    attention_column,
 };
 use super::panefleet_claude::{PaneFleetClaudeActivity, classify_claude_tool};
 use super::panefleet_fleet_events::{
@@ -1031,13 +1031,26 @@ struct PaneFleetFleetRow {
 #[derive(Clone)]
 struct PaneFleetAttentionItem {
     environment_path: PathBuf,
+    /// Tracker key, shown above the title so it can be scanned for.
+    key: Option<String>,
     title: String,
     workspace_name: String,
-    /// Why it is in this column, in the words the board shows.
-    reason: &'static str,
+    /// The grounds for the decision this card asks for — naming what failed or
+    /// what passed, not merely that something did. `None` when the card asks
+    /// nothing beyond being looked at.
+    grounds: Option<String>,
+    /// Colour of the card's left edge, by what put it here.
+    accent: PaneFleetAttentionAccent,
     elapsed: Option<Duration>,
-    /// Whether a gate has passed for it, so confirming is not on someone's word.
-    checked: bool,
+}
+
+/// What put a card in its column, for its left edge and its grounds box.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PaneFleetAttentionAccent {
+    Queued,
+    Blocked,
+    Failed,
+    Ack,
 }
 
 #[derive(Clone)]
@@ -25173,17 +25186,54 @@ impl Workspace {
                 let column = attention_column(input);
                 counts.add(input, finished_recently);
 
+                let gate = task.map(PaneFleetTaskBinding::done_check_text);
+                let (accent, grounds) = if input.agent_is_blocked {
+                    (
+                        PaneFleetAttentionAccent::Blocked,
+                        Some("An agent is waiting for an answer".to_string()),
+                    )
+                } else if input.agent_failed {
+                    (
+                        PaneFleetAttentionAccent::Failed,
+                        Some("The agent run failed".to_string()),
+                    )
+                } else {
+                    match input.task_state {
+                        Some(PaneFleetTaskState::NeedsReview) => (
+                            PaneFleetAttentionAccent::Failed,
+                            // Name the command: "a check failed" tells the
+                            // reader nothing they can act on.
+                            Some(match gate.as_deref().filter(|gate| !gate.is_empty()) {
+                                Some(gate) => format!("Check did not pass: {gate}"),
+                                None => "The work was sent back for review".to_string(),
+                            }),
+                        ),
+                        Some(PaneFleetTaskState::AwaitingAck) => (
+                            PaneFleetAttentionAccent::Ack,
+                            Some(match gate.as_deref().filter(|gate| !gate.is_empty()) {
+                                Some(gate) => format!("Check passed: {gate} — mark done?"),
+                                None => "Nothing checked this — mark done?".to_string(),
+                            }),
+                        ),
+                        _ => (PaneFleetAttentionAccent::Queued, None),
+                    }
+                };
                 let item = PaneFleetAttentionItem {
                     environment_path: environment.path.clone(),
-                    title: environment.name.clone(),
+                    key: task
+                        .and_then(|task| task.external.as_ref())
+                        .map(|external| external.key.clone()),
+                    title: task
+                        .map(|task| task.title.clone())
+                        .unwrap_or_else(|| environment.name.clone()),
                     workspace_name: workspace.name.clone(),
-                    reason: attention_reason(input),
+                    grounds,
+                    accent,
                     elapsed: environment
                         .sessions
                         .iter()
                         .filter_map(|session| session.elapsed)
                         .max(),
-                    checked: task.is_some_and(|task| task.last_gate_passed == Some(true)),
                 };
                 // A column always wins over the finished line. Marking work done
                 // and then hitting a blocked agent must not leave the counter
@@ -25209,19 +25259,23 @@ impl Workspace {
         let sub_text = theme.sub_text_color(theme.background());
         let path = item.environment_path.clone();
 
-        let mut detail = item.reason.to_string();
-        if let Some(elapsed) = item.elapsed {
-            detail.push_str(" · ");
-            detail.push_str(&Self::format_panefleet_elapsed(elapsed));
-        }
-        // A card here proposes a decision, so it has to show the grounds for it.
-        // Without a gate behind it, confirming rests on the reader's own word.
-        if !item.checked {
-            detail.push_str(" · no check");
-        }
-
+        let accent_fill = match item.accent {
+            PaneFleetAttentionAccent::Queued => sub_text,
+            PaneFleetAttentionAccent::Blocked => Fill::warn(),
+            PaneFleetAttentionAccent::Failed => Fill::error(),
+            PaneFleetAttentionAccent::Ack => theme.accent(),
+        };
+        // Text takes a solid colour, borders take a fill; the grounds box keeps
+        // the type legible without tinting the words themselves.
+        let grounds_text: Fill = match item.accent {
+            PaneFleetAttentionAccent::Failed => theme.ui_error_color().into(),
+            _ => main_text,
+        };
+        let key = item.key.clone();
         let title = item.title.clone();
+        let grounds = item.grounds.clone();
         let workspace_name = item.workspace_name.clone();
+        let elapsed = item.elapsed.map(Self::format_panefleet_elapsed);
 
         let mouse_state = self
             .panefleet_attention_mouse_states
@@ -25232,27 +25286,60 @@ impl Workspace {
         Hoverable::new(mouse_state, move |state| {
             // Built inside the closure: an `Element` is not clonable, so it
             // cannot be hoisted out and reused across renders.
-            let body = Flex::column()
+            let mut body = Flex::column()
                 .with_main_axis_size(MainAxisSize::Min)
-                .with_spacing(3.)
-                .with_child(
-                    Text::new_inline(title.clone(), font_family, 12.)
-                        .with_color(main_text.into())
-                        .with_clip(ClipConfig::ellipsis())
+                .with_spacing(5.);
+            // The tracker key gets its own line in the accent colour: it is what
+            // the eye scans a column for.
+            if let Some(key) = key.clone() {
+                body.add_child(
+                    Text::new_inline(key, font_family, 10.)
+                        .with_color(theme.accent().into())
                         .finish(),
-                )
+                );
+            }
+            body.add_child(
+                Text::new_inline(title.clone(), font_family, 12.)
+                    .with_color(main_text.into())
+                    .with_clip(ClipConfig::ellipsis())
+                    .finish(),
+            );
+            if let Some(grounds) = grounds.clone() {
+                body.add_child(
+                    Container::new(
+                        Text::new_inline(grounds, font_family, 10.)
+                            .with_color(grounds_text.into())
+                            .finish(),
+                    )
+                    .with_padding(Padding::uniform(5.))
+                    .with_border(Border::all(1.).with_border_fill(accent_fill))
+                    .with_corner_radius(CornerRadius::with_all(Radius::Pixels(4.)))
+                    .finish(),
+                );
+            }
+            let mut footer = Flex::row()
+                .with_main_axis_size(MainAxisSize::Max)
+                .with_cross_axis_alignment(CrossAxisAlignment::Center)
                 .with_child(
-                    Text::new_inline(detail.clone(), font_family, 10.)
+                    Expanded::new(
+                        1.,
+                        Text::new_inline(workspace_name.clone(), font_family, 10.)
+                            .with_color(sub_text.into())
+                            .with_clip(ClipConfig::ellipsis())
+                            .finish(),
+                    )
+                    .finish(),
+                );
+            if let Some(elapsed) = elapsed.clone() {
+                footer.add_child(
+                    Text::new_inline(elapsed, font_family, 10.)
                         .with_color(sub_text.into())
                         .finish(),
-                )
-                .with_child(
-                    Text::new_inline(workspace_name.clone(), font_family, 10.)
-                        .with_color(sub_text.into())
-                        .finish(),
-                )
-                .finish();
-            let mut card = Container::new(body)
+                );
+            }
+            body.add_child(footer.finish());
+
+            let mut card = Container::new(body.finish())
                 .with_padding(Padding::uniform(9.))
                 .with_background(theme.surface_1())
                 .with_border(Border::all(1.).with_border_fill(theme.outline()))
@@ -25260,7 +25347,11 @@ impl Workspace {
             if state.is_hovered() {
                 card = card.with_background(internal_colors::fg_overlay_1(theme));
             }
-            card.finish()
+            // A `Border` carries one colour for every side, so the coloured edge
+            // that says what put this card here needs its own wrapper.
+            Container::new(card.finish())
+                .with_border(Border::left(2.).with_border_fill(accent_fill))
+                .finish()
         })
         .on_click(move |ctx, _, _| {
             ctx.dispatch_typed_action(WorkspaceAction::OpenPaneFleetWorkspace {
@@ -25377,6 +25468,20 @@ impl Workspace {
         // The strip counts work, not processes: "three agents are busy" says
         // nothing about how many things are waiting on you.
         let (counts, columns, finished_recently) = self.panefleet_attention_board(&workspaces);
+        let longest_running = columns
+            .values()
+            .flatten()
+            .chain(finished_recently.iter())
+            .filter_map(|item| item.elapsed.map(|elapsed| (elapsed, item)))
+            .max_by_key(|(elapsed, _)| *elapsed)
+            .map(|(elapsed, item)| {
+                format!(
+                    "Longest: {} · {}",
+                    item.key.clone().unwrap_or_else(|| item.title.clone()),
+                    Self::format_panefleet_elapsed(elapsed)
+                )
+            })
+            .unwrap_or_else(|| "Longest: nothing running".to_string());
 
         let close = self
             .render_tab_bar_icon_button(
@@ -25464,9 +25569,9 @@ impl Workspace {
                 Expanded::new(
                     1.,
                     self.render_panefleet_fleet_stat(
-                        "To pull",
-                        counts.to_pull,
-                        sub_text,
+                        "Done · 24h",
+                        counts.finished_recently,
+                        Fill::success(),
                         false,
                         appearance,
                     ),
@@ -25476,13 +25581,19 @@ impl Workspace {
             .with_child(
                 Expanded::new(
                     1.,
-                    self.render_panefleet_fleet_stat(
-                        "Quiet",
-                        counts.quiet,
-                        Fill::success(),
-                        false,
-                        appearance,
-                    ),
+                    // What has been running longest is the one thing a glance at
+                    // a fleet cannot infer from counts.
+                    Container::new(
+                        Text::new_inline(longest_running, font_family, 10.)
+                            .with_color(sub_text.into())
+                            .with_clip(ClipConfig::ellipsis())
+                            .finish(),
+                    )
+                    .with_padding(Padding::uniform(10.))
+                    .with_background(theme.surface_1())
+                    .with_border(Border::all(1.).with_border_fill(theme.outline()))
+                    .with_corner_radius(CornerRadius::with_all(Radius::Pixels(6.)))
+                    .finish(),
                 )
                 .finish(),
             )

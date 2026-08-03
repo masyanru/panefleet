@@ -1,6 +1,5 @@
 use super::{
     PaneFleetAttentionColumn, PaneFleetAttentionCounts, PaneFleetAttentionInput, attention_column,
-    attention_reason,
 };
 use crate::workspace::panefleet_tasks::PaneFleetTaskState;
 
@@ -16,10 +15,6 @@ fn a_failed_check_asks_to_be_thought_about() {
     assert_eq!(
         attention_column(task(PaneFleetTaskState::NeedsReview)),
         Some(PaneFleetAttentionColumn::Unblock)
-    );
-    assert_eq!(
-        attention_reason(task(PaneFleetTaskState::NeedsReview)),
-        "check did not pass"
     );
 }
 
@@ -48,7 +43,6 @@ fn a_blocked_agent_outranks_whatever_the_work_axis_last_said() {
             Some(PaneFleetAttentionColumn::Unblock),
             "{state:?} with a blocked agent is stuck until answered"
         );
-        assert_eq!(attention_reason(input), "agent is asking");
     }
 }
 
@@ -63,7 +57,6 @@ fn a_failed_run_means_the_work_is_not_done() {
         attention_column(input),
         Some(PaneFleetAttentionColumn::Unblock)
     );
-    assert_eq!(attention_reason(input), "agent run failed");
 }
 
 #[test]

@@ -473,6 +473,8 @@ pub enum WorkspaceAction {
     MarkPaneFleetTasksDone {
         paths: Vec<PathBuf>,
     },
+    /// Shows or hides the list of work finished in the last day.
+    TogglePaneFleetDoneDrawer,
     Reauth,
     SignupAnonymousUser,
     SignInAnonymousWebUser,
@@ -1196,6 +1198,7 @@ impl WorkspaceAction {
             | ClearPaneFleetTask { .. }
             | MarkPaneFleetTaskDone { .. }
             | MarkPaneFleetTasksDone { .. }
+            | TogglePaneFleetDoneDrawer
             | TogglePaneFleetFleetOverview
             | TogglePaneFleetFleetDashboard
             | FocusPane(..)

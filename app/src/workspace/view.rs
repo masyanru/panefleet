@@ -93,7 +93,7 @@ use warpui::clipboard::ClipboardContent;
 use warpui::elements::Percentage;
 use warpui::elements::{
     Align, Border, CacheOption, ChildAnchor, ChildView, Clipped, ClippedScrollStateHandle,
-    ClippedScrollable, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment, Dismiss,
+    ClippedScrollable, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment, Dash, Dismiss,
     DispatchEventResult, DragAxis, Draggable, DraggableState, DropTarget, Element, Empty,
     EventHandler, Expanded, Fill as ElementFill, Flex, Highlight, Hoverable, Icon as WarpUiIcon,
     Image, MainAxisAlignment, MainAxisSize, MouseInBehavior, MouseStateHandle, OffsetPositioning,
@@ -1197,6 +1197,9 @@ pub struct Workspace {
     panefleet_fleet_workspace_mouse_states: RefCell<HashMap<PathBuf, MouseStateHandle>>,
     panefleet_fleet_dashboard_scroll_state: ClippedScrollStateHandle,
     panefleet_attention_batch_mouse_state: MouseStateHandle,
+    panefleet_done_drawer_mouse_state: MouseStateHandle,
+    /// Finished work asks nothing, so the list of it starts folded away.
+    panefleet_done_drawer_open: bool,
     /// Separate from the grid's map: an environment can have a card in both
     /// surfaces at once, and a shared `MouseState` means one Hoverable steals
     /// the other's click and flips its hover flag back off.
@@ -3643,6 +3646,8 @@ impl Workspace {
             panefleet_fleet_workspace_mouse_states: RefCell::new(HashMap::new()),
             panefleet_fleet_dashboard_scroll_state: Default::default(),
             panefleet_attention_batch_mouse_state: Default::default(),
+            panefleet_done_drawer_mouse_state: Default::default(),
+            panefleet_done_drawer_open: false,
             panefleet_attention_mouse_states: RefCell::new(HashMap::new()),
             panefleet_fleet_activity_frame: 0,
             panefleet_agent_definitions,
@@ -25369,6 +25374,108 @@ impl Workspace {
         (counts, columns, finished)
     }
 
+    /// Work finished in the last day: folded away by default, since it asks
+    /// nothing, but reachable to confirm it happened.
+    fn render_panefleet_done_drawer(
+        &self,
+        finished: &[PaneFleetAttentionItem],
+        appearance: &Appearance,
+    ) -> Box<dyn Element> {
+        let theme = appearance.theme();
+        let font_family = appearance.ui_font_family();
+        let main_text = theme.main_text_color(theme.background());
+        let sub_text = theme.sub_text_color(theme.background());
+        let is_open = self.panefleet_done_drawer_open;
+        let count = finished.len();
+
+        let header = Hoverable::new(
+            self.panefleet_done_drawer_mouse_state.clone(),
+            move |state| {
+                let mut row = Container::new(
+                    Flex::row()
+                        .with_main_axis_size(MainAxisSize::Max)
+                        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                        .with_spacing(8.)
+                        .with_child(
+                            Text::new_inline(
+                                if is_open { "\u{25be}" } else { "\u{25b8}" }.to_string(),
+                                font_family,
+                                10.,
+                            )
+                            .with_color(sub_text.into())
+                            .finish(),
+                        )
+                        .with_child(
+                            Expanded::new(
+                                1.,
+                                Text::new_inline("DONE \u{b7} 24H".to_string(), font_family, 10.)
+                                    .with_color(sub_text.into())
+                                    .finish(),
+                            )
+                            .finish(),
+                        )
+                        .with_child(
+                            Text::new_inline(count.to_string(), font_family, 10.)
+                                .with_color(main_text.into())
+                                .finish(),
+                        )
+                        .finish(),
+                )
+                .with_padding(Padding::uniform(9.));
+                if state.is_hovered() {
+                    row = row.with_background(internal_colors::fg_overlay_1(theme));
+                }
+                row.finish()
+            },
+        )
+        .on_click(|ctx, _, _| {
+            ctx.dispatch_typed_action(WorkspaceAction::TogglePaneFleetDoneDrawer);
+        })
+        .with_cursor(Cursor::PointingHand)
+        .finish();
+
+        let mut drawer = Flex::column()
+            .with_main_axis_size(MainAxisSize::Min)
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .with_child(header);
+        if is_open {
+            // Pills rather than cards: these are receipts, not decisions.
+            let mut pills = Flex::column()
+                .with_main_axis_size(MainAxisSize::Min)
+                .with_spacing(5.);
+            for item in finished {
+                let label = match &item.key {
+                    Some(key) => format!("{key} \u{b7} {}", item.title),
+                    None => item.title.clone(),
+                };
+                pills.add_child(
+                    Container::new(
+                        Text::new_inline(label, font_family, 10.)
+                            .with_color(sub_text.into())
+                            .with_clip(ClipConfig::ellipsis())
+                            .finish(),
+                    )
+                    .with_padding(Padding::uniform(4.).with_left(9.).with_right(9.))
+                    .with_background(theme.background())
+                    .with_border(Border::all(1.).with_border_fill(theme.outline()))
+                    .with_corner_radius(CornerRadius::with_all(Radius::Pixels(10.)))
+                    .finish(),
+                );
+            }
+            drawer.add_child(
+                Container::new(pills.finish())
+                    .with_padding(Padding::uniform(9.).with_top(0.))
+                    .finish(),
+            );
+        }
+
+        Container::new(drawer.finish())
+            .with_background(theme.surface_1())
+            .with_border(Border::all(1.).with_border_fill(theme.outline()))
+            .with_corner_radius(CornerRadius::with_all(Radius::Pixels(6.)))
+            .finish()
+    }
+
     fn render_panefleet_attention_item(
         &self,
         item: &PaneFleetAttentionItem,
@@ -25499,60 +25606,24 @@ impl Workspace {
             PaneFleetAttentionColumn::Authorize => "AUTHORIZE",
         };
 
-        let mut header = Flex::row()
+        let header = Flex::row()
             .with_main_axis_size(MainAxisSize::Max)
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_spacing(6.)
             .with_child(
                 Expanded::new(
                     1.,
-                    Text::new_inline(format!("{title} {}", items.len()), font_family, 10.)
+                    Text::new_inline(title.to_string(), font_family, 10.)
                         .with_color(sub_text.into())
                         .finish(),
                 )
                 .finish(),
+            )
+            .with_child(
+                Text::new_inline(items.len().to_string(), font_family, 10.)
+                    .with_color(main_text.into())
+                    .finish(),
             );
-        // Confirming a batch in one pass is the whole point of this column
-        // being separate from the one you think about item by item.
-        if column == PaneFleetAttentionColumn::Authorize && !items.is_empty() {
-            let paths = items
-                .iter()
-                .map(|item| item.environment_path.clone())
-                .collect::<Vec<_>>();
-            // Shown for one item as well: the card itself opens the
-            // environment, so without this the column's whole purpose would be
-            // unreachable whenever it held exactly one thing.
-            let label = match paths.len() {
-                1 => "Mark done".to_string(),
-                count => format!("Mark {count} done"),
-            };
-            header.add_child(
-                Hoverable::new(
-                    self.panefleet_attention_batch_mouse_state.clone(),
-                    move |state| {
-                        let mut button = Container::new(
-                            Text::new_inline(label.clone(), font_family, 10.)
-                                .with_color(main_text.into())
-                                .finish(),
-                        )
-                        .with_padding(Padding::uniform(3.).with_left(6.).with_right(6.))
-                        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(4.)));
-                        if state.is_hovered() {
-                            button = button.with_background(internal_colors::fg_overlay_2(theme));
-                        }
-                        button.finish()
-                    },
-                )
-                .on_click(move |ctx, _, _| {
-                    ctx.dispatch_typed_action(WorkspaceAction::MarkPaneFleetTasksDone {
-                        paths: paths.clone(),
-                    });
-                })
-                .with_cursor(Cursor::PointingHand)
-                .finish(),
-            );
-        }
-
         let mut content = Flex::column()
             .with_main_axis_size(MainAxisSize::Min)
             .with_spacing(6.)
@@ -25571,6 +25642,52 @@ impl Workspace {
         }
         for item in items {
             content.add_child(self.render_panefleet_attention_item(item, appearance));
+        }
+        // At the foot of the column, not in its header: it acts on everything
+        // above it, and reviewing a batch in one pass is what separates this
+        // column from the one you think about item by item.
+        if column == PaneFleetAttentionColumn::Authorize && !items.is_empty() {
+            let paths = items
+                .iter()
+                .map(|item| item.environment_path.clone())
+                .collect::<Vec<_>>();
+            let label = match paths.len() {
+                1 => "Mark done".to_string(),
+                count => format!("Mark all {count} done"),
+            };
+            let accent = theme.accent();
+            content.add_child(
+                Hoverable::new(
+                    self.panefleet_attention_batch_mouse_state.clone(),
+                    move |state| {
+                        let mut row = Container::new(
+                            Text::new_inline(label.clone(), font_family, 10.)
+                                .with_color(accent.into())
+                                .finish(),
+                        )
+                        .with_padding(Padding::uniform(8.))
+                        .with_border(Border::all(1.).with_border_fill(accent).with_dashed_border(
+                            Dash {
+                                dash_length: 4.,
+                                gap_length: 3.,
+                                ..Default::default()
+                            },
+                        ))
+                        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(6.)));
+                        if state.is_hovered() {
+                            row = row.with_background(internal_colors::fg_overlay_1(theme));
+                        }
+                        row.finish()
+                    },
+                )
+                .on_click(move |ctx, _, _| {
+                    ctx.dispatch_typed_action(WorkspaceAction::MarkPaneFleetTasksDone {
+                        paths: paths.clone(),
+                    });
+                })
+                .with_cursor(Cursor::PointingHand)
+                .finish(),
+            );
         }
         content.finish()
     }
@@ -25745,39 +25862,8 @@ impl Workspace {
             .with_spacing(8.)
             .with_child(column_row.finish());
         if !finished_recently.is_empty() {
-            // Finished work asks nothing, so it gets a single line rather than a
-            // column: enough to confirm it happened, not enough to compete for
-            // attention.
-            let names = finished_recently
-                .iter()
-                .map(|item| item.title.as_str())
-                .take(6)
-                .collect::<Vec<_>>()
-                .join(" · ");
-            let more = finished_recently.len().saturating_sub(6);
-            let summary = if more > 0 {
-                format!(
-                    "Finished in the last day {} — {names} · +{more}",
-                    finished_recently.len()
-                )
-            } else {
-                format!(
-                    "Finished in the last day {} — {names}",
-                    finished_recently.len()
-                )
-            };
-            attention_board.add_child(
-                Container::new(
-                    Text::new_inline(summary, font_family, 10.)
-                        .with_color(sub_text.into())
-                        .with_clip(ClipConfig::ellipsis())
-                        .finish(),
-                )
-                .with_padding(Padding::uniform(8.))
-                .with_background(theme.surface_1())
-                .with_corner_radius(CornerRadius::with_all(Radius::Pixels(6.)))
-                .finish(),
-            );
+            attention_board
+                .add_child(self.render_panefleet_done_drawer(&finished_recently, appearance));
         }
         let attention_board = attention_board.finish();
 
@@ -30430,6 +30516,12 @@ impl TypedActionView for Workspace {
                 if FeatureFlag::PaneFleetWorkbench.is_enabled() {
                     self.show_panefleet_environment_context_menu = None;
                     self.mark_panefleet_task_done(path, ctx);
+                    ctx.notify();
+                }
+            }
+            TogglePaneFleetDoneDrawer => {
+                if FeatureFlag::PaneFleetWorkbench.is_enabled() {
+                    self.panefleet_done_drawer_open = !self.panefleet_done_drawer_open;
                     ctx.notify();
                 }
             }

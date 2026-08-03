@@ -13338,14 +13338,21 @@ impl Workspace {
                     }
                     None => self.open_panefleet_workspace(worktree.path, source, ctx),
                 }
+                // Say what did not come along. The worktree holds the base
+                // branch's committed state, so uncommitted and untracked files
+                // stayed behind — including the `.env` or installed dependencies
+                // an agent may need before it can do anything here.
+                let message = if worktree.source_had_local_changes {
+                    format!(
+                        "Created worktree environment on '{}'. Uncommitted and untracked files \
+                         stayed in the source repository.",
+                        worktree.branch
+                    )
+                } else {
+                    format!("Created worktree environment on '{}'", worktree.branch)
+                };
                 self.toast_stack.update(ctx, |toast_stack, ctx| {
-                    toast_stack.add_ephemeral_toast(
-                        DismissibleToast::success(format!(
-                            "Created worktree environment on '{}'",
-                            worktree.branch
-                        )),
-                        ctx,
-                    );
+                    toast_stack.add_ephemeral_toast(DismissibleToast::success(message), ctx);
                 });
                 true
             }

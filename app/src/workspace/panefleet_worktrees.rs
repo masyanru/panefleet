@@ -11,6 +11,10 @@ pub(super) struct PaneFleetCreatedWorktree {
     pub source_repository: PathBuf,
     pub path: PathBuf,
     pub branch: String,
+    /// The source repository had uncommitted or untracked files when this was
+    /// created, so they are **not** in the new worktree — it holds the committed
+    /// state of the base branch. Worth saying out loud; not worth refusing over.
+    pub source_had_local_changes: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,10 +44,15 @@ pub(super) fn create_panefleet_worktree(
         bail!("Select a base branch");
     }
 
-    let status = git_stdout(&repository, &["status", "--porcelain"])?;
-    if !status.trim().is_empty() {
-        bail!("Commit or stash changes in the source repository before creating a worktree");
-    }
+    // Deliberately not a refusal. `git worktree add` is perfectly happy with a
+    // dirty source: the new worktree checks out the base branch's committed
+    // state and the source's local changes stay exactly where they were.
+    // Demanding a clean tree would mean committing or stashing unfinished work
+    // just to spin off a parallel environment — the opposite of what worktrees
+    // are for.
+    let source_had_local_changes = !git_stdout(&repository, &["status", "--porcelain"])?
+        .trim()
+        .is_empty();
 
     let existing_branches = crate::util::git::list_local_branches_sync(&repository);
     let branch = requested_branch
@@ -84,6 +93,7 @@ pub(super) fn create_panefleet_worktree(
         source_repository: repository,
         path,
         branch,
+        source_had_local_changes,
     })
 }
 

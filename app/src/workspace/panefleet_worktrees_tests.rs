@@ -61,17 +61,28 @@ fn creates_isolated_worktree_on_requested_branch() {
 }
 
 #[test]
-fn refuses_to_create_worktree_from_dirty_repository() {
+fn creates_a_worktree_from_a_dirty_repository_and_says_so() {
     let repository = initialized_repository();
     fs::write(repository.path().join("README.md"), "dirty\n").unwrap();
+    fs::write(repository.path().join("untracked.txt"), "junk\n").unwrap();
 
-    let error =
-        create_panefleet_worktree(repository.path(), "main", Some("feature-dirty")).unwrap_err();
+    // Refusing here would mean committing or stashing unfinished work just to
+    // spin off a parallel environment.
+    let worktree =
+        create_panefleet_worktree(repository.path(), "main", Some("feature-dirty")).unwrap();
 
-    assert!(
-        error
-            .to_string()
-            .contains("Commit or stash changes in the source repository")
+    assert!(worktree.path.exists());
+    assert!(worktree.source_had_local_changes);
+    // The worktree holds the committed state, so the local changes are not in it.
+    assert!(!worktree.path.join("untracked.txt").exists());
+    assert_eq!(
+        fs::read_to_string(worktree.path.join("README.md")).unwrap(),
+        "PaneFleet\n"
+    );
+    // And they are still in the source, untouched.
+    assert_eq!(
+        fs::read_to_string(repository.path().join("README.md")).unwrap(),
+        "dirty\n"
     );
 }
 

@@ -26,8 +26,6 @@ const MAX_EXTERNAL_KEY_CHARS: usize = 32;
 /// A tracker key's alphabetic prefix: `SEC`, `inc`, `leaver`. Longer leading
 /// words are treated as prose, not as a key.
 const MAX_EXTERNAL_KEY_PREFIX_CHARS: usize = 12;
-/// Folder names stay short enough to read in a sidebar row.
-const MAX_SLUG_CHARS: usize = 48;
 
 fn current_version() -> u32 {
     PANEFLEET_TASKS_VERSION
@@ -221,28 +219,6 @@ impl PaneFleetTaskBinding {
             }
             _ => self.title.clone(),
         }
-    }
-
-    /// A folder name for a directory environment serving this task.
-    ///
-    /// Prefers the tracker key — short, stable across renames, and what the
-    /// person already uses to refer to the work.
-    pub fn directory_slug(&self) -> String {
-        let source = match &self.external {
-            Some(external) if !external.key.is_empty() => external.key.as_str(),
-            _ => self.title.as_str(),
-        };
-        let mut slug = String::new();
-        for character in source.chars() {
-            if character.is_ascii_alphanumeric() {
-                slug.push(character.to_ascii_lowercase());
-            } else if !slug.ends_with('-') {
-                slug.push('-');
-            }
-        }
-        let slug = slug.trim_matches('-');
-        let slug = if slug.is_empty() { "task" } else { slug };
-        slug.chars().take(MAX_SLUG_CHARS).collect()
     }
 
     /// The same text the user typed to create this binding, for pre-filling an

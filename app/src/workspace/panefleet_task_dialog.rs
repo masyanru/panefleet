@@ -51,10 +51,6 @@ pub(super) struct PaneFleetTaskDialogSource {
     pub environment_path: PathBuf,
     /// The binding being edited, or `None` when naming the work for the first time.
     pub existing: Option<PaneFleetTaskBinding>,
-    /// This row is a project, so confirming creates a folder under it for the
-    /// work rather than renaming the project itself. Said out loud because it
-    /// writes to disk.
-    pub creates_directory: bool,
 }
 
 pub(super) struct PaneFleetTaskDialog {
@@ -240,21 +236,12 @@ impl View for PaneFleetTaskDialog {
         } else {
             "What is this environment for?".to_string()
         };
-        let body = if source.creates_directory {
-            format!(
-                "This is a project, not work done in it. Confirming creates a folder for the task \
-                 inside it and opens that as an environment — the way a worktree appears. A leading \
-                 tracker key such as SEC-1802 names the folder.\n\n{}",
-                source.environment_path.display()
-            )
-        } else {
-            format!(
-                "The task names the sidebar row and the tabs of this environment; the branch moves \
-                 to secondary metadata. A leading tracker key such as SEC-1802 or inc-36884 is \
-                 recognized and shown separately.\n\n{}",
-                source.environment_path.display()
-            )
-        };
+        let body = format!(
+            "The task names this environment's row and its tabs; the branch moves to secondary \
+             metadata. A leading tracker key such as SEC-1802 or inc-36884 is recognized and shown \
+             separately.\n\n{}",
+            source.environment_path.display()
+        );
 
         let cancel_button = Container::new(ChildView::new(&self.cancel_button).finish())
             .with_margin_right(12.)

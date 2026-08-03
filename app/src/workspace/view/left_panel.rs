@@ -1945,11 +1945,16 @@ impl LeftPanelView {
             .take(PANEFLEET_PROJECT_LIMIT)
             .zip(&self.panefleet_mouse_state_handles.project_rows)
         {
+            // Grouped means "header plus rows". A project whose only environment
+            // is its own folder normally collapses to one row — but if that
+            // environment carries a task, collapsing would put the task's name
+            // where the project's name belongs. Splitting keeps the project a
+            // project and gives the work its own row, with no folder on disk to
+            // stand for it.
             let grouped = group.environments.len() > 1
-                || group
-                    .environments
-                    .first()
-                    .is_some_and(|environment| environment.path != group.root_path);
+                || group.environments.first().is_some_and(|environment| {
+                    environment.path != group.root_path || environment.task.is_some()
+                });
             if grouped {
                 let is_active = active_path.as_ref().is_some_and(|active| {
                     group

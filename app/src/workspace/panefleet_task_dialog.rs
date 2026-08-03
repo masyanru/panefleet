@@ -8,8 +8,9 @@
 use pathfinder_geometry::vector::vec2f;
 use warp_core::ui::theme::Fill;
 use warpui::elements::{
-    Align, ChildAnchor, ChildView, Clipped, ConstrainedBox, Container, CornerRadius, Element,
-    OffsetPositioning, ParentAnchor, ParentOffsetBounds, Radius, Stack,
+    Align, ChildAnchor, ChildView, Clipped, ConstrainedBox, Container, CornerRadius,
+    CrossAxisAlignment, Element, Flex, MainAxisSize, OffsetPositioning, ParentAnchor,
+    ParentElement, ParentOffsetBounds, Radius, Stack, Text,
 };
 use warpui::keymap::{FixedBinding, Keystroke};
 use warpui::ui_components::components::{UiComponent, UiComponentStyles};
@@ -172,12 +173,25 @@ impl PaneFleetTaskDialog {
         )));
     }
 
-    fn render_done_check(&self, app: &AppContext) -> Box<dyn Element> {
-        self.render_editor(&self.done_check_editor, app)
+    fn render_fields(&self, app: &AppContext) -> Box<dyn Element> {
+        let appearance = Appearance::as_ref(app);
+        Flex::column()
+            .with_main_axis_size(MainAxisSize::Min)
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .with_spacing(6.)
+            .with_child(self.render_label("TASK", appearance))
+            .with_child(self.render_editor(&self.editor, app))
+            .with_child(self.render_label("DONE WHEN", appearance))
+            .with_child(self.render_editor(&self.done_check_editor, app))
+            .finish()
     }
 
-    fn render_input(&self, app: &AppContext) -> Box<dyn Element> {
-        self.render_editor(&self.editor, app)
+    /// Two identical-looking inputs are indistinguishable without these.
+    fn render_label(&self, text: &'static str, appearance: &Appearance) -> Box<dyn Element> {
+        let theme = appearance.theme();
+        Text::new_inline(text.to_string(), appearance.ui_font_family(), 10.)
+            .with_color(theme.sub_text_color(theme.background()).into())
+            .finish()
     }
 
     fn render_editor(&self, editor: &ViewHandle<EditorView>, app: &AppContext) -> Box<dyn Element> {
@@ -240,8 +254,9 @@ impl View for PaneFleetTaskDialog {
                 ..dialog_styles(appearance)
             },
         )
-        .with_child(self.render_input(app))
-        .with_child(self.render_done_check(app))
+        // One child, not two: `Dialog::with_child` assigns rather than appends,
+        // so a second call silently replaces the first field.
+        .with_child(self.render_fields(app))
         .with_bottom_row_child(cancel_button)
         .with_bottom_row_child(ChildView::new(&self.save_button).finish())
         .build()

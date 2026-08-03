@@ -25245,6 +25245,44 @@ impl Workspace {
                 }
             }
         }
+        // A queued task whose environment is closed is exactly what "pull"
+        // means, but it has no card yet: the loop above walks open workspaces.
+        // Take the rest straight from the task file.
+        let seen = columns
+            .values()
+            .flatten()
+            .chain(finished.iter())
+            .map(|item| item.environment_path.clone())
+            .collect::<HashSet<_>>();
+        for (path, task) in self.panefleet_tasks.entries() {
+            if seen.contains(path) {
+                continue;
+            }
+            let input = PaneFleetAttentionInput {
+                task_state: Some(task.state),
+                ..Default::default()
+            };
+            counts.add(input, false);
+            if attention_column(input) != Some(PaneFleetAttentionColumn::Pull) {
+                continue;
+            }
+            columns
+                .entry(PaneFleetAttentionColumn::Pull)
+                .or_default()
+                .push(PaneFleetAttentionItem {
+                    environment_path: path.clone(),
+                    key: task.external.as_ref().map(|external| external.key.clone()),
+                    title: task.title.clone(),
+                    workspace_name: path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                    grounds: Some("Not open yet".to_string()),
+                    accent: PaneFleetAttentionAccent::Queued,
+                    elapsed: None,
+                });
+        }
         (counts, columns, finished)
     }
 

@@ -338,6 +338,12 @@ impl PaneFleetTaskStore {
         self.tasks.len() != before
     }
 
+    /// Every binding, for surfaces that need the whole set rather than only the
+    /// environments that happen to be open.
+    pub fn entries(&self) -> impl Iterator<Item = (&PathBuf, &PaneFleetTaskBinding)> {
+        self.tasks.iter()
+    }
+
     /// Display labels for every bound environment. Consumers look up by path,
     /// so handing over the whole set cannot miss an environment that the
     /// caller has not registered elsewhere yet.

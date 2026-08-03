@@ -1372,6 +1372,8 @@ impl LeftPanelView {
         let font_family = appearance.ui_font_family();
         let main_text = theme.main_text_color(theme.background());
         let sub_text = theme.sub_text_color(theme.background());
+        let root_path_for_row = group.root_path.clone();
+        let root_path_for_menu = group.root_path.clone();
         let title = group
             .root_path
             .file_name()
@@ -1394,7 +1396,7 @@ impl LeftPanelView {
             )
         });
 
-        Hoverable::new(mouse_states.row.clone(), move |state| {
+        let header = Hoverable::new(mouse_states.row.clone(), move |state| {
             let icon: Box<dyn Element> = match workspace_icon {
                 PaneFleetWorkspaceIcon::Github => Icon::Github.to_warpui_icon(sub_text).finish(),
                 PaneFleetWorkspaceIcon::Git => Icon::GitBranch.to_warpui_icon(sub_text).finish(),
@@ -1449,7 +1451,30 @@ impl LeftPanelView {
             }
             row.finish()
         })
-        .finish()
+        .on_click({
+            let path = root_path_for_row.clone();
+            move |ctx, _, _| {
+                ctx.dispatch_typed_action(LeftPanelAction::SwitchPaneFleetProject {
+                    path: path.clone(),
+                });
+            }
+        })
+        .with_cursor(Cursor::PointingHand)
+        .finish();
+
+        // The header is a row like any other, so it answers a right click like
+        // any other. Without this the repository root — the natural place to
+        // put a task that spans the whole project — had no menu at all, and no
+        // click either.
+        EventHandler::new(header)
+            .on_right_mouse_down(move |ctx, _, position| {
+                ctx.dispatch_typed_action(LeftPanelAction::ShowPaneFleetEnvironmentContextMenu {
+                    path: root_path_for_menu.clone(),
+                    position,
+                });
+                DispatchEventResult::StopPropagation
+            })
+            .finish()
     }
 
     fn render_panefleet_environment_row(

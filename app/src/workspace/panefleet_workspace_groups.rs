@@ -52,11 +52,20 @@ pub(super) fn group_panefleet_workspaces(
             .or_insert(PaneFleetWorkspaceSource::ExistingFolder);
     }
 
+    // Every repository a worktree points at, plus every plain folder: the set a
+    // nested folder can be a child of.
+    let candidate_roots = environment_sources
+        .iter()
+        .map(|(path, source)| source.project_root(path))
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+
     let mut root_order = Vec::new();
     let mut seen_roots = HashSet::new();
     for path in ordered_project_paths.iter().chain(active_path.iter()) {
         let source = environment_sources.get(path).cloned().unwrap_or_default();
-        let root = source_root(path, &source);
+        let root = source_root(path, &source, &candidate_roots);
         if seen_roots.insert(root.clone()) {
             root_order.push(root);
         }
@@ -64,7 +73,7 @@ pub(super) fn group_panefleet_workspaces(
 
     let mut remaining = environment_sources
         .iter()
-        .map(|(path, source)| source_root(path, source))
+        .map(|(path, source)| source_root(path, source, &candidate_roots))
         .filter(|root| !seen_roots.contains(root))
         .collect::<Vec<_>>();
     remaining.sort();
@@ -76,7 +85,7 @@ pub(super) fn group_panefleet_workspaces(
         .map(|root_path| {
             let mut environments = environment_sources
                 .iter()
-                .filter(|&(path, source)| source_root(path, source) == root_path)
+                .filter(|&(path, source)| source_root(path, source, &candidate_roots) == root_path)
                 .map(|(path, source)| {
                     environment_for(path, source, &root_path, task_labels.get(path).cloned())
                 })
@@ -99,8 +108,29 @@ pub(super) fn group_panefleet_workspaces(
         .collect()
 }
 
-fn source_root(path: &Path, source: &PaneFleetWorkspaceSource) -> PathBuf {
-    source.project_root(path)
+/// The project a path belongs to.
+///
+/// A worktree names its repository outright. A plain folder is its own project
+/// unless it sits **inside** another registered one — a directory environment
+/// created for a task lives under the project it serves, and grouping it there
+/// is derived from the path rather than stored, so the deliberately narrow
+/// `PaneFleetWorkspaceSource` stays as it is.
+fn source_root(
+    path: &Path,
+    source: &PaneFleetWorkspaceSource,
+    candidate_roots: &[PathBuf],
+) -> PathBuf {
+    match source {
+        PaneFleetWorkspaceSource::IsolatedWorktree { .. } => source.project_root(path),
+        // Longest match wins, so a folder nested two projects deep belongs to
+        // the nearer one.
+        PaneFleetWorkspaceSource::ExistingFolder => candidate_roots
+            .iter()
+            .filter(|root| root.as_path() != path && path.starts_with(root))
+            .max_by_key(|root| root.components().count())
+            .cloned()
+            .unwrap_or_else(|| path.to_path_buf()),
+    }
 }
 
 fn environment_for(

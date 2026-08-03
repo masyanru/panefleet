@@ -7398,6 +7398,50 @@ impl Workspace {
         ctx.notify();
     }
 
+    /// Whether this row is a project rather than an environment inside one.
+    ///
+    /// A project is a repository or folder, not work, so naming one names the
+    /// work done *in* it — which needs a place of its own.
+    fn is_panefleet_project_root(&self, path: &Path) -> bool {
+        if !matches!(
+            self.panefleet_workspace_sources.get(path),
+            Some(PaneFleetWorkspaceSource::ExistingFolder) | None
+        ) {
+            return false;
+        }
+        // Nested inside another registered project? Then it is already an
+        // environment of that project, and the task belongs on it directly.
+        !self
+            .panefleet_workspace_sources
+            .iter()
+            .any(|(other, source)| {
+                let root = source.project_root(other);
+                root != path && path.starts_with(&root)
+            })
+    }
+
+    /// Creates the working folder for a task attached to a project.
+    fn create_panefleet_task_directory(
+        &self,
+        project_path: &Path,
+        binding: &PaneFleetTaskBinding,
+    ) -> std::io::Result<PathBuf> {
+        let mut path = project_path.join(binding.directory_slug());
+        // Never reuse a folder that already holds something: a second task with
+        // the same tracker key would otherwise land on the first one's files.
+        if path.exists() {
+            for suffix in 2..100u32 {
+                let candidate = project_path.join(format!("{}-{suffix}", binding.directory_slug()));
+                if !candidate.exists() {
+                    path = candidate;
+                    break;
+                }
+            }
+        }
+        std::fs::create_dir_all(&path)?;
+        Ok(path)
+    }
+
     /// Confirms the work of `environment_path` is finished.
     ///
     /// Only a person reaches `Done`; a passing gate stops at `AwaitingAck`.
@@ -7551,11 +7595,13 @@ impl Workspace {
     fn request_set_panefleet_task(&mut self, path: PathBuf, ctx: &mut ViewContext<Self>) {
         self.show_panefleet_environment_context_menu = None;
         let existing = self.panefleet_tasks.get(&path).cloned();
+        let creates_directory = existing.is_none() && self.is_panefleet_project_root(&path);
         self.panefleet_task_dialog.update(ctx, |dialog, ctx| {
             dialog.set_source(
                 PaneFleetTaskDialogSource {
                     environment_path: path,
                     existing,
+                    creates_directory,
                 },
                 ctx,
             );
@@ -7574,6 +7620,8 @@ impl Workspace {
         ctx: &mut ViewContext<Self>,
     ) {
         self.reload_panefleet_tasks();
+        let existing_is_none = existing.is_none();
+        let original_path = environment_path;
         let binding = match existing {
             // Renaming keeps the id, work state, and everything a single line
             // of input cannot express.
@@ -7596,9 +7644,37 @@ impl Workspace {
         }
 
         self.panefleet_task_dialog_open = false;
-        self.panefleet_tasks
-            .set(environment_path.to_path_buf(), binding);
+        // Naming a project would rename the project row. The work gets its own
+        // environment under it instead, the way a worktree does.
+        let environment_path =
+            if existing_is_none && self.is_panefleet_project_root(environment_path) {
+                match self.create_panefleet_task_directory(environment_path, &binding) {
+                    Ok(path) => {
+                        self.panefleet_workspace_sources
+                            .insert(path.clone(), PaneFleetWorkspaceSource::ExistingFolder);
+                        path
+                    }
+                    Err(error) => {
+                        self.show_panefleet_error_toast(
+                            format!("Could not create a folder for the task: {error}"),
+                            ctx,
+                        );
+                        return;
+                    }
+                }
+            } else {
+                environment_path.to_path_buf()
+            };
+        let opens_environment = environment_path != *original_path;
+        self.panefleet_tasks.set(environment_path.clone(), binding);
         self.persist_panefleet_tasks();
+        if opens_environment {
+            self.open_panefleet_workspace(
+                environment_path,
+                PaneFleetWorkspaceSource::ExistingFolder,
+                ctx,
+            );
+        }
         self.sync_panefleet_workspace_activities(ctx);
         ctx.focus(&self.left_panel_view);
         ctx.notify();

@@ -367,3 +367,36 @@ fn a_failed_gate_makes_confirmation_unchecked_even_from_review() {
 
     assert!(task.completed_without_gate);
 }
+
+#[test]
+fn a_directory_slug_prefers_the_tracker_key() {
+    assert_eq!(
+        binding("t-0001", "SEC-1802 Onboard Miro audit logs").directory_slug(),
+        "sec-1802"
+    );
+    assert_eq!(
+        binding("t-0002", "inc-36884 Databricks PAT triage").directory_slug(),
+        "inc-36884"
+    );
+}
+
+#[test]
+fn a_slug_without_a_key_comes_from_the_title() {
+    assert_eq!(
+        binding("t-0001", "Onboard Miro audit logs").directory_slug(),
+        "onboard-miro-audit-logs"
+    );
+    // Punctuation and spacing collapse rather than producing empty segments.
+    assert_eq!(
+        binding("t-0002", "  Fix:  the //thing!!  ").directory_slug(),
+        "fix-the-thing"
+    );
+}
+
+#[test]
+fn a_slug_is_never_empty_and_never_unbounded() {
+    assert_eq!(binding("t-0001", "!!! ???").directory_slug(), "task");
+    let long = binding("t-0002", &"word ".repeat(40)).directory_slug();
+    assert!(long.chars().count() <= 48);
+    assert!(!long.starts_with('-') && !long.ends_with('-'));
+}

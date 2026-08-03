@@ -467,6 +467,12 @@ pub enum WorkspaceAction {
     MarkPaneFleetTaskDone {
         path: PathBuf,
     },
+    /// Confirms several at once. Reviewing a batch of like results in one pass
+    /// is a different mode from thinking about one, and the board separates
+    /// them, so the action does too.
+    MarkPaneFleetTasksDone {
+        paths: Vec<PathBuf>,
+    },
     Reauth,
     SignupAnonymousUser,
     SignInAnonymousWebUser,
@@ -1189,6 +1195,7 @@ impl WorkspaceAction {
             | SetPaneFleetTask { .. }
             | ClearPaneFleetTask { .. }
             | MarkPaneFleetTaskDone { .. }
+            | MarkPaneFleetTasksDone { .. }
             | TogglePaneFleetFleetOverview
             | TogglePaneFleetFleetDashboard
             | FocusPane(..)

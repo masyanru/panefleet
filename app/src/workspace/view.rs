@@ -151,6 +151,10 @@ use super::one_time_modal_model::OneTimeModalEvent;
 use super::panefleet_agents::{
     PaneFleetAgentDefinition, PaneFleetAgentDefinitions, single_instance_conflict,
 };
+use super::panefleet_attention::{
+    DONE_WINDOW_MS, PaneFleetAttentionColumn, PaneFleetAttentionCounts, PaneFleetAttentionInput,
+    attention_column, attention_reason,
+};
 use super::panefleet_claude::{PaneFleetClaudeActivity, classify_claude_tool};
 use super::panefleet_fleet_events::{
     PaneFleetFleetEvent, PaneFleetFleetEventKind, PaneFleetFleetEventStore,
@@ -1023,6 +1027,19 @@ struct PaneFleetFleetRow {
     elapsed: Option<Duration>,
 }
 
+/// One environment on the attention board.
+#[derive(Clone)]
+struct PaneFleetAttentionItem {
+    environment_path: PathBuf,
+    title: String,
+    workspace_name: String,
+    /// Why it is in this column, in the words the board shows.
+    reason: &'static str,
+    elapsed: Option<Duration>,
+    /// Whether a gate has passed for it, so confirming is not on someone's word.
+    checked: bool,
+}
+
 #[derive(Clone)]
 struct PaneFleetFleetEnvironment {
     path: PathBuf,
@@ -1166,6 +1183,7 @@ pub struct Workspace {
     panefleet_fleet_event_mouse_states: RefCell<HashMap<Uuid, MouseStateHandle>>,
     panefleet_fleet_workspace_mouse_states: RefCell<HashMap<PathBuf, MouseStateHandle>>,
     panefleet_fleet_dashboard_scroll_state: ClippedScrollStateHandle,
+    panefleet_attention_batch_mouse_state: MouseStateHandle,
     panefleet_fleet_activity_frame: usize,
     panefleet_agent_definitions: PaneFleetAgentDefinitions,
     panefleet_restoring_state: bool,
@@ -3607,6 +3625,7 @@ impl Workspace {
             panefleet_fleet_event_mouse_states: RefCell::new(HashMap::new()),
             panefleet_fleet_workspace_mouse_states: RefCell::new(HashMap::new()),
             panefleet_fleet_dashboard_scroll_state: Default::default(),
+            panefleet_attention_batch_mouse_state: Default::default(),
             panefleet_fleet_activity_frame: 0,
             panefleet_agent_definitions,
             panefleet_restoring_state: false,
@@ -25070,6 +25089,233 @@ impl Workspace {
         .finish()
     }
 
+    /// Bound work grouped by what it asks of a person, plus the strip totals.
+    fn panefleet_attention_board(
+        &self,
+        ctx: &AppContext,
+    ) -> (
+        PaneFleetAttentionCounts,
+        HashMap<PaneFleetAttentionColumn, Vec<PaneFleetAttentionItem>>,
+        Vec<PaneFleetAttentionItem>,
+    ) {
+        let now: u64 = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+            .try_into()
+            .unwrap_or(u64::MAX);
+        let mut counts = PaneFleetAttentionCounts::default();
+        let mut columns: HashMap<PaneFleetAttentionColumn, Vec<PaneFleetAttentionItem>> =
+            HashMap::new();
+        let mut finished = Vec::new();
+
+        for workspace in self.panefleet_fleet_workspaces(ctx) {
+            for environment in workspace.environments {
+                let task = self.panefleet_tasks.get(&environment.path);
+                let input = PaneFleetAttentionInput {
+                    task_state: task.map(|task| task.state),
+                    agent_is_blocked: environment
+                        .sessions
+                        .iter()
+                        .any(|session| session.status == PaneFleetFleetStatus::Blocked),
+                    agent_is_working: environment
+                        .sessions
+                        .iter()
+                        .any(|session| session.status == PaneFleetFleetStatus::Working),
+                    agent_failed: environment
+                        .sessions
+                        .iter()
+                        .any(|session| session.status == PaneFleetFleetStatus::Failed),
+                };
+                let completed_today = task.is_some_and(|task| {
+                    task.completed_at_unix_ms
+                        .is_some_and(|at| now.saturating_sub(at) <= DONE_WINDOW_MS)
+                });
+                counts.add(input, completed_today);
+
+                let item = PaneFleetAttentionItem {
+                    environment_path: environment.path.clone(),
+                    title: environment.name.clone(),
+                    workspace_name: workspace.name.clone(),
+                    reason: attention_reason(input),
+                    elapsed: environment
+                        .sessions
+                        .iter()
+                        .filter_map(|session| session.elapsed)
+                        .max(),
+                    checked: task.is_some_and(|task| task.last_gate_passed == Some(true)),
+                };
+                if completed_today {
+                    finished.push(item.clone());
+                    continue;
+                }
+                if let Some(column) = attention_column(input) {
+                    columns.entry(column).or_default().push(item);
+                }
+            }
+        }
+        (counts, columns, finished)
+    }
+
+    fn render_panefleet_attention_item(
+        &self,
+        item: &PaneFleetAttentionItem,
+        appearance: &Appearance,
+    ) -> Box<dyn Element> {
+        let theme = appearance.theme();
+        let font_family = appearance.ui_font_family();
+        let main_text = theme.main_text_color(theme.background());
+        let sub_text = theme.sub_text_color(theme.background());
+        let path = item.environment_path.clone();
+
+        let mut detail = item.reason.to_string();
+        if let Some(elapsed) = item.elapsed {
+            detail.push_str(" · ");
+            detail.push_str(&Self::format_panefleet_elapsed(elapsed));
+        }
+        // A card here proposes a decision, so it has to show the grounds for it.
+        // Without a gate behind it, confirming rests on the reader's own word.
+        if !item.checked {
+            detail.push_str(" · no check");
+        }
+
+        let title = item.title.clone();
+        let workspace_name = item.workspace_name.clone();
+
+        let mouse_state = self
+            .panefleet_fleet_workspace_mouse_states
+            .borrow_mut()
+            .entry(path.clone())
+            .or_default()
+            .clone();
+        Hoverable::new(mouse_state, move |state| {
+            // Built inside the closure: an `Element` is not clonable, so it
+            // cannot be hoisted out and reused across renders.
+            let body = Flex::column()
+                .with_main_axis_size(MainAxisSize::Min)
+                .with_spacing(3.)
+                .with_child(
+                    Text::new_inline(title.clone(), font_family, 12.)
+                        .with_color(main_text.into())
+                        .with_clip(ClipConfig::ellipsis())
+                        .finish(),
+                )
+                .with_child(
+                    Text::new_inline(detail.clone(), font_family, 10.)
+                        .with_color(sub_text.into())
+                        .finish(),
+                )
+                .with_child(
+                    Text::new_inline(workspace_name.clone(), font_family, 10.)
+                        .with_color(sub_text.into())
+                        .finish(),
+                )
+                .finish();
+            let mut card = Container::new(body)
+                .with_padding(Padding::uniform(9.))
+                .with_background(theme.surface_1())
+                .with_border(Border::all(1.).with_border_fill(theme.outline()))
+                .with_corner_radius(CornerRadius::with_all(Radius::Pixels(6.)));
+            if state.is_hovered() {
+                card = card.with_background(internal_colors::fg_overlay_1(theme));
+            }
+            card.finish()
+        })
+        .on_click(move |ctx, _, _| {
+            ctx.dispatch_typed_action(WorkspaceAction::OpenPaneFleetWorkspace {
+                path: path.clone(),
+            });
+        })
+        .with_cursor(Cursor::PointingHand)
+        .finish()
+    }
+
+    fn render_panefleet_attention_column(
+        &self,
+        column: PaneFleetAttentionColumn,
+        items: &[PaneFleetAttentionItem],
+        appearance: &Appearance,
+    ) -> Box<dyn Element> {
+        let theme = appearance.theme();
+        let font_family = appearance.ui_font_family();
+        let main_text = theme.main_text_color(theme.background());
+        let sub_text = theme.sub_text_color(theme.background());
+        let title = match column {
+            PaneFleetAttentionColumn::Pull => "PULL",
+            PaneFleetAttentionColumn::Unblock => "UNBLOCK",
+            PaneFleetAttentionColumn::Authorize => "AUTHORIZE",
+        };
+
+        let mut header = Flex::row()
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_spacing(6.)
+            .with_child(
+                Expanded::new(
+                    1.,
+                    Text::new_inline(format!("{title} {}", items.len()), font_family, 10.)
+                        .with_color(sub_text.into())
+                        .finish(),
+                )
+                .finish(),
+            );
+        // Confirming a batch in one pass is the whole point of this column
+        // being separate from the one you think about item by item.
+        if column == PaneFleetAttentionColumn::Authorize && items.len() > 1 {
+            let paths = items
+                .iter()
+                .map(|item| item.environment_path.clone())
+                .collect::<Vec<_>>();
+            let label = format!("Mark {} done", paths.len());
+            header.add_child(
+                Hoverable::new(
+                    self.panefleet_attention_batch_mouse_state.clone(),
+                    move |state| {
+                        let mut button = Container::new(
+                            Text::new_inline(label.clone(), font_family, 10.)
+                                .with_color(main_text.into())
+                                .finish(),
+                        )
+                        .with_padding(Padding::uniform(3.).with_left(6.).with_right(6.))
+                        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(4.)));
+                        if state.is_hovered() {
+                            button = button.with_background(internal_colors::fg_overlay_2(theme));
+                        }
+                        button.finish()
+                    },
+                )
+                .on_click(move |ctx, _, _| {
+                    ctx.dispatch_typed_action(WorkspaceAction::MarkPaneFleetTasksDone {
+                        paths: paths.clone(),
+                    });
+                })
+                .with_cursor(Cursor::PointingHand)
+                .finish(),
+            );
+        }
+
+        let mut content = Flex::column()
+            .with_main_axis_size(MainAxisSize::Min)
+            .with_spacing(6.)
+            .with_child(
+                Container::new(header.finish())
+                    .with_padding(Padding::uniform(0.).with_bottom(4.))
+                    .with_border(Border::bottom(1.).with_border_fill(theme.outline()))
+                    .finish(),
+            );
+        if items.is_empty() {
+            content.add_child(
+                Text::new_inline("nothing here".to_string(), font_family, 10.)
+                    .with_color(sub_text.into())
+                    .finish(),
+            );
+        }
+        for item in items {
+            content.add_child(self.render_panefleet_attention_item(item, appearance));
+        }
+        content.finish()
+    }
+
     fn render_panefleet_fleet_dashboard(
         &self,
         appearance: &Appearance,
@@ -25080,35 +25326,10 @@ impl Workspace {
         let font_family = appearance.ui_font_family();
         let main_text = theme.main_text_color(theme.background());
         let sub_text = theme.sub_text_color(theme.background());
-        let rows = self.panefleet_fleet_rows(ctx);
         let workspaces = self.panefleet_fleet_workspaces(ctx);
-        let working = rows
-            .iter()
-            .filter(|row| row.status == PaneFleetFleetStatus::Working)
-            .count();
-        let attention = rows
-            .iter()
-            .filter(|row| {
-                matches!(
-                    row.status,
-                    PaneFleetFleetStatus::Blocked | PaneFleetFleetStatus::Failed
-                )
-            })
-            .count();
-        let today = chrono::Local::now().date_naive();
-        let done = self
-            .panefleet_fleet_events
-            .recent()
-            .filter(|event| event.kind == PaneFleetFleetEventKind::Completed)
-            .filter(|event| {
-                i64::try_from(event.occurred_at_unix_ms)
-                    .ok()
-                    .and_then(chrono::DateTime::from_timestamp_millis)
-                    .is_some_and(|timestamp| {
-                        timestamp.with_timezone(&chrono::Local).date_naive() == today
-                    })
-            })
-            .count();
+        // The strip counts work, not processes: "three agents are busy" says
+        // nothing about how many things are waiting on you.
+        let (counts, columns, finished_today) = self.panefleet_attention_board(ctx);
 
         let close = self
             .render_tab_bar_icon_button(
@@ -25171,7 +25392,7 @@ impl Workspace {
                     1.,
                     self.render_panefleet_fleet_stat(
                         "Working",
-                        working,
+                        counts.working,
                         theme.accent(),
                         true,
                         appearance,
@@ -25183,8 +25404,8 @@ impl Workspace {
                 Expanded::new(
                     1.,
                     self.render_panefleet_fleet_stat(
-                        "Needs input",
-                        attention,
+                        "Needs you",
+                        counts.needs_you,
                         Fill::warn(),
                         false,
                         appearance,
@@ -25196,8 +25417,8 @@ impl Workspace {
                 Expanded::new(
                     1.,
                     self.render_panefleet_fleet_stat(
-                        "Completed today",
-                        done,
+                        "Done today",
+                        counts.done_today,
                         Fill::success(),
                         false,
                         appearance,
@@ -25209,8 +25430,8 @@ impl Workspace {
                 Expanded::new(
                     1.,
                     self.render_panefleet_fleet_stat(
-                        "Workspaces",
-                        workspaces.len(),
+                        "Quiet",
+                        counts.quiet,
                         sub_text,
                         false,
                         appearance,
@@ -25219,6 +25440,61 @@ impl Workspace {
                 .finish(),
             )
             .finish();
+
+        // Three columns, one per kind of action. The counters above cover what
+        // asks nothing, so nothing here exists merely to show progress.
+        let mut column_row = Flex::row()
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_cross_axis_alignment(CrossAxisAlignment::Start)
+            .with_spacing(10.);
+        for column in [
+            PaneFleetAttentionColumn::Pull,
+            PaneFleetAttentionColumn::Unblock,
+            PaneFleetAttentionColumn::Authorize,
+        ] {
+            let items = columns.get(&column).map(Vec::as_slice).unwrap_or_default();
+            column_row.add_child(
+                Expanded::new(
+                    1.,
+                    self.render_panefleet_attention_column(column, items, appearance),
+                )
+                .finish(),
+            );
+        }
+        let mut attention_board = Flex::column()
+            .with_main_axis_size(MainAxisSize::Min)
+            .with_spacing(8.)
+            .with_child(column_row.finish());
+        if !finished_today.is_empty() {
+            // Finished work asks nothing, so it gets a single line rather than a
+            // column: enough to confirm it happened, not enough to compete for
+            // attention.
+            let names = finished_today
+                .iter()
+                .map(|item| item.title.as_str())
+                .take(6)
+                .collect::<Vec<_>>()
+                .join(" · ");
+            let more = finished_today.len().saturating_sub(6);
+            let summary = if more > 0 {
+                format!("Done today {} — {names} · +{more}", finished_today.len())
+            } else {
+                format!("Done today {} — {names}", finished_today.len())
+            };
+            attention_board.add_child(
+                Container::new(
+                    Text::new_inline(summary, font_family, 10.)
+                        .with_color(sub_text.into())
+                        .with_clip(ClipConfig::ellipsis())
+                        .finish(),
+                )
+                .with_padding(Padding::uniform(8.))
+                .with_background(theme.surface_1())
+                .with_corner_radius(CornerRadius::with_all(Radius::Pixels(6.)))
+                .finish(),
+            );
+        }
+        let attention_board = attention_board.finish();
 
         let workspace_grid = if workspaces.is_empty() {
             Container::new(
@@ -25317,6 +25593,7 @@ impl Workspace {
             .with_main_axis_size(MainAxisSize::Min)
             .with_spacing(14.)
             .with_child(stats)
+            .with_child(attention_board)
             .with_child(
                 Text::new_inline("Workspaces", font_family, 12.)
                     .with_color(main_text.into())
@@ -29868,6 +30145,14 @@ impl TypedActionView for Workspace {
                 if FeatureFlag::PaneFleetWorkbench.is_enabled() {
                     self.show_panefleet_environment_context_menu = None;
                     self.mark_panefleet_task_done(path, ctx);
+                    ctx.notify();
+                }
+            }
+            MarkPaneFleetTasksDone { paths } => {
+                if FeatureFlag::PaneFleetWorkbench.is_enabled() {
+                    for path in paths.clone() {
+                        self.mark_panefleet_task_done(&path, ctx);
+                    }
                     ctx.notify();
                 }
             }

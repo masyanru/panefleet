@@ -10,7 +10,7 @@ use super::panefleet_tasks::PaneFleetTaskState;
 /// One day, the window the board reports finished work over.
 pub(super) const DONE_WINDOW_MS: u64 = 24 * 60 * 60 * 1000;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) enum PaneFleetAttentionColumn {
     /// Decide what to start. Exists while work is pulled by hand.
     Pull,

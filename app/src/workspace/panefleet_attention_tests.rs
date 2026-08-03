@@ -108,11 +108,17 @@ fn the_strip_counts_what_has_no_column() {
             working: 1,
             // Unblock plus Authorize.
             needs_you: 2,
-            // The two `Done` tasks; `Queued` has its own column instead.
+            to_pull: 1,
+            // The two `Done` tasks.
             quiet: 2,
             // Only the one finished inside the window.
-            done_today: 1,
+            finished_recently: 1,
         }
+    );
+    // The four tiles partition the work; nothing is counted twice or missed.
+    assert_eq!(
+        counts.working + counts.needs_you + counts.to_pull + counts.quiet,
+        6
     );
 }
 

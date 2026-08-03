@@ -75,31 +75,40 @@ pub(super) fn attention_reason(input: PaneFleetAttentionInput) -> &'static str {
     }
 }
 
-/// The counter strip: totals for what has no column of its own.
+/// The counter strip.
+///
+/// `working`, `needs_you`, `to_pull` and `quiet` **partition** the bound work:
+/// every task lands in exactly one. Tiles sitting side by side read as a
+/// breakdown, so overlapping them would double-report the same task.
+///
+/// `finished_recently` deliberately stands outside that partition — finished
+/// work is also quiet — so it is reported on its own line rather than as a
+/// fifth tile.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) struct PaneFleetAttentionCounts {
     pub working: usize,
     pub needs_you: usize,
+    pub to_pull: usize,
     /// Bound work that asks nothing right now — neither running nor waiting.
     pub quiet: usize,
-    pub done_today: usize,
+    pub finished_recently: usize,
 }
 
 impl PaneFleetAttentionCounts {
     /// Counts one environment. Environments with no task are skipped: the strip
     /// reports on work, and an unnamed folder is not work yet.
-    pub fn add(&mut self, input: PaneFleetAttentionInput, completed_today: bool) {
+    pub fn add(&mut self, input: PaneFleetAttentionInput, finished_recently: bool) {
         if input.task_state.is_none() {
             return;
         }
-        if completed_today {
-            self.done_today += 1;
+        if finished_recently {
+            self.finished_recently += 1;
         }
         match attention_column(input) {
             Some(PaneFleetAttentionColumn::Unblock | PaneFleetAttentionColumn::Authorize) => {
                 self.needs_you += 1;
             }
-            Some(PaneFleetAttentionColumn::Pull) => {}
+            Some(PaneFleetAttentionColumn::Pull) => self.to_pull += 1,
             None if input.agent_is_working
                 || input.task_state == Some(PaneFleetTaskState::Working) =>
             {

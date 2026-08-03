@@ -1184,6 +1184,10 @@ pub struct Workspace {
     panefleet_fleet_workspace_mouse_states: RefCell<HashMap<PathBuf, MouseStateHandle>>,
     panefleet_fleet_dashboard_scroll_state: ClippedScrollStateHandle,
     panefleet_attention_batch_mouse_state: MouseStateHandle,
+    /// Separate from the grid's map: an environment can have a card in both
+    /// surfaces at once, and a shared `MouseState` means one Hoverable steals
+    /// the other's click and flips its hover flag back off.
+    panefleet_attention_mouse_states: RefCell<HashMap<PathBuf, MouseStateHandle>>,
     panefleet_fleet_activity_frame: usize,
     panefleet_agent_definitions: PaneFleetAgentDefinitions,
     panefleet_restoring_state: bool,
@@ -3626,6 +3630,7 @@ impl Workspace {
             panefleet_fleet_workspace_mouse_states: RefCell::new(HashMap::new()),
             panefleet_fleet_dashboard_scroll_state: Default::default(),
             panefleet_attention_batch_mouse_state: Default::default(),
+            panefleet_attention_mouse_states: RefCell::new(HashMap::new()),
             panefleet_fleet_activity_frame: 0,
             panefleet_agent_definitions,
             panefleet_restoring_state: false,
@@ -7389,14 +7394,7 @@ impl Workspace {
             return;
         };
         let mut task = task.clone();
-        task.mark_done(
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis()
-                .try_into()
-                .unwrap_or(u64::MAX),
-        );
+        task.mark_done(Self::unix_time_ms());
         let without_gate = task.completed_without_gate;
         self.panefleet_tasks
             .set(environment_path.to_path_buf(), task);
@@ -7409,6 +7407,50 @@ impl Workspace {
             );
         }
         ctx.notify();
+    }
+
+    /// Confirms several tasks in one pass.
+    ///
+    /// Reads and writes the file once. Doing it per task would re-read between
+    /// writes, so a single failed write — a read-only state dir, or a store this
+    /// build refuses to overwrite — would silently discard every confirmation
+    /// made before it.
+    fn mark_panefleet_tasks_done(&mut self, paths: &[PathBuf], ctx: &mut ViewContext<Self>) {
+        self.reload_panefleet_tasks();
+        let now = Self::unix_time_ms();
+        let mut confirmed = 0usize;
+        let mut unchecked = 0usize;
+        for path in paths {
+            let Some(task) = self.panefleet_tasks.get(path) else {
+                continue;
+            };
+            let mut task = task.clone();
+            task.mark_done(now);
+            if task.completed_without_gate {
+                unchecked += 1;
+            }
+            self.panefleet_tasks.set(path.clone(), task);
+            confirmed += 1;
+        }
+        if confirmed == 0 {
+            return;
+        }
+        self.persist_panefleet_tasks();
+        self.sync_panefleet_workspace_activities(ctx);
+        if unchecked > 0 {
+            log::info!(
+                "PaneFleet confirmed {unchecked} of {confirmed} tasks without a passing check"
+            );
+        }
+    }
+
+    fn unix_time_ms() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+            .try_into()
+            .unwrap_or(u64::MAX)
     }
 
     /// Runs the task's gate in the environment's working directory and records
@@ -25092,25 +25134,20 @@ impl Workspace {
     /// Bound work grouped by what it asks of a person, plus the strip totals.
     fn panefleet_attention_board(
         &self,
-        ctx: &AppContext,
+        workspaces: &[PaneFleetFleetWorkspace],
     ) -> (
         PaneFleetAttentionCounts,
         HashMap<PaneFleetAttentionColumn, Vec<PaneFleetAttentionItem>>,
         Vec<PaneFleetAttentionItem>,
     ) {
-        let now: u64 = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis()
-            .try_into()
-            .unwrap_or(u64::MAX);
+        let now = Self::unix_time_ms();
         let mut counts = PaneFleetAttentionCounts::default();
         let mut columns: HashMap<PaneFleetAttentionColumn, Vec<PaneFleetAttentionItem>> =
             HashMap::new();
         let mut finished = Vec::new();
 
-        for workspace in self.panefleet_fleet_workspaces(ctx) {
-            for environment in workspace.environments {
+        for workspace in workspaces {
+            for environment in &workspace.environments {
                 let task = self.panefleet_tasks.get(&environment.path);
                 let input = PaneFleetAttentionInput {
                     task_state: task.map(|task| task.state),
@@ -25127,11 +25164,14 @@ impl Workspace {
                         .iter()
                         .any(|session| session.status == PaneFleetFleetStatus::Failed),
                 };
-                let completed_today = task.is_some_and(|task| {
+                // A future timestamp would otherwise read as "just finished"
+                // forever and hide the environment from every column.
+                let finished_recently = task.is_some_and(|task| {
                     task.completed_at_unix_ms
-                        .is_some_and(|at| now.saturating_sub(at) <= DONE_WINDOW_MS)
+                        .is_some_and(|at| at <= now && now - at <= DONE_WINDOW_MS)
                 });
-                counts.add(input, completed_today);
+                let column = attention_column(input);
+                counts.add(input, finished_recently);
 
                 let item = PaneFleetAttentionItem {
                     environment_path: environment.path.clone(),
@@ -25145,12 +25185,13 @@ impl Workspace {
                         .max(),
                     checked: task.is_some_and(|task| task.last_gate_passed == Some(true)),
                 };
-                if completed_today {
-                    finished.push(item.clone());
-                    continue;
-                }
-                if let Some(column) = attention_column(input) {
-                    columns.entry(column).or_default().push(item);
+                // A column always wins over the finished line. Marking work done
+                // and then hitting a blocked agent must not leave the counter
+                // saying someone is needed while no column shows anything.
+                match column {
+                    Some(column) => columns.entry(column).or_default().push(item),
+                    None if finished_recently => finished.push(item),
+                    None => {}
                 }
             }
         }
@@ -25183,7 +25224,7 @@ impl Workspace {
         let workspace_name = item.workspace_name.clone();
 
         let mouse_state = self
-            .panefleet_fleet_workspace_mouse_states
+            .panefleet_attention_mouse_states
             .borrow_mut()
             .entry(path.clone())
             .or_default()
@@ -25261,12 +25302,18 @@ impl Workspace {
             );
         // Confirming a batch in one pass is the whole point of this column
         // being separate from the one you think about item by item.
-        if column == PaneFleetAttentionColumn::Authorize && items.len() > 1 {
+        if column == PaneFleetAttentionColumn::Authorize && !items.is_empty() {
             let paths = items
                 .iter()
                 .map(|item| item.environment_path.clone())
                 .collect::<Vec<_>>();
-            let label = format!("Mark {} done", paths.len());
+            // Shown for one item as well: the card itself opens the
+            // environment, so without this the column's whole purpose would be
+            // unreachable whenever it held exactly one thing.
+            let label = match paths.len() {
+                1 => "Mark done".to_string(),
+                count => format!("Mark {count} done"),
+            };
             header.add_child(
                 Hoverable::new(
                     self.panefleet_attention_batch_mouse_state.clone(),
@@ -25329,7 +25376,7 @@ impl Workspace {
         let workspaces = self.panefleet_fleet_workspaces(ctx);
         // The strip counts work, not processes: "three agents are busy" says
         // nothing about how many things are waiting on you.
-        let (counts, columns, finished_today) = self.panefleet_attention_board(ctx);
+        let (counts, columns, finished_recently) = self.panefleet_attention_board(&workspaces);
 
         let close = self
             .render_tab_bar_icon_button(
@@ -25417,9 +25464,9 @@ impl Workspace {
                 Expanded::new(
                     1.,
                     self.render_panefleet_fleet_stat(
-                        "Done today",
-                        counts.done_today,
-                        Fill::success(),
+                        "To pull",
+                        counts.to_pull,
+                        sub_text,
                         false,
                         appearance,
                     ),
@@ -25432,7 +25479,7 @@ impl Workspace {
                     self.render_panefleet_fleet_stat(
                         "Quiet",
                         counts.quiet,
-                        sub_text,
+                        Fill::success(),
                         false,
                         appearance,
                     ),
@@ -25465,21 +25512,27 @@ impl Workspace {
             .with_main_axis_size(MainAxisSize::Min)
             .with_spacing(8.)
             .with_child(column_row.finish());
-        if !finished_today.is_empty() {
+        if !finished_recently.is_empty() {
             // Finished work asks nothing, so it gets a single line rather than a
             // column: enough to confirm it happened, not enough to compete for
             // attention.
-            let names = finished_today
+            let names = finished_recently
                 .iter()
                 .map(|item| item.title.as_str())
                 .take(6)
                 .collect::<Vec<_>>()
                 .join(" · ");
-            let more = finished_today.len().saturating_sub(6);
+            let more = finished_recently.len().saturating_sub(6);
             let summary = if more > 0 {
-                format!("Done today {} — {names} · +{more}", finished_today.len())
+                format!(
+                    "Finished in the last day {} — {names} · +{more}",
+                    finished_recently.len()
+                )
             } else {
-                format!("Done today {} — {names}", finished_today.len())
+                format!(
+                    "Finished in the last day {} — {names}",
+                    finished_recently.len()
+                )
             };
             attention_board.add_child(
                 Container::new(
@@ -30150,9 +30203,7 @@ impl TypedActionView for Workspace {
             }
             MarkPaneFleetTasksDone { paths } => {
                 if FeatureFlag::PaneFleetWorkbench.is_enabled() {
-                    for path in paths.clone() {
-                        self.mark_panefleet_task_done(&path, ctx);
-                    }
+                    self.mark_panefleet_tasks_done(paths, ctx);
                     ctx.notify();
                 }
             }

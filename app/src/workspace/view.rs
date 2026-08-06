@@ -4870,6 +4870,12 @@ impl Workspace {
                 );
                 self.check_and_trigger_onboarding(ctx);
             }
+            // This source exists for Warp's title-bar team switcher. PaneFleet
+            // does not expose Team UI, but keep the workspace initialization
+            // exhaustive for upstream compatibility.
+            NewWorkspaceSource::TeamSwitched { .. } => {
+                self.configure_empty_workspace(None, None, ctx);
+            }
             NewWorkspaceSource::NotebookFromFilePath { file_path } => {
                 self.add_tab_for_file_notebook(file_path, ctx);
             }
@@ -4996,6 +5002,7 @@ impl Workspace {
             | NewWorkspaceSource::Session { .. }
             | NewWorkspaceSource::AgentSession { .. }
             | NewWorkspaceSource::AmbientAgent
+            | NewWorkspaceSource::TeamSwitched { .. }
             | NewWorkspaceSource::NotebookFromFilePath { .. } => should_default_open,
             #[cfg(not(target_family = "wasm"))]
             NewWorkspaceSource::SharedSessionAsViewer { .. }
@@ -29930,6 +29937,13 @@ impl TypedActionView for Workspace {
             }
             SyncTrafficLights => {
                 self.sync_window_button_visibility(ctx);
+            }
+            #[cfg(debug_assertions)]
+            OpenAgentCliLaunchModal | ResetAgentCliLaunchModalState => {
+                // PaneFleet intentionally does not expose inherited Warp Agent UI.
+            }
+            OpenNewWindowForTeam { .. } | ShowTeamSwitcherMenu => {
+                // PaneFleet is local-first and has no Team-scoped windows.
             }
         };
         if action.should_save_app_state_on_action() {

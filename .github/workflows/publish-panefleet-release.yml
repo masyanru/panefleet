@@ -7,6 +7,9 @@ on:
         description: Existing release tag to package and publish
         required: true
         type: string
+  push:
+    branches:
+      - "release/v*"
 
 permissions:
   contents: write
@@ -16,12 +19,22 @@ jobs:
     runs-on: macos-14
     env:
       GH_TOKEN: ${{ github.token }}
-      PANEFLEET_VERSION: ${{ inputs.version }}
 
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.version }}
+
+      - name: Select release source
+        shell: bash
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            release_version="${{ inputs.version }}"
+          else
+            release_version="${GITHUB_REF_NAME#release/}"
+          fi
+
+          git fetch --force origin "refs/tags/$release_version:refs/tags/$release_version"
+          git checkout "$release_version"
+          echo "PANEFLEET_VERSION=$release_version" >> "$GITHUB_ENV"
 
       - name: Verify Apple Silicon runner
         run: test "$(uname -m)" = arm64

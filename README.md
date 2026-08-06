@@ -151,8 +151,8 @@ will use a separate PaneFleet service rather than Warp's production endpoints.
 PaneFleet is an early development prototype, not a finished distribution.
 
 - macOS is the current development and testing platform.
-- The downloadable alpha is ad-hoc signed, not Developer ID signed or
-  notarized yet.
+- Downloads are ad-hoc signed. Until PaneFleet has an Apple Developer ID
+  certificate, macOS displays a Gatekeeper warning on first launch.
 - Windows and Linux support inherited from the upstream codebase has not been
   adapted or verified for the PaneFleet workbench.
 - Agent resume depends on the installed CLI version and its locally available
@@ -224,8 +224,7 @@ location. Only bypass Gatekeeper for an archive downloaded from the official
 PaneFleet GitHub release; verify the accompanying `.sha256` checksum when
 possible.
 
-The release is ad-hoc signed but cannot be notarized until the project's Apple
-Developer enrollment is approved. An Intel build and automatic installation of
+The release is ad-hoc signed. An Intel build and automatic installation of
 updates are not available yet.
 
 ### Update notifications
@@ -288,10 +287,11 @@ After installing `cargo-bundle`:
 ./script/package-panefleet-macos v0.1.0-alpha.3
 ```
 
-The release ZIP and SHA-256 checksum are written to
-`target/panefleet-dist/`. The application receives an ad-hoc signature; replace
-that step with Developer ID signing and notarization for a trusted public
-release.
+The release ZIP and SHA-256 checksum are written to `target/panefleet-dist/`.
+The app receives an ad-hoc signature by default. Once Developer ID credentials
+are available, set `PANEFLEET_NOTARIZE=1` to sign and notarize the archive;
+keep certificates and notarization credentials in the local Keychain or an
+encrypted CI secret store.
 
 ## Development
 

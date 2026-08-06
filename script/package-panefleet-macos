@@ -30,6 +30,38 @@ PANEFLEET_DIST_DIR="${PANEFLEET_REPO_ROOT}/target/panefleet-dist"
 PANEFLEET_ARCHIVE_NAME="PaneFleet-${PANEFLEET_VERSION}-macos-${PANEFLEET_ARCH}.zip"
 PANEFLEET_ARCHIVE="${PANEFLEET_DIST_DIR}/${PANEFLEET_ARCHIVE_NAME}"
 PANEFLEET_CHECKSUM="${PANEFLEET_ARCHIVE}.sha256"
+PANEFLEET_NOTARIZATION_ARCHIVE="${PANEFLEET_DIST_DIR}/.PaneFleet-${PANEFLEET_VERSION}-notarization.zip"
+PANEFLEET_APPLE_TEAM_ID="7HHQ872HRQ"
+PANEFLEET_NOTARY_PROFILE="${PANEFLEET_NOTARY_PROFILE:-panefleet-notary}"
+PANEFLEET_NOTARIZE="${PANEFLEET_NOTARIZE:-0}"
+
+if [[ "${PANEFLEET_NOTARIZE}" == "1" ]]; then
+  PANEFLEET_SIGNING_IDENTITY="$(
+    security find-identity -v -p codesigning 2>/dev/null |
+      awk -v team_id="${PANEFLEET_APPLE_TEAM_ID}" '
+        index($0, "Developer ID Application:") && index($0, "(" team_id ")") {
+          print $2
+          exit
+        }
+      '
+  )"
+
+  if [[ -z "${PANEFLEET_SIGNING_IDENTITY}" ]]; then
+    echo "error: no Developer ID Application certificate was found for team ${PANEFLEET_APPLE_TEAM_ID}." >&2
+    exit 1
+  fi
+
+  if ! xcrun notarytool history --keychain-profile "${PANEFLEET_NOTARY_PROFILE}" >/dev/null 2>&1; then
+    echo "error: notarization credentials profile '${PANEFLEET_NOTARY_PROFILE}' is unavailable." >&2
+    echo "Run: xcrun notarytool store-credentials '${PANEFLEET_NOTARY_PROFILE}' --apple-id <apple-id> --team-id ${PANEFLEET_APPLE_TEAM_ID}" >&2
+    exit 1
+  fi
+fi
+
+cleanup() {
+  rm -f "${PANEFLEET_NOTARIZATION_ARCHIVE}"
+}
+trap cleanup EXIT
 
 echo "Building PaneFleet release bundle..."
 cd "${PANEFLEET_REPO_ROOT}/app"
@@ -41,12 +73,39 @@ if [[ ! -d "${PANEFLEET_APP}" ]]; then
   exit 1
 fi
 
-echo "Applying an ad-hoc signature..."
-codesign --force --deep --sign - "${PANEFLEET_APP}"
+if [[ "${PANEFLEET_NOTARIZE}" == "1" ]]; then
+  echo "Signing PaneFleet with Developer ID..."
+  codesign --force \
+    --options runtime \
+    --timestamp \
+    --sign "${PANEFLEET_SIGNING_IDENTITY}" \
+    "${PANEFLEET_APP}"
+else
+  echo "Applying an ad-hoc signature..."
+  codesign --force --deep --sign - "${PANEFLEET_APP}"
+fi
 codesign --verify --deep --strict --verbose=2 "${PANEFLEET_APP}"
 
 mkdir -p "${PANEFLEET_DIST_DIR}"
-rm -f "${PANEFLEET_ARCHIVE}" "${PANEFLEET_CHECKSUM}"
+rm -f "${PANEFLEET_ARCHIVE}" "${PANEFLEET_CHECKSUM}" "${PANEFLEET_NOTARIZATION_ARCHIVE}"
+
+if [[ "${PANEFLEET_NOTARIZE}" == "1" ]]; then
+  echo "Creating notarization upload..."
+  ditto -c -k --sequesterRsrc --keepParent \
+    "${PANEFLEET_APP}" \
+    "${PANEFLEET_NOTARIZATION_ARCHIVE}"
+
+  echo "Submitting PaneFleet to Apple for notarization..."
+  xcrun notarytool submit "${PANEFLEET_NOTARIZATION_ARCHIVE}" \
+    --keychain-profile "${PANEFLEET_NOTARY_PROFILE}" \
+    --wait
+
+  echo "Stapling and validating the notarization ticket..."
+  xcrun stapler staple "${PANEFLEET_APP}"
+  xcrun stapler validate "${PANEFLEET_APP}"
+  spctl --assess --type execute --verbose=4 "${PANEFLEET_APP}"
+  codesign --verify --deep --strict --verbose=2 "${PANEFLEET_APP}"
+fi
 
 echo "Creating ${PANEFLEET_ARCHIVE_NAME}..."
 ditto -c -k --sequesterRsrc --keepParent "${PANEFLEET_APP}" "${PANEFLEET_ARCHIVE}"

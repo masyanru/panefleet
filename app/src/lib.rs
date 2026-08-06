@@ -2025,6 +2025,10 @@ pub(crate) fn initialize_app(
             time_of_next_force_object_refresh,
         )
     });
+    // Keep the upstream projection registered even in local-first PaneFleet.
+    // It reads the local CloudModel only; network refresh remains disabled by
+    // ChannelState::cloud_services_enabled().
+    ctx.add_singleton_model(ai::cloud_environments::CloudEnvironmentCatalog::new);
 
     let unsynced_actions: Vec<(CloudObjectTypeAndId, ObjectAction)> = object_actions
         .iter()

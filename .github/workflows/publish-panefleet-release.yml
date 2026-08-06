@@ -1,0 +1,42 @@
+name: Publish PaneFleet release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Existing release tag to package and publish
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: macos-14
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PANEFLEET_VERSION: ${{ inputs.version }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.version }}
+
+      - name: Verify Apple Silicon runner
+        run: test "$(uname -m)" = arm64
+
+      - name: Install packaging dependencies
+        run: |
+          brew install protobuf
+          cargo install cargo-bundle --locked
+
+      - name: Build release archive
+        run: ./script/package-panefleet-macos "$PANEFLEET_VERSION"
+
+      - name: Upload GitHub release assets
+        run: |
+          gh release upload "$PANEFLEET_VERSION" \
+            "target/panefleet-dist/PaneFleet-$PANEFLEET_VERSION-macos-arm64.zip" \
+            "target/panefleet-dist/PaneFleet-$PANEFLEET_VERSION-macos-arm64.zip.sha256" \
+            --clobber

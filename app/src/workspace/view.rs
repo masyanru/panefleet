@@ -27834,7 +27834,7 @@ impl TypedActionView for Workspace {
                 entry_point,
             } => {
                 // Cloud handoff stays disabled in PaneFleet's local-first build.
-                let _ = (launch, environment_id, entry_point, ctx);
+                let _ = (launch, environment_id, entry_point);
             }
             AutoHandoffActiveAgentToCloud {
                 terminal_view_id,
@@ -27842,7 +27842,7 @@ impl TypedActionView for Workspace {
                 trigger,
             } => {
                 // Cloud handoff stays disabled in PaneFleet's local-first build.
-                let _ = (terminal_view_id, conversation_id, trigger, ctx);
+                let _ = (terminal_view_id, conversation_id, trigger);
             }
             ShowHandoffEnvironmentCreationModal => {
                 self.show_handoff_environment_creation_modal(ctx);

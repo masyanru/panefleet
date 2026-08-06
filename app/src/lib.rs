@@ -418,21 +418,16 @@ pub(crate) enum LaunchMode {
         identity_key: String,
     },
 
-    /// Run the headless TUI front-end (the `warp-tui` binary in the `warp_tui`
-    /// crate). Boots the real headless app so shared auth/agent infrastructure can be reused,
-    /// then renders an editor-backed input UI to the terminal (via `mount`)
-    /// instead of opening a GUI window.
+    /// Run the headless TUI front-end.
     #[cfg_attr(not(feature = "tui"), allow(dead_code))]
-    Tui {
-        /// Builds the root TUI view and starts the TUI driver. Runs after
-        /// `initialize_app`; supplied by [`run_tui`]. Carried in the variant
-        /// (rather than as a `run_internal` parameter) so it stays scoped to
-        /// this mode.
+    Tui { entrypoint: TuiEntryPoint },
+}
+
+#[cfg_attr(not(feature = "tui"), allow(dead_code))]
+enum TuiEntryPoint {
+    /// Builds the root TUI view and starts the TUI driver.
+    Interactive {
         mount: TuiMountFn,
-        /// API key for server authentication, if provided via `--api-key` or
-        /// `WARP_API_KEY`. Parsed by the TUI front-end and only used on dogfood
-        /// channels (mirrors `App`); lets the TUI log in non-interactively
-        /// instead of the device-auth flow.
         api_key: Option<String>,
     },
 }
@@ -898,7 +893,9 @@ pub fn run_integration_test(driver: TestDriver) -> Result<()> {
 /// `warp_tui`.
 #[cfg(feature = "tui")]
 pub fn run_tui(api_key: Option<String>, mount: TuiMountFn) -> Result<()> {
-    run_internal(LaunchMode::Tui { mount, api_key })
+    run_internal(LaunchMode::Tui {
+        entrypoint: TuiEntryPoint::Interactive { mount, api_key },
+    })
 }
 
 /// Dispatches a worker command when the current executable was re-invoked for one.
@@ -1297,7 +1294,9 @@ fn run_internal(mut launch_mode: LaunchMode) -> Result<()> {
         // GUI/CLI `launch()` path.
         match launch_mode {
             #[cfg(feature = "tui")]
-            LaunchMode::Tui { mount, .. } => crate::tui::init(mount, ctx),
+            LaunchMode::Tui {
+                entrypoint: TuiEntryPoint::Interactive { mount, .. },
+            } => crate::tui::init(mount, ctx),
             #[cfg(not(feature = "tui"))]
             LaunchMode::Tui { .. } => {
                 unreachable!("the `tui` launch mode requires the `tui` feature")
@@ -1400,41 +1399,7 @@ pub(crate) fn initialize_app(
         ctx.set_zoom_factor(WindowSettings::as_ref(ctx).zoom_level.as_zoom_factor());
     }
 
-    // Extract API key from command line options, if applicable.
-    let api_key = match launch_mode {
-        LaunchMode::CommandLine { global_options, .. } => global_options.api_key.clone(),
-        LaunchMode::App { api_key, .. } if ChannelState::channel().is_dogfood() => api_key.clone(),
-        LaunchMode::Tui { api_key, .. } if ChannelState::channel().is_dogfood() => api_key.clone(),
-        _ => None,
-    };
-    let api_key = if FeatureFlag::APIKeyAuthentication.is_enabled() {
-        api_key
-    } else {
-        None
-    };
-
-    // A key supplied to an App launch but dropped here means Warp will start logged out
-    // (non-dogfood channel or feature disabled). Surface this loudly so it isn't silent.
-    if api_key.is_none()
-        && matches!(
-            launch_mode,
-            LaunchMode::App {
-                api_key: Some(_),
-                ..
-            } | LaunchMode::Tui {
-                api_key: Some(_),
-                ..
-            }
-        )
-    {
-        let channel = ChannelState::channel();
-        let warning = format!(
-            "WARNING: --api-key/WARP_API_KEY was provided but IGNORED on the '{channel}' channel — Warp is starting LOGGED OUT. API-key auth is only available on internal (dogfood) builds."
-        );
-        eprintln!("{warning}");
-    }
-
-    let auth_state = Arc::new(AuthState::initialize(ctx, api_key));
+    let auth_state = Arc::new(AuthState::initialize(ctx));
     timer.mark_interval_end("AUTH_MANAGER_SET_USER");
 
     let agent_source = determine_agent_source(launch_mode);

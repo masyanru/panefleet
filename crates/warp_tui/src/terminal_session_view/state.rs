@@ -6,12 +6,18 @@ use std::{error, fmt};
 use parking_lot::FairMutex;
 use warp::tui_export::{BlocklistAIInputModel, CLISubagentController, TerminalModel};
 use warpui_core::keymap::Context;
-use warpui_core::{AppContext, Entity, ModelHandle, ViewHandle, WeakModelHandle, WeakViewHandle};
+use warpui_core::{
+    AppContext, Entity, ModelContext, ModelHandle, ViewHandle, WeakModelHandle, WeakViewHandle,
+};
 
-use super::AUTO_APPROVE_TOGGLE_BINDING_NAME;
+use super::{
+    AUTO_APPROVE_TOGGLE_BINDING_NAME, BlockingInputSource,
+    DETACH_AGENT_FROM_RUNNING_COMMAND_BINDING_NAME,
+};
 use crate::input_mode_policy;
 use crate::input_suggestions_mode::{TuiInputSuggestionsMode, TuiInputSuggestionsModeModel};
 use crate::keybindings::{PLAN_TOGGLE_BINDING_NAME, binding_hint};
+use crate::read_only_menu::TuiReadOnlyMenuKind;
 use crate::tab_bar::TuiTabBarView;
 use crate::terminal_use::{TuiInputTarget, inline_process_owns_input, tui_input_target};
 use crate::transcript_view::TuiTranscriptView;
@@ -41,6 +47,12 @@ enum TuiTerminalSessionStateSource {
         orchestration_tabs_available: Rc<dyn Fn(&AppContext) -> bool>,
     },
 }
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum TuiFirstZeroStateState {
+    Pending,
+    Visible,
+    Dismissed,
+}
 
 /// Persistent session-owned model that resolves a live state snapshot.
 ///
@@ -50,6 +62,7 @@ enum TuiTerminalSessionStateSource {
 /// presentation components one shared state source.
 pub(crate) struct TuiTerminalSessionStateModel {
     source: TuiTerminalSessionStateSource,
+    first_zero_state: TuiFirstZeroStateState,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -90,13 +103,14 @@ impl Entity for TuiTerminalSessionStateModel {
 }
 
 impl TuiTerminalSessionStateModel {
-    pub(crate) fn new(
+    pub(super) fn new(
         terminal_model: &Arc<FairMutex<TerminalModel>>,
         cli_subagent_controller: &ModelHandle<CLISubagentController>,
         transcript: &ViewHandle<TuiTranscriptView>,
         input_mode: &ModelHandle<BlocklistAIInputModel>,
         suggestions_mode: &ModelHandle<TuiInputSuggestionsModeModel>,
         orchestration_tab_bar: &ViewHandle<TuiTabBarView>,
+        first_zero_state: TuiFirstZeroStateState,
     ) -> Self {
         Self {
             source: TuiTerminalSessionStateSource::Session {
@@ -107,6 +121,37 @@ impl TuiTerminalSessionStateModel {
                 suggestions_mode: suggestions_mode.downgrade(),
                 orchestration_tab_bar: orchestration_tab_bar.downgrade(),
             },
+            first_zero_state,
+        }
+    }
+
+    pub(crate) fn show_first_zero_state(&self) -> bool {
+        self.first_zero_state == TuiFirstZeroStateState::Visible
+    }
+
+    pub(crate) fn set_first_zero_state_pending(&mut self, ctx: &mut ModelContext<Self>) {
+        if self.first_zero_state != TuiFirstZeroStateState::Pending {
+            self.first_zero_state = TuiFirstZeroStateState::Pending;
+            ctx.notify();
+        }
+    }
+
+    pub(crate) fn resolve_first_zero_state(&mut self, show: bool, ctx: &mut ModelContext<Self>) {
+        if self.first_zero_state != TuiFirstZeroStateState::Pending {
+            return;
+        }
+        self.first_zero_state = if show {
+            TuiFirstZeroStateState::Visible
+        } else {
+            TuiFirstZeroStateState::Dismissed
+        };
+        ctx.notify();
+    }
+
+    pub(crate) fn dismiss_first_zero_state(&mut self, ctx: &mut ModelContext<Self>) {
+        if self.first_zero_state != TuiFirstZeroStateState::Dismissed {
+            self.first_zero_state = TuiFirstZeroStateState::Dismissed;
+            ctx.notify();
         }
     }
     #[cfg(test)]
@@ -121,6 +166,7 @@ impl TuiTerminalSessionStateModel {
                 suggestions_mode: suggestions_mode.downgrade(),
                 orchestration_tabs_available: Rc::new(orchestration_tabs_available),
             },
+            first_zero_state: TuiFirstZeroStateState::Dismissed,
         }
     }
 
@@ -153,27 +199,38 @@ impl TuiTerminalSessionStateModel {
                 let orchestration_tab_bar = orchestration_tab_bar
                     .upgrade(ctx)
                     .ok_or(TuiTerminalSessionStateResolveError::OrchestrationTabBar)?;
-                let (alt_screen_active, input_target, user_owns_running_command) = {
+                let (
+                    alt_screen_active,
+                    input_target,
+                    user_owns_running_command,
+                    can_attach_agent_to_running_command,
+                    agent_is_tagged_in,
+                ) = {
                     let terminal_model = terminal_model.lock();
+                    let active_block = terminal_model.block_list().active_block();
                     (
                         terminal_model.is_alt_screen_active(),
                         tui_input_target(&terminal_model),
                         inline_process_owns_input(&terminal_model),
+                        active_block.is_eligible_to_tag_in_agent(),
+                        active_block.is_agent_tagged_in(),
                     )
                 };
                 let terminal_use_control = cli_subagent_controller
                     .as_ref(ctx)
                     .active_target()
                     .map(|target| target.control_state);
-                let interaction = if transcript.as_ref(ctx).active_blocking_child(ctx).is_some() {
-                    TuiInteractionState::Blocked
+                let interaction = if let Some(source) =
+                    transcript.as_ref(ctx).active_blocking_input_source(ctx)
+                {
+                    TuiInteractionState::Blocking(source)
                 } else if terminal_use_control
                     .as_ref()
                     .is_some_and(|control| control.is_user_in_control())
                 {
                     TuiInteractionState::Pty(TuiPtyState::UserControlledTerminalUse)
                 } else if user_owns_running_command {
-                    TuiInteractionState::Pty(TuiPtyState::PlainUserCommand)
+                    TuiInteractionState::Blocking(BlockingInputSource::LongRunningCommand)
                 } else {
                     match input_target {
                         TuiInputTarget::Disabled => TuiInteractionState::StartingShell,
@@ -193,7 +250,7 @@ impl TuiTerminalSessionStateModel {
                                     agent_controlled_terminal_use: false,
                                 }
                             };
-                            TuiInteractionState::Composer(TuiComposerState {
+                            TuiInteractionState::AgentEditor(TuiAgentEditorState {
                                 mode,
                                 suggestions_mode: suggestions_mode.as_ref(ctx).mode(),
                             })
@@ -205,6 +262,8 @@ impl TuiTerminalSessionStateModel {
                     transcript_is_empty: transcript.as_ref(ctx).is_empty(),
                     orchestration_available: orchestration_tab_bar.as_ref(ctx).has_tabs(),
                     plan_available: transcript.as_ref(ctx).has_toggleable_plan(ctx),
+                    can_attach_agent_to_running_command,
+                    agent_is_tagged_in,
                 };
                 Ok(if alt_screen_active {
                     TuiTerminalSessionState::AltScreen {
@@ -242,7 +301,7 @@ impl TuiTerminalSessionStateModel {
 ///
 /// Alternate-screen commands can still expose an agent composer beneath the
 /// terminal, so the surface and interaction state are represented separately.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone)]
 pub(crate) enum TuiTerminalSessionState {
     AltScreen {
         input_target: TuiInputTarget,
@@ -255,26 +314,31 @@ pub(crate) enum TuiTerminalSessionState {
 ///
 /// `interaction` is exclusive, while orchestration and plan availability are
 /// additive capabilities that may contribute shortcuts to a composer.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone)]
 pub(crate) struct TuiBlockSessionState {
     pub(super) interaction: TuiInteractionState,
     pub(super) transcript_is_empty: bool,
     pub(super) orchestration_available: bool,
     pub(super) plan_available: bool,
+    pub(super) can_attach_agent_to_running_command: bool,
+    pub(super) agent_is_tagged_in: bool,
 }
 
 /// The single interaction that currently owns the block UI's input area.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone)]
 pub(super) enum TuiInteractionState {
-    Blocked,
+    Blocking(BlockingInputSource),
     StartingShell,
-    Composer(TuiComposerState),
+    AgentEditor(TuiAgentEditorState),
     Pty(TuiPtyState),
 }
 
-/// Composer state, which cannot exist under alt-screen, blocking, or PTY input.
+/// State for the agent-editor surface, which cannot coexist with blocking or PTY input.
+///
+/// The active inline menu separately resolves whether it or the composer owns
+/// the shared editor's behavior.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) struct TuiComposerState {
+pub(super) struct TuiAgentEditorState {
     pub(super) mode: TuiComposerMode,
     pub(super) suggestions_mode: TuiInputSuggestionsMode,
 }
@@ -292,7 +356,6 @@ pub(super) enum TuiComposerMode {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum TuiPtyState {
     Process,
-    PlainUserCommand,
     UserControlledTerminalUse,
 }
 
@@ -309,23 +372,43 @@ pub(crate) struct TuiShortcutSection {
 }
 
 impl TuiTerminalSessionState {
-    fn state(self) -> TuiBlockSessionState {
+    pub(super) fn with_blocking_input_source(mut self, source: BlockingInputSource) -> Self {
+        let state = match &mut self {
+            Self::AltScreen { state, .. } | Self::Block(state) => state,
+        };
+        state.interaction = TuiInteractionState::Blocking(source);
+        self
+    }
+    fn state(&self) -> &TuiBlockSessionState {
         match self {
             Self::AltScreen { state, .. } | Self::Block(state) => state,
         }
     }
 
-    fn interaction(self) -> TuiInteractionState {
-        self.state().interaction
+    fn interaction(&self) -> &TuiInteractionState {
+        &self.state().interaction
     }
 
-    pub(crate) fn is_alt_screen(self) -> bool {
+    pub(crate) fn is_alt_screen(&self) -> bool {
         matches!(self, Self::AltScreen { .. })
     }
 
-    pub(crate) fn is_blocked(self) -> bool {
-        matches!(self.interaction(), TuiInteractionState::Blocked)
+    pub(crate) fn has_blocking_interaction(&self) -> bool {
+        matches!(
+            self.interaction(),
+            TuiInteractionState::Blocking(source) if source.is_interactive()
+        )
     }
+
+    pub(super) fn blocking_input_source(&self) -> Option<&BlockingInputSource> {
+        match self.interaction() {
+            TuiInteractionState::Blocking(source) => Some(source),
+            TuiInteractionState::StartingShell
+            | TuiInteractionState::AgentEditor(_)
+            | TuiInteractionState::Pty(_) => None,
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn for_input(
         input_is_shell: bool,
@@ -341,75 +424,86 @@ impl TuiTerminalSessionState {
             }
         };
         Self::Block(TuiBlockSessionState {
-            interaction: TuiInteractionState::Composer(TuiComposerState {
+            interaction: TuiInteractionState::AgentEditor(TuiAgentEditorState {
                 mode,
                 suggestions_mode,
             }),
             transcript_is_empty,
             orchestration_available,
             plan_available: false,
+            can_attach_agent_to_running_command: false,
+            agent_is_tagged_in: false,
         })
     }
 
-    pub(crate) fn input_target(self) -> TuiInputTarget {
+    pub(crate) fn input_target(&self) -> TuiInputTarget {
         match self {
-            Self::AltScreen { input_target, .. } => input_target,
-            Self::Block(state) => match state.interaction {
-                TuiInteractionState::Blocked | TuiInteractionState::StartingShell => {
-                    TuiInputTarget::Disabled
-                }
-                TuiInteractionState::Composer(_) => TuiInputTarget::AgentEditor,
+            Self::AltScreen { input_target, .. } => *input_target,
+            Self::Block(state) => match &state.interaction {
+                TuiInteractionState::Blocking(source) => match source {
+                    BlockingInputSource::LongRunningCommand => TuiInputTarget::Pty,
+                    BlockingInputSource::AskQuestion(_)
+                    | BlockingInputSource::Permission(_)
+                    | BlockingInputSource::Orchestration(_)
+                    | BlockingInputSource::Handoff(_) => TuiInputTarget::Disabled,
+                },
+                TuiInteractionState::StartingShell => TuiInputTarget::Disabled,
+                TuiInteractionState::AgentEditor(_) => TuiInputTarget::AgentEditor,
                 TuiInteractionState::Pty(_) => TuiInputTarget::Pty,
             },
         }
     }
 
-    pub(crate) fn user_owns_running_command(self) -> bool {
+    pub(crate) fn user_owns_running_command(&self) -> bool {
         matches!(
             self.interaction(),
-            TuiInteractionState::Pty(
-                TuiPtyState::PlainUserCommand | TuiPtyState::UserControlledTerminalUse
-            )
+            TuiInteractionState::Blocking(BlockingInputSource::LongRunningCommand)
+                | TuiInteractionState::Pty(TuiPtyState::UserControlledTerminalUse)
         )
     }
 
-    pub(crate) fn orchestration_available(self) -> bool {
+    pub(crate) fn orchestration_available(&self) -> bool {
         self.state().orchestration_available
     }
 
-    pub(crate) fn plan_available(self) -> bool {
+    pub(crate) fn plan_available(&self) -> bool {
         self.state().plan_available
     }
 
-    pub(crate) fn can_hand_back_terminal_use(self) -> bool {
+    pub(crate) fn can_hand_back_terminal_use(&self) -> bool {
         matches!(
             self.interaction(),
             TuiInteractionState::Pty(TuiPtyState::UserControlledTerminalUse)
         )
     }
+    pub(crate) fn can_attach_agent_to_running_command(&self) -> bool {
+        self.state().can_attach_agent_to_running_command
+    }
 
-    pub(crate) fn composer_owns_input(self) -> bool {
+    pub(crate) fn agent_is_tagged_in(&self) -> bool {
+        self.state().agent_is_tagged_in
+    }
+
+    /// Returns whether composer shortcuts are active without a suggestions overlay.
+    pub(crate) fn composer_shortcuts_active(&self) -> bool {
         matches!(
             self.interaction(),
-            TuiInteractionState::Composer(TuiComposerState {
+            TuiInteractionState::AgentEditor(TuiAgentEditorState {
                 suggestions_mode,
                 ..
             }) if !suggestions_mode.is_visible()
         )
     }
 
-    pub(crate) fn hint_text(self) -> Option<String> {
+    pub(crate) fn hint_text(&self) -> Option<String> {
         let state = self.state();
-        let TuiInteractionState::Composer(composer) = state.interaction else {
+        let TuiInteractionState::AgentEditor(agent_editor) = &state.interaction else {
             return None;
         };
-        if matches!(
-            composer.suggestions_mode,
-            TuiInputSuggestionsMode::Shortcuts
-        ) {
+        if agent_editor.suggestions_mode.read_only_menu().is_some() {
             return None;
         }
-        Some(match composer.mode {
+        Some(match agent_editor.mode {
             TuiComposerMode::Shell => SHELL_HINT.to_owned(),
             TuiComposerMode::Agent { .. } => {
                 agent_input_hint(state.transcript_is_empty, state.orchestration_available)
@@ -417,50 +511,54 @@ impl TuiTerminalSessionState {
         })
     }
 
-    pub(crate) fn should_render_shortcuts(self) -> bool {
-        matches!(
-            self.interaction(),
-            TuiInteractionState::Composer(TuiComposerState {
-                suggestions_mode: TuiInputSuggestionsMode::Shortcuts,
-                ..
-            })
-        )
+    pub(crate) fn read_only_menu(&self) -> Option<TuiReadOnlyMenuKind> {
+        let TuiInteractionState::AgentEditor(agent_editor) = self.interaction() else {
+            return None;
+        };
+        agent_editor.suggestions_mode.read_only_menu()
     }
 
     pub(crate) fn shortcut_sections(
-        self,
+        &self,
         context: &Context,
         ctx: &AppContext,
     ) -> Vec<TuiShortcutSection> {
         let state = self.state();
-        let composer = match state.interaction {
-            TuiInteractionState::Blocked
-            | TuiInteractionState::StartingShell
-            | TuiInteractionState::Pty(TuiPtyState::Process) => return Vec::new(),
-            TuiInteractionState::Pty(pty) => {
-                let (key, description) = match pty {
-                    TuiPtyState::PlainUserCommand => ("ctrl-c", "interrupt command"),
-                    TuiPtyState::UserControlledTerminalUse => {
-                        (HAND_BACK_KEY_BINDING, "hand back control")
-                    }
-                    TuiPtyState::Process => unreachable!(),
-                };
+        let agent_editor = match &state.interaction {
+            TuiInteractionState::Blocking(BlockingInputSource::LongRunningCommand) => {
                 return vec![TuiShortcutSection {
                     title: "Terminal",
                     shortcuts: vec![TuiShortcut {
-                        key: key.to_owned(),
-                        description,
+                        key: "ctrl-c".to_owned(),
+                        description: "interrupt command",
                     }],
                 }];
             }
-            TuiInteractionState::Composer(composer) => composer,
+            TuiInteractionState::Blocking(
+                BlockingInputSource::AskQuestion(_)
+                | BlockingInputSource::Permission(_)
+                | BlockingInputSource::Orchestration(_)
+                | BlockingInputSource::Handoff(_),
+            )
+            | TuiInteractionState::StartingShell
+            | TuiInteractionState::Pty(TuiPtyState::Process) => return Vec::new(),
+            TuiInteractionState::Pty(TuiPtyState::UserControlledTerminalUse) => {
+                return vec![TuiShortcutSection {
+                    title: "Terminal",
+                    shortcuts: vec![TuiShortcut {
+                        key: HAND_BACK_KEY_BINDING.to_owned(),
+                        description: "hand back control",
+                    }],
+                }];
+            }
+            TuiInteractionState::AgentEditor(agent_editor) => agent_editor,
         };
 
         let mut shortcuts = vec![TuiShortcut {
             key: "?".to_owned(),
             description: "shortcuts",
         }];
-        match composer.mode {
+        match agent_editor.mode {
             TuiComposerMode::Agent { .. } => shortcuts.extend([
                 TuiShortcut {
                     key: "/".to_owned(),
@@ -480,16 +578,16 @@ impl TuiTerminalSessionState {
                 description: "agent mode",
             }),
         }
+        if matches!(agent_editor.mode, TuiComposerMode::Agent { .. }) {
+            shortcuts.push(TuiShortcut {
+                key: "↑".to_owned(),
+                description: "input history",
+            });
+        }
         if let Some(key) = binding_hint(AUTO_APPROVE_TOGGLE_BINDING_NAME, context, ctx) {
             shortcuts.push(TuiShortcut {
                 key,
                 description: "toggle auto-approve",
-            });
-        }
-        if matches!(composer.mode, TuiComposerMode::Agent { .. }) {
-            shortcuts.push(TuiShortcut {
-                key: "↑".to_owned(),
-                description: "input history",
             });
         }
         if state.plan_available
@@ -506,7 +604,7 @@ impl TuiTerminalSessionState {
             shortcuts,
         }];
         if matches!(
-            composer.mode,
+            agent_editor.mode,
             TuiComposerMode::Agent {
                 agent_controlled_terminal_use: true
             }
@@ -516,6 +614,17 @@ impl TuiTerminalSessionState {
                 shortcuts: vec![TuiShortcut {
                     key: TAKE_CONTROL_KEY_BINDING.to_owned(),
                     description: "take control",
+                }],
+            });
+        } else if state.agent_is_tagged_in
+            && let Some(key) =
+                binding_hint(DETACH_AGENT_FROM_RUNNING_COMMAND_BINDING_NAME, context, ctx)
+        {
+            sections.push(TuiShortcutSection {
+                title: "Terminal use",
+                shortcuts: vec![TuiShortcut {
+                    key,
+                    description: "return control to command",
                 }],
             });
         }

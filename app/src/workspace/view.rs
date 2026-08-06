@@ -1,3 +1,4 @@
+pub(crate) mod agent_cli_launch_modal;
 pub(crate) mod auto_handoff_sleep_modal;
 mod build_plan_migration_modal;
 pub(crate) mod cloud_agent_capacity_modal;
@@ -81,8 +82,6 @@ use warp_editor::editor::NavigationKey;
 use warp_errors::{report_error, report_if_error};
 use warp_server_client::auth::AuthEvent;
 use warp_util::path::{LineAndColumnArg, user_friendly_path};
-#[cfg(all(feature = "local_fs", not(target_family = "wasm")))]
-use warp_util::standardized_path::StandardizedPath;
 use warpui::accessibility::{
     AccessibilityContent, AccessibilityVerbosity, ActionAccessibilityContent, WarpA11yRole,
 };
@@ -132,8 +131,6 @@ use super::action::{
     InitContent, NewSessionMenuAnchor, RestoreConversationLayout, TabContextMenuAnchor,
     VerticalTabsPaneContextMenuTarget, WorkspaceAction,
 };
-#[cfg(all(feature = "local_fs", not(target_family = "wasm")))]
-use super::auto_handoff::AutoCloudHandoffController;
 pub(crate) use super::close_session_confirmation_dialog::OpenDialogSource;
 use super::close_session_confirmation_dialog::{
     CloseSessionConfirmationDialog, CloseSessionConfirmationEvent, CloseSessionConfirmationKind,
@@ -184,8 +181,6 @@ use super::util::{
 };
 use super::{ActiveSession, TabBarDropTargetData, TabBarLocation, WorkspaceRegistry, util};
 use crate::ai::active_agent_views_model::ActiveAgentViewsModel;
-#[cfg(all(feature = "local_fs", not(target_family = "wasm")))]
-use crate::ai::agent::CancellationReason;
 use crate::ai::agent::api::ServerConversationToken;
 #[cfg(not(target_family = "wasm"))]
 use crate::ai::agent::conversation::AIAgentHarness;
@@ -207,18 +202,14 @@ use crate::ai::agent_management::view::{AgentManagementView, AgentManagementView
 #[cfg(not(target_family = "wasm"))]
 use crate::ai::agent_sdk::driver::harness::{claude_transcript, codex_transcript};
 use crate::ai::ambient_agents::AmbientAgentTaskId;
-use crate::ai::ambient_agents::telemetry::{CloudAgentTelemetryEvent, CloudModeEntryPoint};
 #[cfg(all(feature = "local_fs", not(target_family = "wasm")))]
-use crate::ai::ambient_agents::telemetry::{HandoffEntryPoint, HandoffInjectionPath};
+use crate::ai::ambient_agents::telemetry::HandoffEntryPoint;
+use crate::ai::ambient_agents::telemetry::{CloudAgentTelemetryEvent, CloudModeEntryPoint};
 use crate::ai::blocklist::agent_view::AgentViewEntryOrigin;
 use crate::ai::blocklist::agent_view::agent_input_footer::editor::AgentToolbarEditorMode;
 use crate::ai::blocklist::agent_view::editor::{AgentToolbarEditorEvent, AgentToolbarEditorModal};
 #[cfg(all(feature = "local_fs", not(target_family = "wasm")))]
-use crate::ai::blocklist::handoff;
-#[cfg(all(feature = "local_fs", not(target_family = "wasm")))]
-use crate::ai::blocklist::handoff::touched_repos::extract_paths_from_conversation;
-#[cfg(all(feature = "local_fs", not(target_family = "wasm")))]
-use crate::ai::blocklist::handoff::{HandoffLaunchAttachments, PendingCloudLaunch};
+use crate::ai::blocklist::handoff::PendingCloudLaunch;
 use crate::ai::blocklist::history_model::{CloudConversationData, load_conversation_from_server};
 use crate::ai::blocklist::inline_action::code_diff_view::CodeDiffView;
 use crate::ai::blocklist::suggested_agent_mode_workflow_modal::{
@@ -442,10 +433,6 @@ use crate::terminal::settings::{SpacingMode, TerminalSettings};
 use crate::terminal::shared_session::SharedSessionActionSource;
 use crate::terminal::shell::ShellType;
 use crate::terminal::view::ambient_agent::{AuthSecretFtuxView, AuthSecretFtuxViewEvent};
-#[cfg(all(feature = "local_fs", not(target_family = "wasm")))]
-use crate::terminal::view::ambient_agent::{
-    HandoffSubmissionState, PendingHandoff, SnapshotUploadStatus,
-};
 #[cfg(feature = "local_tty")]
 use crate::terminal::view::docker_sandbox::DEFAULT_DOCKER_SANDBOX_BASE_IMAGE;
 use crate::terminal::view::inline_banner::ZeroStatePromptSuggestionType;
@@ -13452,6 +13439,7 @@ impl Workspace {
         WindowSnapshot {
             tabs,
             active_tab_index,
+            team_uid: None,
             bounds: window_bounds,
             fullscreen_state: window_fullscreen_state,
             quake_mode,
@@ -17039,7 +17027,7 @@ impl Workspace {
                                     .to_owned();
                                 let attachments = input.collect_cloud_launch_attachments(ctx);
                                 let entry_point = input.handoff_entry_point(ctx);
-                                input.exit_cloud_handoff_compose_and_clear(ctx);
+                                input.exit_cloud_handoff_compose_and_clear_prompt(ctx);
                                 let launch = if prompt.is_empty() {
                                     None
                                 } else {
@@ -17217,6 +17205,9 @@ impl Workspace {
     }
 
     #[cfg(all(feature = "local_fs", not(target_family = "wasm")))]
+    // PaneFleet is local-first. Keep the inherited implementation available for
+    // future upstream integrations, but do not compile local-to-cloud handoff.
+    #[cfg(any())]
     fn restore_source_handoff_draft(
         source_view: &ViewHandle<TerminalView>,
         launch: Option<PendingCloudLaunch>,
@@ -17235,6 +17226,7 @@ impl Workspace {
     }
 
     #[cfg(all(feature = "local_fs", not(target_family = "wasm")))]
+    #[cfg(any())]
     fn show_handoff_success_toast(ctx: &mut ViewContext<Self>) {
         let window_id = ctx.window_id();
         WorkspaceToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
@@ -17259,6 +17251,7 @@ impl Workspace {
     /// 3. If the resolved view's agent view is fullscreen, exits it so the
     ///    cloud pane is visible at the terminal level.
     #[cfg(all(feature = "local_fs", not(target_family = "wasm")))]
+    #[cfg(any())]
     fn prepare_handoff_target(
         &mut self,
         source_view: &ViewHandle<TerminalView>,
@@ -17303,6 +17296,7 @@ impl Workspace {
     /// Still snapshots the source pane's pwd so the cloud agent receives the local repo's
     /// branch info and uncommitted diffs.
     #[cfg(all(feature = "local_fs", not(target_family = "wasm")))]
+    #[cfg(any())]
     fn start_fresh_cloud_launch(
         &mut self,
         source_view: ViewHandle<TerminalView>,
@@ -17382,6 +17376,7 @@ impl Workspace {
     /// Opens a local-to-cloud handoff pane in place over the active local pane.
     /// Triggered by `/move-to-cloud`, `&` compose mode, and the handoff footer chip.
     #[cfg(all(feature = "local_fs", not(target_family = "wasm")))]
+    #[cfg(any())]
     fn start_local_to_cloud_handoff(
         &mut self,
         launch: Option<PendingCloudLaunch>,
@@ -17421,6 +17416,7 @@ impl Workspace {
     }
 
     #[cfg(all(feature = "local_fs", not(target_family = "wasm")))]
+    #[cfg(any())]
     fn record_automatic_handoff_succeeded(
         intent: LocalToCloudHandoffIntent,
         ctx: &mut ViewContext<Self>,
@@ -17434,6 +17430,7 @@ impl Workspace {
     }
 
     #[cfg(all(feature = "local_fs", not(target_family = "wasm")))]
+    #[cfg(any())]
     fn record_automatic_handoff_failed(
         intent: LocalToCloudHandoffIntent,
         ctx: &mut ViewContext<Self>,
@@ -17445,6 +17442,7 @@ impl Workspace {
         }
     }
     #[cfg(all(feature = "local_fs", not(target_family = "wasm")))]
+    #[cfg(any())]
     fn start_local_to_cloud_handoff_from_source(
         &mut self,
         source_view: ViewHandle<TerminalView>,
@@ -17679,6 +17677,7 @@ impl Workspace {
     /// conversation in a cloud pane and starting snapshot prep.
     #[cfg(all(feature = "local_fs", not(target_family = "wasm")))]
     #[allow(clippy::too_many_arguments)]
+    #[cfg(any())]
     fn complete_local_to_cloud_handoff_open(
         &mut self,
         source_view: ViewHandle<TerminalView>,
@@ -27215,9 +27214,8 @@ impl Workspace {
     }
 
     fn team_uid(&self, app: &AppContext) -> Option<ServerId> {
-        // TODO this is a stop gap for now - ideally a specific team uid should
-        // be passed into each event
-        UserWorkspaces::as_ref(app).current_team_uid()
+        let _ = app;
+        None
     }
 
     fn initiate_user_signup(
@@ -27828,57 +27826,16 @@ impl TypedActionView for Workspace {
                 environment_id,
                 entry_point,
             } => {
-                #[cfg(all(feature = "local_fs", not(target_family = "wasm")))]
-                self.start_local_to_cloud_handoff(
-                    launch.clone(),
-                    *environment_id,
-                    *entry_point,
-                    ctx,
-                );
-                #[cfg(not(all(feature = "local_fs", not(target_family = "wasm"))))]
-                {
-                    let _ = (launch, environment_id, entry_point);
-                }
+                // Cloud handoff stays disabled in PaneFleet's local-first build.
+                let _ = (launch, environment_id, entry_point, ctx);
             }
             AutoHandoffActiveAgentToCloud {
                 terminal_view_id,
                 conversation_id,
                 trigger,
             } => {
-                #[cfg(all(feature = "local_fs", not(target_family = "wasm")))]
-                {
-                    let intent = LocalToCloudHandoffIntent::Automatic {
-                        trigger: *trigger,
-                        conversation_id: *conversation_id,
-                    };
-                    let launch = Some(PendingCloudLaunch {
-                        prompt: AUTO_CLOUD_HANDOFF_PROMPT.to_owned(),
-                        attachments: HandoffLaunchAttachments::default(),
-                    });
-                    match self.terminal_view(*terminal_view_id, ctx) {
-                        Some(source_view) => {
-                            self.start_local_to_cloud_handoff_from_source(
-                                source_view,
-                                launch,
-                                None,
-                                intent,
-                                ctx,
-                            );
-                        }
-                        _ => {
-                            log::debug!(
-                                "Skipping automatic local-to-cloud handoff via {:?}: terminal view {:?} is no longer open",
-                                trigger,
-                                terminal_view_id,
-                            );
-                            Self::record_automatic_handoff_failed(intent, ctx);
-                        }
-                    }
-                }
-                #[cfg(not(all(feature = "local_fs", not(target_family = "wasm"))))]
-                {
-                    let _ = (terminal_view_id, conversation_id, trigger);
-                }
+                // Cloud handoff stays disabled in PaneFleet's local-first build.
+                let _ = (terminal_view_id, conversation_id, trigger, ctx);
             }
             ShowHandoffEnvironmentCreationModal => {
                 self.show_handoff_environment_creation_modal(ctx);
@@ -27992,12 +27949,9 @@ impl TypedActionView for Workspace {
                 let auth_state = AuthStateProvider::as_ref(ctx).get();
                 let user_workspaces = UserWorkspaces::as_ref(ctx);
 
-                let upgrade_url = if let Some(team) = user_workspaces.current_team() {
-                    UserWorkspaces::upgrade_link_for_team(team.uid)
-                } else {
-                    let user_id = auth_state.user_id().unwrap_or_default();
-                    UserWorkspaces::upgrade_link(user_id)
-                };
+                let _ = user_workspaces;
+                let user_id = auth_state.user_id().unwrap_or_default();
+                let upgrade_url = UserWorkspaces::upgrade_link(user_id);
 
                 ctx.open_url(&upgrade_url);
             }
